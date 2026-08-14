@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 环境变量（含 API key，绝不提交）
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# 数据库
+*.db
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 测试与工具缓存
+.pytest_cache/
+.ruff_cache/
