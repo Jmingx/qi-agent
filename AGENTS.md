@@ -50,6 +50,22 @@ qi-agent/
 └── .hermes/plans/         # Hermes 计划文件（路线图）
 ```
 
+### 6. Git 版本管理（用户要求，P1）
+
+**原则：每个阶段/功能的成果必须自动提交 git，保证任意时刻可回退。**
+
+- **自动提交**：开发过程中由开发会话自动执行 git 提交，无需用户每次提醒
+- **提交粒度**：
+  - 每个功能/任务完成 = 至少一个原子 commit（一个 commit 只做一件事）
+  - 每个阶段完成 = 里程碑 commit + git tag（如阶段 0 → `v0.1.0`）
+  - 文档（方案/原理/开发记录）与代码分开提交（`docs:` 前缀）
+- **提交规范（conventional commits）**：`feat:` 新功能 / `fix:` 修 bug / `docs:` 文档 / `refactor:` 重构 / `test:` 测试 / `chore:` 杂项；提交信息说明"做了什么"，中文或英文均可
+- **回退保障**：
+  - 禁止 `git reset --hard` 抹掉已提交历史
+  - 回退优先用 `git revert <commit>`（生成新提交撤销）或 `git checkout <commit>` 查看旧代码
+  - tag 标记的阶段边界是最安全的回退点
+- **敏感信息**：`.env`、API key 永不提交（.gitignore 已排除）
+
 ## 标准工作流程（每个阶段/功能）
 
 1. **导师讲解**：讲清本阶段技术原理，引导设计方向
@@ -58,4 +74,4 @@ qi-agent/
 4. **用户评审**：批准后才继续
 5. **开发**：TDD（先写测试 → 实现 → 通过）
 6. **归档 + 记录**：写 `docs/principles/` 原理文档 + `docs/devlog/` 开发记录
-7. **提交**：git commit（conventional commits 风格，如 `feat:`, `docs:`, `refactor:`）
+7. **自动提交**：按 Git 管理细则 commit（+ 阶段完成打 tag）
