@@ -215,6 +215,64 @@ def retry(times=3, delay=0.1):     # 外层是"配置工厂"
 
 这就是"三层三明治"：**工厂→装饰器→闭包**。带参数的装饰器（`@retry(times=3)`）都是这个结构。
 
+## 4. 类型注解进阶：`list[ToolCall] | None = None` 逐段拆解
+
+### 4.1 三个部分
+
+```python
+tool_calls: list[ToolCall] | None = None
+    ↑           ↑              ↑      ↑
+   变量名    类型注解        联合类型   默认值
+```
+
+- `list[ToolCall]`：**泛型**——"装 ToolCall 对象的列表"（Python 3.9+）。`list` 是盒子，`[ToolCall]` 是盒子里东西的类型
+- `| None`：**联合类型**（Python 3.10+）——"要么是列表，要么是 None"（可空）
+- `= None`：默认值——不传参数时用 None
+
+合起来：**"tool_calls 字段可能是 ToolCall 列表，也可能是 None（默认 None）"**。
+
+### 4.2 类型注解的作用（不影响运行）
+
+Python 不强制检查类型注解，运行时两种写法完全一样（实测验证）。它的价值：
+1. **给人看**：读代码的人立刻知道变量是啥
+2. **给 IDE 看**：PyCharm 智能提示和静态检查
+3. **给 mypy/pyright 看**：提交前抓类型错误
+
+### 4.3 为什么不能写 `list[ToolCall] = None`（Java 式）？
+
+**运行时可以（Python 不检查），但静态检查报错：**
+
+```python
+tool_calls: list[ToolCall] = None
+# mypy: error: Incompatible types in assignment
+#       (expression has type "None", variable has type "list[ToolCall]")
+```
+
+逻辑矛盾：注解说"必须是列表"，却赋 None——**None 不是 list[ToolCall]**。加 `| None` 等于诚实声明"可能没有"。
+
+### 4.4 Java vs Python 类型哲学
+
+| | Java | Python（现代 typing） |
+|---|------|---------------------|
+| 引用类型可空性 | **默认可空**（任何引用能赋 null） | **默认不可空**（必须显式 `\| None`） |
+| 表达可空 | 天生允许 | `\| None` 或 `Optional[...]` |
+| 类型检查 | 编译期强制（javac） | 可选（mypy/pyright） |
+| null 的代价 | 运行时 NPE | 无强制检查 |
+
+**原因：** Java 的 null 是"十亿美元错误"（Tony Hoare 自嘲）——空指针异常是 Java 最常见崩溃。Python typing 设计（PEP 484）吸取教训：**默认不可空，可空必须显式**，让"可能没有"成为看得见的信号。
+
+### 4.5 | None 的实际价值：mypy 帮你防崩溃
+
+```python
+def handle(result: ChatResult):
+    tc = result.tool_calls          # 类型: list[ToolCall] | None
+    first = tc[0]                   # mypy: error: "None" has no attribute "__getitem__"
+```
+
+mypy 提醒"可能是 None 别直接下标"→ 被迫处理 None → 运行时少一次崩溃。如果注解骗它（`list[ToolCall] = None`），mypy 以为永远有值，真传 None 时运行时才炸。
+
+**一句话：类型注解是"给静态检查器和未来读者看的合同"。`| None` 表达"可能没有"，诚实、精确、可被检查。**
+
 ## 5. 知识点关联
 
 | 概念 | 关联 |
