@@ -1,20 +1,23 @@
-"""工具注册机制：@tool 装饰器把函数登记进注册表，供 LLM 调用。
+"""工具注册机制：register() 显式注册 + @tool 便捷封装。
 
-核心思想（回顾 python-basics/02）：
-- 装饰器是"包装"，但 @tool 不做包装，只做"登记"——把函数信息
-  存入全局注册表，让 LLM 通过 JSON Schema 知道有哪些工具可用。
-- 工具名 = 函数名；参数 schema 从函数签名 + 类型注解自动推导，
-  写工具的人不用手动维护 schema。
+架构设计（参考 Hermes tools/registry.py）：
+- 工具是"文件 + 注册"的完整单元：handler（函数）+ schema + toolset + 元信息
+- register() 显式注册：信息量大（分组/环境检查/手写schema），工程化
+- @tool 装饰器保留为 register() 的便捷封装（向后兼容）
+
+初始化日志（用户要求）：注册/跳过工具时打印信息，方便定位与学习。
 """
 
 import inspect
 import json
+import os
+from dataclasses import dataclass, field
 from typing import Callable, get_type_hints
 
-# 注册表：工具名 -> {"fn": 函数, "description": 描述, "schema": JSON Schema}
-_TOOL_REGISTRY: dict[str, dict] = {}
+# 注册表：工具名 -> ToolEntry（改用结构化条目，对齐 Hermes ToolEntry 思想）
+_TOOL_REGISTRY: dict[str, "ToolEntry"] = {}
 
-# Python 类型 -> JSON Schema 类型映射（本阶段支持的基础类型）
+# Python 类型 -> JSON Schema 类型映射（自动生成 schema 用）
 _TYPE_MAP = {
     str: "string",
     int: "integer",
@@ -23,24 +26,109 @@ _TYPE_MAP = {
 }
 
 
-def tool(description: str = "") -> Callable:
-    """装饰器：把函数注册为可被 LLM 调用的工具。
+@dataclass
+class ToolEntry:
+    """注册表中的一个工具条目（对齐 Hermes 的 ToolEntry 思想）。"""
+
+    name: str                       # 工具名（唯一）
+    toolset: str                    # 归属分组（默认 builtin）
+    schema: dict                    # 完整 JSON Schema
+    handler: Callable               # 处理函数（接收 **arguments）
+    description: str = ""           # 一句话描述
+    check_fn: Callable | None = None        # 环境检查（返回 False 不注册）
+    requires_env: list[str] = field(default_factory=list)  # 需要的环境变量
+
+
+def _log_registered(entry: "ToolEntry") -> None:
+    """打印工具注册成功的日志（学习/定位用）。"""
+    params = entry.schema["function"]["parameters"]["properties"]
+    print(
+        f"[工具注册] ✓ {entry.name} "
+        f"(toolset={entry.toolset}, 参数={list(params.keys())})"
+    )
+
+
+def _log_skipped(name: str, reason: str) -> None:
+    """打印工具被跳过注册的日志（环境检查/依赖缺失时）。"""
+    print(f"[工具注册] ⚠ 跳过 {name}: {reason}")
+
+
+def register(
+    name: str,
+    toolset: str = "builtin",
+    schema: dict | None = None,
+    handler: Callable | None = None,
+    description: str = "",
+    check_fn: Callable | None = None,
+    requires_env: list[str] | None = None,
+) -> None:
+    """显式注册一个工具。
+
+    Args:
+        name: 工具名（唯一，重复注册抛错）
+        toolset: 归属分组（默认 builtin）
+        schema: 手写 JSON Schema；None 则从 handler 签名自动生成
+        handler: 处理函数（接收关键字参数）
+        description: 工具描述
+        check_fn: 环境检查函数，返回 False 时跳过注册（优雅降级）
+        requires_env: 需要的环境变量列表，缺失时跳过注册
+
+    Raises:
+        ValueError: 工具名重复且未显式 override
+    """
+    if handler is None:
+        raise ValueError(f"register({name}): handler 不能为空")
+
+    # 1. 环境检查：check_fn 返回 False → 跳过（记录日志）
+    if check_fn is not None and not check_fn():
+        _log_skipped(name, f"check_fn 返回 False（{description}）")
+        return
+
+    # 2. 环境变量检查：缺失 → 跳过（记录日志）
+    envs = requires_env or []
+    missing = [e for e in envs if not os.getenv(e)]
+    if missing:
+        _log_skipped(name, f"缺少环境变量: {missing}")
+        return
+
+    # 3. 重复注册防护
+    if name in _TOOL_REGISTRY:
+        existing = _TOOL_REGISTRY[name]
+        raise ValueError(
+            f"工具 '{name}' 已存在（toolset={existing.toolset}），如需覆盖请先注销"
+        )
+
+    # 4. schema：手写优先，否则自动生成
+    if schema is None:
+        schema = _build_schema(handler, description)
+        # 关键：自动生成的 schema 里 function.name 必须用注册名，
+        # 不能用函数名（注册名和函数名可能不一致，如 register(name="schema_x", handler=tool_x)）
+        schema["function"]["name"] = name
+
+    entry = ToolEntry(
+        name=name,
+        toolset=toolset,
+        schema=schema,
+        handler=handler,
+        description=description,
+        check_fn=check_fn,
+        requires_env=envs,
+    )
+    _TOOL_REGISTRY[name] = entry
+    _log_registered(entry)
+
+
+def tool(description: str = "", toolset: str = "builtin") -> Callable:
+    """装饰器：register() 的便捷封装（向后兼容，现有用法零改动）。
 
     用法:
         @tool(description="获取当前时间")
         def get_time() -> str: ...
-
-    函数名即工具名；参数 schema 从函数签名自动推导。
-    原样返回函数（不包装）——LLM 不需要被包装的版本，只需要注册信息。
     """
 
     def decorator(fn: Callable) -> Callable:
-        name = fn.__name__
-        _TOOL_REGISTRY[name] = {
-            "fn": fn,
-            "description": description,
-            "schema": _build_schema(fn, description),
-        }
+        # 转调 register()：schema 自动从签名生成
+        register(name=fn.__name__, toolset=toolset, handler=fn, description=description)
         return fn  # 原样返回，不改变函数本身
 
     return decorator
@@ -86,7 +174,12 @@ def _build_schema(fn: Callable, description: str) -> dict:
 
 def get_tool_schemas() -> list[dict]:
     """返回所有已注册工具的定义（作为给 LLM 的 tools 参数）。"""
-    return [entry["schema"] for entry in _TOOL_REGISTRY.values()]
+    return [entry.schema for entry in _TOOL_REGISTRY.values()]
+
+
+def get_tools_by_toolset(toolset: str) -> list[str]:
+    """返回指定分组下的所有工具名（toolset 分组查询）。"""
+    return [entry.name for entry in _TOOL_REGISTRY.values() if entry.toolset == toolset]
 
 
 def execute_tool(name: str, arguments: dict) -> str:
@@ -100,7 +193,7 @@ def execute_tool(name: str, arguments: dict) -> str:
         return f"[工具错误] 未知工具: {name}"
 
     try:
-        result = entry["fn"](**arguments)
+        result = entry.handler(**arguments)
         # 统一转成字符串返回（LLM 只能读文本）
         if isinstance(result, str):
             return result

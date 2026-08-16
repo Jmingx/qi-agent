@@ -12,7 +12,7 @@ def test_tool_registration() -> None:
         return "ok"
 
     assert "my_tool" in _TOOL_REGISTRY
-    assert _TOOL_REGISTRY["my_tool"]["description"] == "测试工具"
+    assert _TOOL_REGISTRY["my_tool"].description == "测试工具"
     # 清理注册表，避免污染其他测试
     _TOOL_REGISTRY.pop("my_tool")
 
@@ -77,7 +77,7 @@ def test_tool_name_is_function_name() -> None:
 
 def test_shell_blocks_dangerous_commands() -> None:
     """shell 工具应拒绝危险命令（read-only 白名单）。"""
-    from qi_agent.tools.builtin import shell
+    from qi_agent.tools.shell import shell
 
     assert "拒绝" in shell("rm -rf /")
     assert "拒绝" in shell("del C:\\Windows")
@@ -87,7 +87,7 @@ def test_shell_blocks_dangerous_commands() -> None:
 
 def test_shell_allows_readonly_commands() -> None:
     """shell 工具应允许只读命令。"""
-    from qi_agent.tools.builtin import shell
+    from qi_agent.tools.shell import shell
 
     result = shell("pwd")
     assert isinstance(result, str) and len(result) > 0
@@ -95,7 +95,7 @@ def test_shell_allows_readonly_commands() -> None:
 
 def test_read_file_content() -> None:
     """read_file 应返回文件内容。"""
-    from qi_agent.tools.builtin import read_file
+    from qi_agent.tools.read_file import read_file
 
     content = read_file("docs/python-basics/README.md")
     assert "Python" in content
@@ -103,7 +103,7 @@ def test_read_file_content() -> None:
 
 def test_read_file_missing() -> None:
     """read_file 读取不存在的文件应返回错误提示。"""
-    from qi_agent.tools.builtin import read_file
+    from qi_agent.tools.read_file import read_file
 
     result = read_file("no_such_file_xyz.txt")
     assert "不存在" in result
@@ -111,7 +111,7 @@ def test_read_file_missing() -> None:
 
 def test_get_time_format() -> None:
     """get_time 应返回 YYYY-MM-DD HH:MM:SS 格式。"""
-    from qi_agent.tools.builtin import get_time
+    from qi_agent.tools.get_time import get_time
 
     result = get_time()
     assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", result)

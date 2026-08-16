@@ -9,6 +9,7 @@ from unittest import mock
 from qi_agent.agent import Agent
 from qi_agent.cli import main
 from qi_agent.llm import ChatResult
+from qi_agent.tools import get_time, read_file, shell  # noqa: F401  导入即注册内置工具
 
 
 class FakeClient:
