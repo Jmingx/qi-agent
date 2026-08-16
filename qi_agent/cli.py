@@ -63,6 +63,11 @@ def main() -> None:
         try:
             reply = agent.chat(user_input)
             print(f"agent> {reply}")
+        except KeyboardInterrupt:
+            # Ctrl+C 在等待 API 响应时按下：优雅退出（KeyboardInterrupt
+            # 继承 BaseException，不会被 except Exception 捕获，需单独处理）
+            print("\n[已中断] 再见！")
+            break
         except Exception as exc:  # API 失败不崩溃，继续对话
             print(f"[错误] 调用失败: {exc}")
 
