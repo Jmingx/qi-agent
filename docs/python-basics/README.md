@@ -13,3 +13,4 @@ agent / LLM 相关的项目技术原理请归档到 `docs/principles/`。
 |------|------|------|
 | 01 | Python项目管理与打包原理（pyproject/uv/pytest/ruff） | 2026-08-14 |
 | 02 | Python装饰器与property原理（含作用域与源码阅读） | 2026-08-14 |
+| 03 | 闭包与装饰器本质、dataclass详解 | 2026-08-14 |
