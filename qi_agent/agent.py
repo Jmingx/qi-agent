@@ -9,6 +9,7 @@
 
 from typing import Protocol
 
+from qi_agent.debugger import DebugLogger
 from qi_agent.llm import ChatResult
 from qi_agent.tools.registry import execute_tool, get_tool_schemas
 
@@ -31,9 +32,11 @@ class Agent:
         client: ChatClient,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         max_turns: int = 8,
+        logger: DebugLogger | None = None,
     ) -> None:
         self.client = client
         self.max_turns = max_turns
+        self.logger = logger  # 可选调试日志器（依赖注入，None 时无日志）
         self.messages: list[dict] = [
             {"role": "system", "content": system_prompt},
         ]
@@ -48,9 +51,14 @@ class Agent:
         4. 超过 max_turns 轮仍未结束 → 停止并提示
         """
         self.messages.append({"role": "user", "content": user_input})
+        if self.logger:
+            self.logger.log_user_input(user_input)
 
         for _ in range(self.max_turns):
             result = self.client.chat(self.messages, tools=get_tool_schemas())
+            if self.logger:
+                self.logger.log_request(self.messages, get_tool_schemas())
+                self.logger.log_response(result)
 
             if result.tool_calls:
                 # 1. assistant 的 tool_calls 消息必须原样进历史（协议要求）
@@ -58,6 +66,8 @@ class Agent:
                 # 2. 逐个执行工具，结果回填（tool_call_id 一一对应）
                 for call in result.tool_calls:
                     output = execute_tool(call.name, call.arguments)
+                    if self.logger:
+                        self.logger.log_tool_call(call.name, call.arguments, output)
                     self.messages.append(
                         {
                             "role": "tool",
@@ -68,6 +78,8 @@ class Agent:
             else:
                 # 3. 没有工具调用 → 这就是最终答案
                 self.messages.append(result.assistant_message)
+                if self.logger:
+                    self.logger.log_final_answer(result.content or "")
                 return result.content or ""
 
         # 4. 超限防护：防止工具死循环烧 API 额度

@@ -1,13 +1,17 @@
 """CLI 入口：交互式 REPL（Read-Eval-Print Loop）。
 
-用法: uv run python -m qi_agent.cli
+用法:
+    uv run python -m qi_agent.cli            # 正常模式
+    uv run python -m qi_agent.cli --debug    # 调试模式（打印 LLM 交互链路）
 """
 
+import argparse
 import os
 
 from dotenv import load_dotenv
 
 from qi_agent.agent import Agent
+from qi_agent.debugger import DebugLogger
 from qi_agent.llm import LLMClient
 from qi_agent.tools import builtin  # noqa: F401  导入即注册内置工具
 
@@ -29,8 +33,14 @@ def load_api_key() -> str:
 
 def main() -> None:
     """启动 REPL 对话循环。"""
+    parser = argparse.ArgumentParser(description="qi-agent 命令行对话")
+    parser.add_argument("--debug", action="store_true", help="打印 LLM 交互调试日志")
+    args = parser.parse_args()
+
     api_key = load_api_key()
-    agent = Agent(LLMClient(api_key))
+    # --debug 时注入 DebugLogger，否则不传（行为与之前完全一致）
+    logger = DebugLogger() if args.debug else None
+    agent = Agent(LLMClient(api_key), logger=logger)
 
     print("欢迎使用 qi-agent！（输入 exit / quit / 退出 结束对话）")
     while True:
