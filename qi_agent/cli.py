@@ -33,11 +33,16 @@ def load_api_key() -> str:
     return api_key
 
 
-def main() -> None:
-    """启动 REPL 对话循环。"""
+def main(argv: list[str] | None = None) -> None:
+    """启动 REPL 对话循环。
+
+    Args:
+        argv: 命令行参数列表（测试时注入，避免读取全局 sys.argv）。
+              默认 None 表示从 sys.argv 解析（正常 CLI 使用）。
+    """
     parser = argparse.ArgumentParser(description="qi-agent 命令行对话")
     parser.add_argument("--debug", action="store_true", help="打印 LLM 交互调试日志")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     api_key = load_api_key()
     # --debug 时注入 DebugLogger，否则不传（行为与之前完全一致）
