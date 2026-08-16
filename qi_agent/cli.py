@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from qi_agent.agent import Agent
 from qi_agent.llm import LLMClient
+from qi_agent.tools import builtin  # noqa: F401  导入即注册内置工具
 
 # 退出命令集合
 EXIT_COMMANDS = {"exit", "quit", "退出", "q"}

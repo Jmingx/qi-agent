@@ -4,6 +4,7 @@
 """
 
 from qi_agent.agent import Agent
+from qi_agent.llm import ChatResult
 
 
 class FakeClient:
@@ -13,9 +14,13 @@ class FakeClient:
         self.reply = reply
         self.received: list[list[dict]] = []  # 记录每次收到的消息列表
 
-    def chat(self, messages: list[dict]) -> str:
+    def chat(self, messages: list[dict], tools: list[dict] | None = None) -> ChatResult:
         self.received.append(messages)
-        return self.reply
+        return ChatResult(
+            content=self.reply,
+            tool_calls=None,
+            assistant_message={"role": "assistant", "content": self.reply},
+        )
 
 
 def make_agent(client: FakeClient | None = None) -> tuple[Agent, FakeClient]:
