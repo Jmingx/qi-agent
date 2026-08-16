@@ -37,9 +37,8 @@ class Agent:
         self.client = client
         self.max_turns = max_turns
         self.logger = logger  # 可选调试日志器（依赖注入，None 时无日志）
-        self.messages: list[dict] = [
-            {"role": "system", "content": system_prompt},
-        ]
+        self.system_prompt = system_prompt # 初始化系统提示词
+        self._reset_messages()
 
     def chat(self, user_input: str) -> str:
         """接收用户输入，运行工具调用循环，返回最终答案。
@@ -84,6 +83,14 @@ class Agent:
 
         # 4. 超限防护：防止工具死循环烧 API 额度
         return "已达最大轮数，任务可能未完成。"
+
+    def clear_context(self) -> None:
+        self._reset_messages()
+
+    def _reset_messages(self) -> None:
+        self.messages: list[dict] = [
+            {"role": "system", "content": self.system_prompt},
+        ]
 
     @property
     def history(self) -> list[dict]:

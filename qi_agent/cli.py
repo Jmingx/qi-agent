@@ -18,6 +18,8 @@ from qi_agent.tools import builtin  # noqa: F401  导入即注册内置工具
 # 退出命令集合
 EXIT_COMMANDS = {"exit", "quit", "退出", "q"}
 
+# 清理上下文命令集合
+CLEAR_COMMANDS = {"clear"}
 
 def load_api_key() -> str:
     """从 .env 加载 DeepSeek API key，缺失时给出明确报错。"""
@@ -42,7 +44,7 @@ def main() -> None:
     logger = DebugLogger() if args.debug else None
     agent = Agent(LLMClient(api_key), logger=logger)
 
-    print("欢迎使用 qi-agent！（输入 exit / quit / 退出 结束对话）")
+    print("欢迎使用 qi-agent！（输入 exit / quit / 退出 结束对话，clear 清理上下文。）")
     while True:
         try:
             user_input = input("你> ").strip()
@@ -59,6 +61,12 @@ def main() -> None:
         if user_input.lower() in EXIT_COMMANDS:
             print("再见！")
             break
+
+        # 清理上下文命令
+        if user_input.lower() in CLEAR_COMMANDS:
+            print("已为您清理上下文！")
+            agent.clear_context()
+            continue
 
         try:
             reply = agent.chat(user_input)
