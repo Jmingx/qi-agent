@@ -175,7 +175,70 @@ shell 工具是双刃剑：能执行命令 = 能破坏系统。本阶段的安�
 2. **arguments 格式错误**：回填 assistant_message 时把解析后的 dict 直接放进去，API 报 `invalid type: map, expected a string`。解决：`json.dumps` 还原成字符串。
 3. **PYTHONPATH 污染影响 pytest**：阶段 2 起测试导入链经过 openai（llm.py），Hermes 终端注入的 PYTHONPATH 让 pytest 也中招。解决：`PYTHONPATH= uv run pytest`。
 
-## 7. 与 Hermes 的对照
+## 7. 模型不支持工具调用怎么办（降级方案）
+
+### 7.1 问题
+
+不是所有模型都支持原生 tool_calls（阶段 4 换 provider 时必遇）。不支持时传 `tools` 字段要么被忽略、要么报错。
+
+### 7.2 方案 A：能力检测（先问再打）
+
+```python
+# 1. 查模型列表/能力元数据（如果有）
+# 2. 发探测请求：给 tools 参数，看是否报错/是否返回 tool_calls
+```
+
+支持 → 原生 tool_calls；不支持 → 方案 B。缺点：探测花钱、文档可能过时。
+
+### 7.3 方案 B：Prompt-based tool calling（提示词式工具调用）★核心降级
+
+**原理：** 工具调用本质是"模型输出结构化文本"。原生协议是输出 `tool_calls` 字段；降级方案是在 system prompt 里描述工具格式，让模型输出 JSON，客户端解析执行。
+
+```python
+# 1. system prompt 里描述工具格式（关键）
+TOOL_PROMPT = '''
+需要调用工具时，只输出一个 JSON 对象（不要输出其他内容）:
+{"tool": "工具名", "arguments": {"参数名": "值"}}
+可用工具: get_time(无参数), read_file(参数path)...
+'''
+
+# 2. 解析模型输出的 JSON（容错）
+def parse_tool_call(text):
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if not match: return None
+    try: return json.loads(match.group(0))
+    except json.JSONDecodeError: return None
+
+# 3. agent loop 完全一样：解析→执行→回填→继续
+resp = model.chat(messages)
+call = parse_tool_call(resp)
+result = execute_tool(call["tool"], call["arguments"])
+messages.append({"role": "tool", "content": result})
+```
+
+**关键：降级方案只依赖模型"会输出 JSON"**（几乎所有模型都会），不依赖原生 tool_calls 能力。
+
+### 7.4 方案对比
+
+| | 原生 tool_calls | Prompt-based 降级 |
+|---|---|---|
+| 依赖模型能力 | 需要原生支持 | 只要能输出 JSON |
+| 可靠性 | 高（协议保证格式） | 中（需容错解析） |
+| 实现成本 | 低（SDK 支持） | 中（解析器+容错+提示词设计） |
+| 适用 | 主流模型 | 老模型/本地小模型/特殊 provider |
+
+### 7.5 工程实践：自适应双通道
+
+```python
+def chat(self, messages, tools=None, force_prompt_mode=False):
+    if tools and not self.supports_tool_calls:   # 不支持原生
+        return self._prompt_mode_chat(messages, tools)  # 提示词降级
+    return self._native_chat(messages, tools)     # 原生
+```
+
+**Hermes 能兼容几十家 provider 的秘诀之一就是：能力检测 + 降级通道**，让同一个 agent 在最强和最弱的模型上都能跑。
+
+## 8. 与 Hermes 的对照
 
 Hermes 的工具系统（`tools/` 目录）就是这套机制的工业级实现：
 - 它的 `@tool` 装饰器支持更丰富的参数定义（pydantic 模型驱动 schema）

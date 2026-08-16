@@ -159,6 +159,62 @@ repr(NoRepr())  # <__main__.NoRepr object at 0x0000...>  ← 只有类名+内存
 
 @dataclass 自动生成的 `__repr__` 正是官方推荐形态：`类名(字段名=值, ...)`。dataclass 三件套：`__init__`（构造）、`__repr__`（展示）、`__eq__`（比较）。
 
+## 4. 装饰器的高级应用：玩出花（AOP 思想）
+
+### 4.1 认知升级：装饰器 = 面向切面编程（AOP）
+
+**把与业务无关的横切逻辑（缓存、重试、日志、权限、鉴权、限流）从业务代码里抽出来，用装饰器统一附加。** 业务函数保持纯粹，装饰器负责"外挂能力"。
+
+### 4.2 日常高频例子（天天在用而没意识到）
+
+```python
+@lru_cache          # 缓存：函数结果自动记忆（性能神器）
+@app.route("/")     # Flask/FastAPI：URL 路由注册（钩子式）
+@app.task           # Celery：函数变后台任务
+@pytest.fixture     # pytest：测试夹具
+@dataclass          # 数据类
+@contextmanager     # 函数变上下文管理器（with 语句）
+```
+
+### 4.3 进阶玩法：横切逻辑抽出
+
+```python
+@retry(times=3, delay=1)     # 重试：网络失败自动重试
+@require_login               # 权限：无登录直接拒绝
+@timing(label="查询")         # 性能：自动记录耗时
+@log_calls                   # 日志：自动记录调用
+@singleton                   # 单例：保证一个实例
+@validate                    # 校验：入口自动清洗数据
+```
+
+### 4.4 能力叠加
+
+多个装饰器可以叠加形成"能力栈"（从上到下执行）：
+
+```python
+@timing(label="查询")
+@retry(times=3)
+@log_calls
+def query_db(): ...
+```
+
+### 4.5 花活本质：参数化装饰器工厂
+
+```python
+def retry(times=3, delay=0.1):     # 外层是"配置工厂"
+    def deco(fn):                   # 中层是装饰器
+        def wrapper(*a, **k):       # 内层是闭包（包装逻辑）
+            for i in range(times):
+                try: return fn(*a, **k)
+                except Exception:
+                    if i == times-1: raise
+                    time.sleep(delay)
+        return wrapper
+    return deco
+```
+
+这就是"三层三明治"：**工厂→装饰器→闭包**。带参数的装饰器（`@retry(times=3)`）都是这个结构。
+
 ## 5. 知识点关联
 
 | 概念 | 关联 |
