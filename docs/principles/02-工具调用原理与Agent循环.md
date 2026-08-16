@@ -1,8 +1,8 @@
 # 02-工具调用原理与Agent循环
 
-> 对应阶段：阶段 2（工具调用）
+> 对应阶段：阶段 2（工具调用）/ 阶段 2.5（调试日志）
 > 日期：2026-08-14
-> 配套代码：qi_agent/tools/、agent.py 的 Agent.chat()
+> 配套代码：qi_agent/tools/、agent.py 的 Agent.chat()、debugger.py
 
 ## 1. 工具调用不是魔法：是"提示词 + 结构化输出"
 
