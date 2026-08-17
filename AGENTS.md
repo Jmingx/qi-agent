@@ -50,7 +50,8 @@ qi-agent/
 │   ├── principles/        # 项目技术原理归档（P0-1，agent/LLM 相关）
 │   ├── python-basics/     # Python 基础知识归档（P0-1，通用技能）
 │   ├── devlog/            # 开发记录（P1-3）
-│   └── plans/             # 方案评审文档（P1-4）
+│   ├── plans/             # 方案评审文档（P1-4）
+│   └── todos/             # TODO 清单（模块级待办，状态打勾+价值标注）
 └── .hermes/plans/         # Hermes 计划文件（路线图）
 ```
 
