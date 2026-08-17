@@ -26,11 +26,24 @@ class FakeClient:
             assistant_message={"role": "assistant", "content": "ok"},
         )
 
-    def chat_stream(self, messages: list[dict], tools: list[dict] | None = None):
-        """流式替身：逐块产出（cli 现在总是流式，必须支持）。"""
+    def chat_stream(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        on_delta=None,
+    ) -> ChatResult:
+        """流式替身：逐块回调（cli 现在总是流式，必须支持）。"""
         self.chat_count += 1
-        for piece in ["o", "k"]:
-            yield piece
+        parts = ["o", "k"]
+        for piece in parts:
+            if on_delta:
+                on_delta(piece)
+        full = "".join(parts)
+        return ChatResult(
+            content=full,
+            tool_calls=None,
+            assistant_message={"role": "assistant", "content": full},
+        )
 
 
 def run_cli_with_inputs(inputs: list[str]) -> tuple[Agent, FakeClient]:
@@ -61,9 +74,9 @@ def test_clear_command_triggers_clear_context() -> None:
 def test_clear_command_does_not_call_api() -> None:
     """输入 clear 不应消耗 API 调用（continue 跳过 chat）。"""
     _, client = run_cli_with_inputs(["你好", "clear", "exit"])
-    # 只有"你好"触发了 LLM 调用（流式模式：chat 探测 + chat_stream 重取 = 2 次）
+    # 只有"你好"触发 1 次 LLM 调用（v0.4.6 起流式单调用，不再双调用）
     # clear 和 exit 都不调 LLM
-    assert client.chat_count == 2
+    assert client.chat_count == 1
 
 
 def test_clear_uppercase_insensitive() -> None:
@@ -81,7 +94,7 @@ def test_clear_command_with_whitespace() -> None:
 def test_clear_then_continue_chat() -> None:
     """clear 之后应能继续正常对话（新会话上下文）。"""
     agent, client = run_cli_with_inputs(["第一轮", "clear", "第二轮", "exit"])
-    # 两轮真实对话 × 流式模式每轮 2 次调用（chat 探测 + chat_stream）= 4
-    assert client.chat_count == 4
+    # 两轮真实对话 × 流式单调用（v0.4.6 起每轮 1 次）= 2
+    assert client.chat_count == 2
     # 第二轮后历史: system + user + assistant = 3 条（新会话，不含第一轮）
     assert len(agent.history) == 3

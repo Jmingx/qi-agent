@@ -64,7 +64,15 @@ class Agent:
             self.logger.log_user_input(user_input)
 
         for _ in range(self.max_turns):
-            result = self.client.chat(self.messages, tools=get_tool_schemas())
+            if stream_callback is not None:
+                # 流式模式：一次调用（on_delta 打字机 + 累积完整结果）
+                # 修复双调用 bug：日志 [RESP] 与输出来自同一个 result
+                result = self.client.chat_stream(
+                    self.messages, tools=get_tool_schemas(), on_delta=stream_callback
+                )
+            else:
+                # 普通模式：chat()（向后兼容）
+                result = self.client.chat(self.messages, tools=get_tool_schemas())
             if self.logger:
                 self.logger.log_request(self.messages, get_tool_schemas())
                 self.logger.log_response(result)
@@ -86,18 +94,7 @@ class Agent:
                     )
             else:
                 # 3. 没有工具调用 → 这就是最终答案
-                if stream_callback is not None:
-                    # 流式分支：逐块回调，累积完整文本（历史必须存完整文本！）
-                    collected: list[str] = []
-                    for delta in self.client.chat_stream(self.messages, tools=get_tool_schemas()):
-                        stream_callback(delta)
-                        collected.append(delta)
-                    full_text = "".join(collected)
-                    self.messages.append({"role": "assistant", "content": full_text})
-                    if self.logger:
-                        self.logger.log_final_answer(full_text)
-                    return full_text
-
+                # （流式/普通模式的 result 都是标准 ChatResult，统一处理）
                 self.messages.append(result.assistant_message)
                 if self.logger:
                     self.logger.log_final_answer(result.content or "")

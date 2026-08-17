@@ -15,7 +15,6 @@
 """
 
 import json
-import shutil
 from typing import Any
 
 # 单条消息/工具的显示上限，防止刷屏
@@ -37,48 +36,27 @@ def _to_json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def _box_width() -> int:
-    """日志框总宽度（含左右边框）。"""
-    return _BOX_WIDTH
-
-
-def _right_pad() -> int:
-    """计算右对齐的左侧填充空格数（日志框贴着终端右缘）。"""
-    try:
-        term_width = shutil.get_terminal_size().columns
-    except Exception:
-        term_width = 120  # 无法获取终端宽度时用默认值（如测试环境）
-    return max(0, term_width - _box_width())
-
-
 def _print_box(title: str, lines: list[str]) -> None:
-    """打印带分隔线和标题的日志块（右对齐）。
+    """打印带分隔线和标题的日志块（左对齐 + [LOG] 前缀）。
 
-    显示设计：
-    - 开头强制换行：保证日志框永远从行首开始（流式 + 日志混用不粘连）
-    - 右对齐：框整体贴终端右缘，与左侧对话输出形成视觉分区
-    - 多行内容支持：lines 中元素若含换行，逐行拆分填充，保证右边框连续
+    显示设计（v0.4.6 修复）：
+    - 左对齐：任何终端宽度都不变形（右对齐在宽终端留白巨大）
+    - [LOG] 前缀：每行标记，一眼分辨日志 vs 对话输出
+    - 多行内容：按换行拆分填充，保证右边框连续
     """
     print()  # 关键：确保框独立成行（流式 + 日志混用时的显示修复）
-    pad = " " * _right_pad()
-    text_w = _BOX_WIDTH - 4  # 文本区宽度（总宽 - 左右边框│和空格各2）
+    text_w = 76  # 内容宽度
 
-    # 顶行
-    print(f"{pad}┌" + "─" * text_w + "┐")
-    # 标题行
-    print(f"{pad}│ {title.ljust(text_w - 1)}│")
-
-    # 内容行：多行内容逐行拆分填充（保证右边框连续）
+    print("[LOG] ┌" + "─" * text_w + "┐")
+    print(f"[LOG] │ {title.ljust(text_w - 1)}│")
     for line in lines:
         for sub in line.split("\n"):  # 处理含换行的内容（如模型多行回复）
             if len(sub) <= text_w - 1:
                 display = sub
             else:
                 display = sub[: text_w - 2] + "…"  # 超长截断
-            print(f"{pad}│ {display.ljust(text_w - 1)}│")
-
-    # 底行
-    print(f"{pad}└" + "─" * text_w + "┘")
+            print(f"[LOG] │ {display.ljust(text_w - 1)}│")
+    print("[LOG] └" + "─" * text_w + "┘")
 
 
 class DebugLogger:
