@@ -74,8 +74,15 @@ def main(argv: list[str] | None = None) -> None:
             continue
 
         try:
-            reply = agent.chat(user_input)
-            print(f"agent> {reply}")
+            # 先打印前缀，流式内容紧跟其后（避免重复打印）
+            print("agent> ", end="", flush=True)
+            reply = agent.chat(
+                user_input,
+                # 流式回调：逐块打印（flush=True 强制立即输出，否则被缓冲）
+                stream_callback=lambda delta: print(delta, end="", flush=True),
+            )
+            print()  # 流式结束后换行（打字机效果完整）
+            _ = reply  # 完整文本已在流式中显示，无需重复打印
         except KeyboardInterrupt:
             # Ctrl+C 在等待 API 响应时按下：优雅退出（KeyboardInterrupt
             # 继承 BaseException，不会被 except Exception 捕获，需单独处理）

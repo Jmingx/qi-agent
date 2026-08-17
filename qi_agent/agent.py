@@ -40,13 +40,23 @@ class Agent:
         self.system_prompt = system_prompt # 初始化系统提示词
         self._reset_messages()
 
-    def chat(self, user_input: str) -> str:
+    def chat(
+        self,
+        user_input: str,
+        stream_callback=None,
+    ) -> str:
         """接收用户输入，运行工具调用循环，返回最终答案。
+
+        Args:
+            user_input: 用户输入
+            stream_callback: 可选流式回调（接收每段文本增量）。
+                非 None 时，最终回答轮次改用流式（打字机效果）；
+                None 时行为与普通模式完全一致（向后兼容）。
 
         循环逻辑：
         1. 调 LLM（带工具清单）
         2. 模型要调工具 → 逐个执行 → 结果以 role="tool" 回填 → 继续
-        3. 模型直接回答 → 这就是最终答案
+        3. 模型直接回答 → 这就是最终答案（可流式）
         4. 超过 max_turns 轮仍未结束 → 停止并提示
         """
         self.messages.append({"role": "user", "content": user_input})
@@ -76,6 +86,18 @@ class Agent:
                     )
             else:
                 # 3. 没有工具调用 → 这就是最终答案
+                if stream_callback is not None:
+                    # 流式分支：逐块回调，累积完整文本（历史必须存完整文本！）
+                    collected: list[str] = []
+                    for delta in self.client.chat_stream(self.messages, tools=get_tool_schemas()):
+                        stream_callback(delta)
+                        collected.append(delta)
+                    full_text = "".join(collected)
+                    self.messages.append({"role": "assistant", "content": full_text})
+                    if self.logger:
+                        self.logger.log_final_answer(full_text)
+                    return full_text
+
                 self.messages.append(result.assistant_message)
                 if self.logger:
                     self.logger.log_final_answer(result.content or "")

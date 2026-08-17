@@ -110,3 +110,31 @@ class LLMClient:
             tool_calls=tool_calls,
             assistant_message=assistant_message,
         )
+
+    def chat_stream(self, messages: list[dict], tools: list[dict] | None = None):
+        """流式调用：逐块产出文本增量（生成器）。
+
+        仅用于"纯文本回答"轮次（工具调用轮次用 chat()——需要完整
+        的 tool_calls 结构才能执行工具，流式无意义）。
+
+        Args:
+            messages: 标准消息列表
+            tools: 工具 JSON Schema 列表（可选）
+
+        Yields:
+            一段文本增量（delta.content），调用方逐块消费
+        """
+        kwargs: dict = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "stream": True,  # 流式：返回迭代器而非完整对象
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        stream = self._client.chat.completions.create(**kwargs)
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
