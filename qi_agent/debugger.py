@@ -8,13 +8,21 @@
 输出链路：
 [USER] 用户输入 → [REQ] 发送请求 → [RESP] 模型响应
 → [TOOL] 工具执行 → [REQ] 第二轮 → [RESP] 最终答案 → [ANSWER]
+
+显示设计（v0.4.4+）：
+- 日志框右对齐打印——与左侧的对话输出（你> / agent>）形成视觉分区，
+  用户一眼分辨"哪些是日志、哪些是输出"
 """
 
 import json
+import shutil
 from typing import Any
 
 # 单条消息/工具的显示上限，防止刷屏
 _MAX_ITEM_CHARS = 500
+
+# 日志框宽度（固定值，保证所有框一致）
+_BOX_WIDTH = 66
 
 
 def _truncate(text: str, limit: int = _MAX_ITEM_CHARS) -> str:
@@ -29,20 +37,39 @@ def _to_json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def _print_box(title: str, lines: list[str]) -> None:
-    """打印带分隔线和标题的日志块。
+def _box_width() -> int:
+    """日志框总宽度（含左右边框）。"""
+    return _BOX_WIDTH
 
-    开头强制换行：保证日志框永远从行首开始——
-    流式输出是行内模式（end="" 不换行），如果日志框不先换行，
-    会直接粘连在流式文本后面（如 "😊┌─────┐" 错位）。
+
+def _right_pad() -> int:
+    """计算右对齐的左侧填充空格数（日志框贴着终端右缘）。"""
+    try:
+        term_width = shutil.get_terminal_size().columns
+    except Exception:
+        term_width = 120  # 无法获取终端宽度时用默认值（如测试环境）
+    return max(0, term_width - _box_width())
+
+
+def _print_box(title: str, lines: list[str]) -> None:
+    """打印带分隔线和标题的日志块（右对齐）。
+
+    显示设计：
+    - 开头强制换行：保证日志框永远从行首开始（流式 + 日志混用不粘连）
+    - 右对齐：框整体贴终端右缘，与左侧对话输出形成视觉分区
     """
     print()  # 关键：确保框独立成行（流式 + 日志混用时的显示修复）
-    width = max(len(title) + 4, 60)
-    print("┌─" + "─" * width + "┐")
-    print(f"│ {title}")
+    pad = " " * _right_pad()
+    inner_w = _BOX_WIDTH - 4  # 内容宽度（去掉 │ 和两侧空格）
+
+    # 标题行（右对齐）
+    print(f"{pad}┌─" + "─" * inner_w + "┐")
+    print(f"{pad}│ {title:<{inner_w - 1}}│")
+    # 内容行（超长截断 + 右对齐）
     for line in lines:
-        print(f"│ {line}")
-    print("└" + "─" * width + "┘")
+        display = line if len(line) <= inner_w - 1 else line[: inner_w - 1] + "…"
+        print(f"{pad}│ {display:<{inner_w - 1}}│")
+    print(f"{pad}└" + "─" * inner_w + "┘")
 
 
 class DebugLogger:
