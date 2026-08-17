@@ -12,7 +12,7 @@
 
 | 状态 | 条目 | 价值 | 难度 | 说明 |
 |------|------|------|------|------|
-| ⬜ | **软沙箱：run_python 工具（v1）** | P0 | ⭐⭐ | `run_python(code)`：子进程执行 + 静态白名单（禁止 import os/sys/subprocess）+ 10s 超时 + 干净环境。参考 principles 沙箱三件套 |
+| ✅ | **软沙箱：run_python 工具（v1）** | P0 | ⭐⭐ | `run_python(code)`：子进程执行 + 静态白名单（禁止 import os/sys/subprocess）+ 10s 超时 + 干净环境。参考 principles 沙箱三件套。**完成：v0.4.2** |
 | ⬜ | **软沙箱升级（v2）：RestrictedPython** | P1 | ⭐⭐⭐ | 用 Python 官方受限执行库（解释器层拦截 import/属性访问，防 `().__class__...` 逃逸），替代手写白名单。纯 Python 无重依赖——**轻量但认真**的沙箱 |
 | ⬜ | **软沙箱升级（v3）：资源限制** | P1 | ⭐⭐⭐ | 内存限制（psutil 监控）、输出字节上限、错误隔离（崩溃不影响主进程） |
 | ⬜ | **进程沙箱：干净环境变量** | P0 | ⭐⭐ | 执行前环境变量白名单：只保留 OS 必需（SYSTEMROOT/WINDIR/COMSPEC），丢弃 HERMES_*/DEEPSEEK_* 防偷 key（参考 Hermes code_execution env_whitelist） |
@@ -70,4 +70,4 @@
 
 | 日期 | 条目 | commit/tag | 备注 |
 |------|------|-----------|------|
-|      |      |           |      |
+| 2026-08-17 | run_python 软沙箱 v1 | v0.4.2 | 四锁设计（白名单/子进程/超时/干净环境），11 测试 |
