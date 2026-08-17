@@ -35,7 +35,8 @@
 
 | 状态 | 条目 | 价值 | 难度 | 说明 |
 |------|------|------|------|------|
-| ⬜ | **工具并行执行** | P1 | ⭐⭐⭐ | 一次 tool_calls 多个工具并行执行（当前串行）；注意 DeepSeek 限流，控制并发数 ≤3（concurrent.futures.ThreadPoolExecutor） |
+| ⬜ | **工具并行执行（线程池）** | P1 | ⭐⭐⭐ | 一次 tool_calls 多个工具并行执行（当前串行）。**用线程池（concurrent.futures.ThreadPoolExecutor）**——注意：线程池解决的是"并发调度"不是"省进程创建"；参考 Hermes DaemonThreadPoolExecutor（daemon 线程防退出卡死）。注意 DeepSeek 限流，并发数 ≤3 |
+| ⬜ | **run_python 常驻 worker（进程复用）** | P2 | ⭐⭐⭐ | **真正的"省进程"池化**：启动常驻 Python 子进程（类 Jupyter Kernel），通过管道/套接字发送代码执行，避免每次重新加载解释器（~100ms+）。仅 run_python 场景适用；bash 命令无法池化（一次性进程语义）。参考 Hermes code_execution RPC 设计 |
 | ⬜ | **异步工具支持（is_async）** | P1 | ⭐⭐⭐ | register() 增加 is_async 字段（对齐 Hermes），execute_tool 区分同步/异步 handler（asyncio.run 包装） |
 | ⬜ | **工具调用去重/幂等** | P2 | ⭐⭐ | 相同参数重复调用时（如 get_time 被调两次）可缓存或提示，避免浪费 API 轮次 |
 
