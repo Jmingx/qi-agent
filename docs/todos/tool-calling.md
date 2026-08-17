@@ -13,10 +13,12 @@
 | 状态 | 条目 | 价值 | 难度 | 说明 |
 |------|------|------|------|------|
 | ⬜ | **软沙箱：run_python 工具（v1）** | P0 | ⭐⭐ | `run_python(code)`：子进程执行 + 静态白名单（禁止 import os/sys/subprocess）+ 10s 超时 + 干净环境。参考 principles 沙箱三件套 |
-| ⬜ | **软沙箱升级（v2）：资源限制** | P1 | ⭐⭐⭐ | 内存限制（如 resource/psutil 监控）、输出字节上限、错误隔离（崩溃不影响主进程） |
+| ⬜ | **软沙箱升级（v2）：RestrictedPython** | P1 | ⭐⭐⭐ | 用 Python 官方受限执行库（解释器层拦截 import/属性访问，防 `().__class__...` 逃逸），替代手写白名单。纯 Python 无重依赖——**轻量但认真**的沙箱 |
+| ⬜ | **软沙箱升级（v3）：资源限制** | P1 | ⭐⭐⭐ | 内存限制（psutil 监控）、输出字节上限、错误隔离（崩溃不影响主进程） |
 | ⬜ | **进程沙箱：干净环境变量** | P0 | ⭐⭐ | 执行前环境变量白名单：只保留 OS 必需（SYSTEMROOT/WINDIR/COMSPEC），丢弃 HERMES_*/DEEPSEEK_* 防偷 key（参考 Hermes code_execution env_whitelist） |
 | ⬜ | **进程沙箱：工作目录隔离** | P1 | ⭐⭐ | 在临时目录（tempfile.mkdtemp）执行，脚本碰不到项目文件 |
-| ⬜ | **容器沙箱：Docker 后端（可选）** | P2 | ⭐⭐⭐⭐ | `docker run --network=none --memory=256m --cpus=1` 硬隔离；检测到 Docker 才启用，无 Docker 自动降级进程沙箱（参考 Hermes environments/docker.py） |
+| ⬜ | **Windows 原生隔离（Job Objects）** | P2 | ⭐⭐⭐ | Windows Job Objects / AppContainer 限制子进程内存/CPU/句柄——轻量的系统级资源限制，无需 Docker |
+| ⬜ | **容器沙箱：Docker 后端（远期可选）** | P2 | ⭐⭐⭐⭐ | **注意：依赖 Docker 较重**（WSL2 虚拟机、秒级启动、镜像管理）。做成"检测到 Docker 才启用，无则自动降级进程沙箱"。仅当未来需要跑**不可信代码**（RL 评测/第三方脚本/多租户）时才值得——单用户本地 agent 软沙箱已覆盖 95% 需求（参考 Hermes environments/docker.py） |
 | ⬜ | **远程沙箱：远程执行后端（远期）** | P2 | ⭐⭐⭐⭐⭐ | SSH/Modal 等远程执行（参考 Hermes environments/ssh.py、modal.py）——先留接口，不急于实现 |
 
 ## 二、安全环境
