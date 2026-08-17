@@ -57,19 +57,28 @@ def _print_box(title: str, lines: list[str]) -> None:
     显示设计：
     - 开头强制换行：保证日志框永远从行首开始（流式 + 日志混用不粘连）
     - 右对齐：框整体贴终端右缘，与左侧对话输出形成视觉分区
+    - 多行内容支持：lines 中元素若含换行，逐行拆分填充，保证右边框连续
     """
     print()  # 关键：确保框独立成行（流式 + 日志混用时的显示修复）
     pad = " " * _right_pad()
-    inner_w = _BOX_WIDTH - 4  # 内容宽度（去掉 │ 和两侧空格）
+    text_w = _BOX_WIDTH - 4  # 文本区宽度（总宽 - 左右边框│和空格各2）
 
-    # 标题行（右对齐）
-    print(f"{pad}┌─" + "─" * inner_w + "┐")
-    print(f"{pad}│ {title:<{inner_w - 1}}│")
-    # 内容行（超长截断 + 右对齐）
+    # 顶行
+    print(f"{pad}┌" + "─" * text_w + "┐")
+    # 标题行
+    print(f"{pad}│ {title.ljust(text_w - 1)}│")
+
+    # 内容行：多行内容逐行拆分填充（保证右边框连续）
     for line in lines:
-        display = line if len(line) <= inner_w - 1 else line[: inner_w - 1] + "…"
-        print(f"{pad}│ {display:<{inner_w - 1}}│")
-    print(f"{pad}└" + "─" * inner_w + "┘")
+        for sub in line.split("\n"):  # 处理含换行的内容（如模型多行回复）
+            if len(sub) <= text_w - 1:
+                display = sub
+            else:
+                display = sub[: text_w - 2] + "…"  # 超长截断
+            print(f"{pad}│ {display.ljust(text_w - 1)}│")
+
+    # 底行
+    print(f"{pad}└" + "─" * text_w + "┘")
 
 
 class DebugLogger:
