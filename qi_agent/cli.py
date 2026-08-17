@@ -74,8 +74,12 @@ def main(argv: list[str] | None = None) -> None:
             continue
 
         try:
-            # 先打印前缀，流式内容紧跟其后（避免重复打印）
-            print("agent> ", end="", flush=True)
+            # 流式前缀处理：
+            # - 普通模式：打印 "agent> " 前缀，流式内容紧跟（打字机效果）
+            # - --debug 模式：不打印前缀——日志框已展示完整链路（[USER]→[RESP]），
+            #   流式文本单独一行输出，避免前缀与日志框粘连错位
+            if logger is None:
+                print("agent> ", end="", flush=True)
             reply = agent.chat(
                 user_input,
                 # 流式回调：逐块打印（flush=True 强制立即输出，否则被缓冲）

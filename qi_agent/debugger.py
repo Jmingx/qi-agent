@@ -30,7 +30,13 @@ def _to_json(data: Any) -> str:
 
 
 def _print_box(title: str, lines: list[str]) -> None:
-    """打印带分隔线和标题的日志块。"""
+    """打印带分隔线和标题的日志块。
+
+    开头强制换行：保证日志框永远从行首开始——
+    流式输出是行内模式（end="" 不换行），如果日志框不先换行，
+    会直接粘连在流式文本后面（如 "😊┌─────┐" 错位）。
+    """
+    print()  # 关键：确保框独立成行（流式 + 日志混用时的显示修复）
     width = max(len(title) + 4, 60)
     print("┌─" + "─" * width + "┐")
     print(f"│ {title}")
