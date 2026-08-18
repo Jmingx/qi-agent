@@ -15,3 +15,4 @@ agent / LLM 相关的项目技术原理请归档到 `docs/principles/`。
 | 02 | Python装饰器与property原理（含作用域与源码阅读） | 2026-08-14 |
 | 03 | 闭包与装饰器本质、dataclass详解 | 2026-08-14 |
 | 04 | 异常处理与BaseException层级（Ctrl+C中断处理） | 2026-08-14 |
+| 05 | dict的setdefault与映射惯用法（"取桶没有就建"+Java computeIfAbsent对照） | 2026-08-18 |
