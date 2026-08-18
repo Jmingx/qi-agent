@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from qi_agent.agent import Agent
 from qi_agent.debugger import DebugLogger
 from qi_agent.llm import LLMClient
+from qi_agent.plugins.tool_stats import ToolStatsPlugin
 from qi_agent.tools import get_time, read_file, run_python, shell  # noqa: F401  导入即注册内置工具
 
 # 退出命令集合
@@ -42,12 +43,19 @@ def main(argv: list[str] | None = None) -> None:
     """
     parser = argparse.ArgumentParser(description="qi-agent 命令行对话")
     parser.add_argument("--debug", action="store_true", help="打印 LLM 交互调试日志")
+    parser.add_argument("--stats", action="store_true", help="会话结束打印工具调用统计")
     args = parser.parse_args(argv)
 
     api_key = load_api_key()
     # --debug 时注入 DebugLogger，否则不传（行为与之前完全一致）
     logger = DebugLogger() if args.debug else None
     agent = Agent(LLMClient(api_key), logger=logger)
+
+    # --stats 时挂载工具统计插件（事件总线机制验证插件）
+    stats_plugin: ToolStatsPlugin | None = None
+    if args.stats:
+        stats_plugin = ToolStatsPlugin()
+        stats_plugin.install(agent.events)
 
     print("欢迎使用 qi-agent！（输入 exit / quit / 退出 结束对话，clear 清理上下文。）")
     while True:
@@ -94,6 +102,10 @@ def main(argv: list[str] | None = None) -> None:
             break
         except Exception as exc:  # API 失败不崩溃，继续对话
             print(f"[错误] 调用失败: {exc}")
+
+    # 会话结束（while break 后）：--stats 时打印工具调用汇总
+    if stats_plugin is not None:
+        print(stats_plugin.report())
 
 
 if __name__ == "__main__":
