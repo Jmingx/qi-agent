@@ -182,15 +182,60 @@ def get_tools_by_toolset(toolset: str) -> list[str]:
     return [entry.name for entry in _TOOL_REGISTRY.values() if entry.toolset == toolset]
 
 
+def validate_arguments(schema: dict, arguments: dict) -> str | None:
+    """校验工具参数（执行前），返回 None=通过，否则返回可行动的错误信息。
+
+    校验项（方案 docs/plans/2026-08-17-参数校验方案.md）：
+    1. 必填检查：schema.required 中缺失的参数
+    2. 类型检查：参数类型与 schema.properties 声明的类型不符
+       （bool 严格化：bool 是 int 子类，integer 参数不接受 bool）
+    3. 多余参数：传入 schema 未声明的参数
+
+    错误信息"可行动"：告诉模型缺什么、该传什么类型，一轮纠错到位，
+    避免模型盲目重试浪费 API 轮次。
+    """
+    func = schema["function"]
+    params = func["parameters"]
+    properties = params.get("properties", {})
+    required = params.get("required", [])
+
+    # 1. 必填检查：缺失的参数逐个列出
+    missing = [r for r in required if r not in arguments]
+    if missing:
+        return f"缺少必填参数: {', '.join(missing)}"
+
+    # 2. 类型检查 + 3. 多余参数
+    type_map = {"string": str, "integer": int, "number": (int, float), "boolean": bool}
+    for name, value in arguments.items():
+        if name not in properties:
+            return f"未知参数: {name}（可用参数: {', '.join(properties)}）"
+        expected = properties[name].get("type")
+        # bool 严格化：bool 是 int 的子类，声明 integer 的参数不接受 bool
+        if expected == "integer" and isinstance(value, bool):
+            return f"参数 {name} 类型错误: 期望 integer, 实际 boolean"
+        if expected in type_map and not isinstance(value, type_map[expected]):
+            return f"参数 {name} 类型错误: 期望 {expected}, 实际 {type(value).__name__}"
+
+    return None
+
+
 def execute_tool(name: str, arguments: dict) -> str:
     """按名字执行工具，返回字符串结果。
 
     未知工具/执行异常都返回错误提示字符串，不抛出异常——
     agent 循环中工具失败不应中断整个对话。
+
+    参数校验（执行前）：失败返回 [参数错误] 前缀的可行动错误，
+    让模型区分"我传参错了"（可修正重试）vs"工具本身失败"（换工具/放弃）。
     """
     entry = _TOOL_REGISTRY.get(name)
     if entry is None:
         return f"[工具错误] 未知工具: {name}"
+
+    # 参数校验（执行前，返回可行动错误）
+    error = validate_arguments(entry.schema, arguments)
+    if error:
+        return f"[参数错误] {error}"
 
     try:
         result = entry.handler(**arguments)
