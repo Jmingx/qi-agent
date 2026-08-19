@@ -7,6 +7,9 @@ venv/
 # 环境变量（含 API key，绝不提交）
 .env
 
+# 插件配置（用户偏好，不进 git；模板 plugins.example.toml 进 git）
+plugins.toml
+
 # IDE
 .idea/
 .vscode/

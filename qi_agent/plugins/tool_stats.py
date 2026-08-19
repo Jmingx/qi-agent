@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 
 from qi_agent.events import EventBus
+from qi_agent.plugins.registry import register_plugin
 
 # 判定失败的输出前缀（与 execute_tool 的错误约定一致）
 _FAILURE_PREFIXES = ("[工具错误]", "[参数错误]")
@@ -64,3 +65,12 @@ class ToolStatsPlugin:
                 f"总耗时 {stat.total_seconds:.3f}s, 失败 {stat.failures}"
             )
         return "\n".join(lines)
+
+
+# 自注册（方案 v0.4.9）：观测类插件默认关，配置文件或 --stats 快捷开关启用
+register_plugin(
+    name="tool_stats",
+    factory=ToolStatsPlugin,
+    description="工具调用统计（次数/耗时/失败数），--stats 临时启用",
+    default_enabled=False,
+)
