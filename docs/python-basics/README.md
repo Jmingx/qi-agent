@@ -16,3 +16,4 @@ agent / LLM 相关的项目技术原理请归档到 `docs/principles/`。
 | 03 | 闭包与装饰器本质、dataclass详解 | 2026-08-14 |
 | 04 | 异常处理与BaseException层级（Ctrl+C中断处理） | 2026-08-14 |
 | 05 | dict的setdefault与映射惯用法（"取桶没有就建"+Java computeIfAbsent对照） | 2026-08-18 |
+| 06 | Python的接口哲学（ABC/Protocol/鸭子类型 vs Java interface） | 2026-08-19 |
