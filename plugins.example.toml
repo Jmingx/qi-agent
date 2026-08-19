@@ -11,3 +11,12 @@
 
 [tool_stats]
 enabled = false
+
+[security_guard]
+enabled = true
+
+# 安全审核黑名单（按工具名分组，子串匹配，大小写不敏感）
+# shell 内置已拦截 rm/del/format 等危险操作；这里加用户自定义限制
+# 注意：关键词尽量带空格/上下文，避免误伤（如 "dd " 而非 "dd"）
+[security_guard.blacklist]
+shell = ["git push", "mkfs", "dd "]

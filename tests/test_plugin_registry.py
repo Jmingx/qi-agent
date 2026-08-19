@@ -14,10 +14,25 @@ from qi_agent.plugins.registry import (
 )
 
 
-class FakePlugin:
-    """测试插件：install 记录调用。"""
+@pytest.fixture(autouse=True)
+def isolate_plugins():
+    """隔离注册表：测试前后备份/恢复。
 
-    def __init__(self) -> None:
+    防止 security_guard（默认启用）等真实插件污染 load_plugins 的断言——
+    registry 单元测试只关心自己注册的 FakePlugin。
+    """
+    backup = dict(_PLUGIN_REGISTRY)
+    _PLUGIN_REGISTRY.clear()
+    yield
+    _PLUGIN_REGISTRY.clear()
+    _PLUGIN_REGISTRY.update(backup)
+
+
+class FakePlugin:
+    """测试插件：install 记录调用（factory 约定：接收配置段 dict）。"""
+
+    def __init__(self, config: dict | None = None) -> None:
+        self.config = config or {}
         self.installed_on: EventBus | None = None
 
     def install(self, bus: EventBus) -> None:
@@ -110,3 +125,21 @@ def test_unknown_name_in_config_ignored() -> None:
         assert installed == []  # ghost 不装配（未登记），known 默认关不装配
     finally:
         _cleanup("known_plugin")
+
+
+def test_factory_receives_config() -> None:
+    """factory 应收到除 enabled 外的配置段（决策点 1：约定升级）。"""
+    register_plugin("cfg_plugin", FakePlugin, default_enabled=True)
+    try:
+        config = {
+            "cfg_plugin": {
+                "enabled": True,
+                "blacklist": {"shell": ["git push"]},
+            }
+        }
+        installed = load_plugins(EventBus(), config)
+        assert len(installed) == 1
+        # enabled 被过滤，业务配置完整传入
+        assert installed[0].config == {"blacklist": {"shell": ["git push"]}}
+    finally:
+        _cleanup("cfg_plugin")

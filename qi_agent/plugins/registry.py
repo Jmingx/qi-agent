@@ -71,7 +71,12 @@ def load_plugins(bus: EventBus, config: dict | None = None) -> list:
         enabled = config.get(name, {}).get("enabled", entry.default_enabled)
         if not enabled:
             continue
-        plugin = entry.factory()
+        # factory 约定（v0.4.10 升级）：接收"除 enabled 外的配置段"——
+        # enabled 已被本函数消费，业务配置（如 blacklist）原样传给插件
+        plugin_config = {
+            k: v for k, v in config.get(name, {}).items() if k != "enabled"
+        }
+        plugin = entry.factory(plugin_config)
         plugin.install(bus)  # 统一入口约定（v0.4.8 确立）
         installed.append(plugin)
     return installed

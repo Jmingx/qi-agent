@@ -31,7 +31,8 @@ class ToolStats:
 class ToolStatsPlugin:
     """统计插件：收集并汇总工具调用数据。"""
 
-    def __init__(self) -> None:
+    def __init__(self, config: dict | None = None) -> None:
+        """config: 配置段（当前未使用，兼容 factory 约定升级 v0.4.10）。"""
         self._stats: dict[str, ToolStats] = {}
         self._call_start: dict[str, float] = {}  # tool_call 名 → 开始时间
         # 注：dict 记录开始时间仅为兜底（多工具并行时 key 冲突）；
