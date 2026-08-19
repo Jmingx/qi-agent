@@ -62,10 +62,15 @@ def run_python(code: str) -> str:
 
     # 2+3+4. 子进程执行 + 时间锁 + 安全锁
     try:
+        # -X utf8：强制子进程 UTF-8 模式（PEP 540），输出统一 UTF-8——
+        # 否则子进程按系统 locale（Windows=GBK）编码 stdout，emoji 等会编码失败
         result = subprocess.run(
-            [sys.executable, "-c", code],
+            [sys.executable, "-X", "utf8", "-c", code],
             capture_output=True,
             text=True,
+            # 与 shell 同款编码处理：明确 UTF-8 解码 + 容错替换
+            encoding="utf-8",
+            errors="replace",
             timeout=_TIMEOUT_SECONDS,
             env=_build_safe_env(),
         )

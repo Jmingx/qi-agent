@@ -49,6 +49,11 @@ def shell(command: str) -> str:
             shell=True,
             capture_output=True,
             text=True,
+            # Windows 编码坑：默认按系统 locale（GBK）解码子进程输出，
+            # UTF-8/二进制内容会 UnicodeDecodeError（reader 线程炸→输出丢失）。
+            # 明确 UTF-8 + errors="replace"：不炸，乱码字节替换为 �
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         output = result.stdout or result.stderr or "(无输出)"

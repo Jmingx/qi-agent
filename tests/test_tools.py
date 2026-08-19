@@ -115,3 +115,33 @@ def test_get_time_format() -> None:
 
     result = get_time()
     assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", result)
+
+
+def test_shell_utf8_output(tmp_path) -> None:
+    """shell 读取非 GBK 字节不应因解码失败丢输出（Windows 编码坑）。
+
+    回归：text=True 默认用系统 locale（Windows=GBK），0x80 是 GBK 非法
+    首字节 → 触发 UnicodeDecodeError（子进程 reader 线程炸 → 输出变空）。
+    修复：encoding="utf-8" + errors="replace"。
+    """
+    from qi_agent.tools.shell import shell
+
+    f = tmp_path / "utf8.txt"
+    f.write_bytes(b"a\x80b")  # 0x80 必然触发 GBK 解码失败
+    result = shell(f"type {f}")
+    # 修复前：reader 线程 UnicodeDecodeError → 输出为空/异常
+    # 修复后：errors="replace" 保证不炸，ASCII 内容可读
+    assert result != "(无输出)"
+    assert "a" in result and "b" in result
+
+
+def test_run_python_unicode_output() -> None:
+    """run_python 执行含非 GBK 字符的输出不应炸（防御回归，与 shell 同修复）。
+
+    子进程默认按系统 locale（GBK）编码 stdout，emoji 无法编码 →
+    子进程内部报错。修复：-X utf8 强制子进程 UTF-8 模式 + 父进程 utf-8 解码。
+    """
+    from qi_agent.tools.run_python import run_python
+
+    result = run_python("print('ok-emoji-\\U0001F600')")
+    assert "ok-emoji" in result
