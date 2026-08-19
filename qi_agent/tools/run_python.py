@@ -23,7 +23,16 @@ _FORBIDDEN_PATTERNS = (
     "().__class__", "__subclasses__", "__globals__",
 )
 
-# 安全锁：环境变量白名单（只保留 OS 运行必需，丢弃 API key 等敏感变量）
+# 第一道防线：密钥特征子串（对齐 Hermes _SECRET_SUBSTRINGS，先黑后白）
+# "PASS" 故意不加——误伤 BYPASS_CACHE/COMPASS_DIR/PASSENGER_HOST 等合法变量
+# （Hermes 踩坑注释原话；PASSWD 是密码缩写，保留拦截）
+_SENSITIVE_KEY_SUBSTRINGS = (
+    "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
+    "PASSWD", "AUTH", "DSN", "WEBHOOK",
+    "CREDS", "BEARER", "APIKEY",
+)
+
+# 第二道防线：环境变量白名单（只保留 OS 运行必需，丢弃 API key 等敏感变量）
 _SAFE_ENV_KEYS = (
     "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC",
     "TEMP", "TMP", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
@@ -34,8 +43,22 @@ _TIMEOUT_SECONDS = 10
 
 
 def _build_safe_env() -> dict:
-    """构建白名单环境变量：只保留 _SAFE_ENV_KEYS 中的变量。"""
-    return {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    """双重过滤构建沙箱环境（对齐 Hermes _scrub_child_env 第 ② 条，先黑后白）。
+
+    ① 密钥子串拦截：变量名含密钥特征（KEY/TOKEN/SECRET...）→ 丢弃。
+       防御纵深：即使白名单将来改宽/改成前缀匹配，密钥也进不来
+    ② 白名单保留：OS 运行必需的精确名单（PATH/SYSTEMROOT...）
+    """
+    safe = {}
+    for k, v in os.environ.items():
+        upper = k.upper()  # 环境变量名大小写不敏感（Windows 尤其）
+        # ① 密钥子串拦截（第一道，先扫——顺序关键）
+        if any(s in upper for s in _SENSITIVE_KEY_SUBSTRINGS):
+            continue
+        # ② 安全名单保留（第二道）
+        if k in _SAFE_ENV_KEYS:
+            safe[k] = v
+    return safe
 
 
 def _check_code(code: str) -> str | None:
