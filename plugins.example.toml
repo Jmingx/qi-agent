@@ -20,3 +20,7 @@ enabled = true
 # 注意：关键词尽量带空格/上下文，避免误伤（如 "dd " 而非 "dd"）
 [security_guard.blacklist]
 shell = ["git push", "mkfs", "dd "]
+
+# 环境信息：向模型注入运行环境（OS/shell/可用命令），默认开
+[env_info]
+enabled = true

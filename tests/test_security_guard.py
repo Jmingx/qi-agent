@@ -107,3 +107,58 @@ def test_plugin_intercepts_in_loop() -> None:
     tool_msg = next(m for m in agent.history if m["role"] == "tool")
     assert "[安全拦截]" in tool_msg["content"]
     assert "git push" in tool_msg["content"]
+
+
+# ── 路径规则（方案 v0.4.11：内置安全底线，修复 .git 绕过漏洞）──────────────
+
+
+def test_sensitive_path_git_blocked() -> None:
+    """shell 读取 .git 下文件应被路径规则拦截（真实对抗暴露的绕过）。"""
+    plugin = _make_plugin()
+    result = plugin._on_tool_call("shell", {"command": "type .git\\config"})
+    assert result is not None
+    assert "[安全拦截]" in result
+    assert "敏感路径" in result
+
+
+def test_sensitive_path_env_blocked() -> None:
+    """shell 读取 .env 应被拦截。"""
+    plugin = _make_plugin()
+    result = plugin._on_tool_call("shell", {"command": "type .env"})
+    assert result is not None
+    assert "[安全拦截]" in result
+
+
+def test_normal_path_allowed() -> None:
+    """普通文件路径应放行。"""
+    plugin = _make_plugin()
+    assert plugin._on_tool_call("shell", {"command": "type README.md"}) is None
+
+
+def test_no_path_command_allowed() -> None:
+    """无路径 token 的命令应放行。"""
+    plugin = _make_plugin()
+    assert plugin._on_tool_call("shell", {"command": "dir"}) is None
+
+
+def test_quoted_path_blocked() -> None:
+    """带引号的敏感路径也应被拦截（去引号后检查）。"""
+    plugin = _make_plugin()
+    result = plugin._on_tool_call(
+        "shell", {"command": 'type "C:\\repo\\.git\\config"'}
+    )
+    assert result is not None
+    assert "[安全拦截]" in result
+
+
+def test_blacklist_and_path_both_work() -> None:
+    """黑名单与路径规则独立生效：黑名单命中返回黑名单原因。"""
+    plugin = _make_plugin({"shell": ["git push"]})
+    # 黑名单命中（不依赖路径规则）
+    blacklist_hit = plugin._on_tool_call("shell", {"command": "git push origin"})
+    assert blacklist_hit is not None
+    assert "危险关键词" in blacklist_hit
+    # 路径规则命中（不依赖黑名单）
+    path_hit = plugin._on_tool_call("shell", {"command": "type .env"})
+    assert path_hit is not None
+    assert "敏感路径" in path_hit

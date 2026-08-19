@@ -9,6 +9,7 @@
 
 from qi_agent.events import EventBus
 from qi_agent.plugins.registry import register_plugin
+from qi_agent.tools.path_security import is_sensitive_path
 
 # 工具名 -> 参数名映射（从 arguments 里取待审核内容）
 _ARG_PARAM_MAP = {
@@ -19,7 +20,12 @@ _ARG_PARAM_MAP = {
 
 
 class SecurityGuardPlugin:
-    """安全审核插件：黑名单命中返回拦截提示，否则放行（None）。"""
+    """安全审核插件：黑名单命中返回拦截提示，否则放行（None）。
+
+    两层规则（方案 v0.4.11）：
+    ① 用户配置黑名单（plugins.toml，关键词子串匹配）
+    ② 内置路径规则（安全底线硬编码，始终生效——修复 shell 读 .git 绕过漏洞）
+    """
 
     def __init__(self, config: dict | None = None) -> None:
         config = config or {}
@@ -31,7 +37,7 @@ class SecurityGuardPlugin:
         bus.on("agent/tool-call", self._on_tool_call, priority=200)
 
     def _on_tool_call(self, name: str, arguments: dict, **_) -> str | None:
-        """审核一次工具调用：命中黑名单返回拦截提示，否则 None（放行）。
+        """审核一次工具调用：命中任一规则返回拦截提示，否则 None（放行）。
 
         Args:
             name: 工具名（如 shell）
@@ -40,6 +46,18 @@ class SecurityGuardPlugin:
         Returns:
             拦截提示（[安全拦截] 前缀，回填给模型）；放行时返回 None
         """
+        # ① 用户配置黑名单（关键词）
+        hit = self._check_blacklist(name, arguments)
+        if hit:
+            return hit
+        # ② 内置路径规则（安全底线）
+        hit = self._check_sensitive_path(name, arguments)
+        if hit:
+            return hit
+        return None
+
+    def _check_blacklist(self, name: str, arguments: dict) -> str | None:
+        """黑名单关键词匹配（子串 + 小写，对齐 shell 内置拦截风格）。"""
         keywords = self.blacklist.get(name, [])
         if not keywords:
             return None  # 该工具未配置规则 → 放行
@@ -55,11 +73,30 @@ class SecurityGuardPlugin:
                 )
         return None
 
+    def _check_sensitive_path(self, name: str, arguments: dict) -> str | None:
+        """内置路径规则：shell 命令中的路径 token 命中敏感路径 → 拦截。
+
+        修复真实对抗暴露的绕过（v0.4.10）：模型通过 type .git\\config 读取
+        敏感文件——path_security 只接入了 read_file，shell 没接。
+        token 化：去引号 + 空格拆分（安全优先，宁可误伤）。
+        """
+        if name != "shell":
+            return None
+        cmd = str(arguments.get("command", ""))
+        tokens = cmd.replace('"', "").split()
+        for token in tokens:
+            if is_sensitive_path(token):
+                return (
+                    f"[安全拦截] shell 命令包含敏感路径: '{token}'，"
+                    f"已拒绝执行"
+                )
+        return None
+
 
 # 自注册：安全底线类插件默认开（零规则 = 行为不变，配置后生效）
 register_plugin(
     name="security_guard",
     factory=SecurityGuardPlugin,
-    description="安全审核（黑名单拦截，plugins.toml 配置）",
+    description="安全审核（黑名单拦截+敏感路径拦截，plugins.toml 配置）",
     default_enabled=True,
 )

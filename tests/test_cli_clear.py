@@ -96,5 +96,10 @@ def test_clear_then_continue_chat() -> None:
     agent, client = run_cli_with_inputs(["第一轮", "clear", "第二轮", "exit"])
     # 两轮真实对话 × 流式单调用（v0.4.6 起每轮 1 次）= 2
     assert client.chat_count == 2
-    # 第二轮后历史: system + user + assistant = 3 条（新会话，不含第一轮）
-    assert len(agent.history) == 3
+    # 第二轮后历史: 环境信息 + system + user + assistant = 4 条
+    # （env_info 插件 v0.4.11 默认启用，clear 后幂等重注入）
+    assert len(agent.history) == 4
+    # 环境消息在最前，其后是干净的对话历史
+    assert agent.history[0]["content"].startswith("[环境信息]")
+    assert agent.history[1] == {"role": "system", "content": "你是一个有用的助手。"}
+    assert agent.history[2] == {"role": "user", "content": "第二轮"}
