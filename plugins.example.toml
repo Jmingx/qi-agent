@@ -24,3 +24,9 @@ shell = ["git push", "mkfs", "dd "]
 # 环境信息：向模型注入运行环境（OS/shell/可用命令），默认开
 [env_info]
 enabled = true
+
+# 审批交互：危险命令（rm/shutdown/git push 等）弹窗确认（y/n/a=总是允许）
+# 默认开（CLI 主场景）；评测/无交互环境自动拒绝（fail-closed，无需改动）
+# 注意：红线（读 .env 等）永远硬拒，不走审批
+[approval_gate]
+enabled = true

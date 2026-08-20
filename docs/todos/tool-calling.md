@@ -26,7 +26,7 @@
 | 状态 | 条目 | 价值 | 难度 | 说明 |
 |------|------|------|------|------|
 | ✅ | **path_security：路径安全** | P0 | ⭐⭐ | read_file 等工具禁止读取敏感路径：.env、.git/、__pycache__、node_modules、密钥文件（参考 Hermes tools/path_security.py）。**完成：v0.4.3** |
-| ⬜ | **shell 权限模型升级 + 审批机制** | P0 | ⭐⭐⭐ | 从"只读白名单"升级为**三档决策**：①自动放行（只读白名单）②需审批（危险命令弹窗让用户确认，如 shutdown/rm——**不直接拒绝，给用户选择权**）③硬拒绝（红线：读 .env 等）。工具返回 NEED_APPROVAL 标记，CLI 层负责弹窗（分层：工具管执行，界面管交互）。参考 Hermes approval.py |
+| ✅ | **shell 权限模型升级 + 审批机制** | P0 | ⭐⭐⭐ | 三档决策：①自动放行（只读白名单）②需审批（危险命令弹窗 y/n/a=总是允许，approval_gate 插件+agent/tool-approval 事件点，fail-closed 无监听器拒绝）③硬拒绝（红线不进审批）。approved 内部参数防绕过（schema 不可见+调用级 internal）。**完成：v0.4.18** |
 | ⬜ | **命令执行超时与并发控制** | P1 | ⭐⭐ | shell/run_python 统一超时（现有 10s）+ 并发限制（防止 agent 同时发起大量子进程） |
 | ⬜ | **LLM 调用超时** | P1 | ⭐⭐⭐ | LLMClient 加请求超时（openai SDK timeout，如 60s）——根治评测超时后线程残留（wait_for 无法终止线程，asyncio.run join 卡 300s 的 RuntimeWarning）。联动"命令执行超时与并发控制" TODO |
 | ⬜ | **沙箱降级需用户审核（联动 shell 三档权限）** | P1 | ⭐⭐⭐ | 软沙箱 v2 的 legacy 降级模式（QI_SANDBOX_MODE）当前是"环境变量显式开关"——**过渡方案**。将来 shell 三档权限+审批机制落地后，降级操作应走用户审核（弹窗确认"确认降级沙箱安全等级？"），环境变量开关退役（代码注释已标注） |
