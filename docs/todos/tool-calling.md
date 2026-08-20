@@ -14,7 +14,7 @@
 |------|------|------|------|------|
 | ✅ | **软沙箱：run_python 工具（v1）** | P0 | ⭐⭐ | `run_python(code)`：子进程执行 + 静态白名单（禁止 import os/sys/subprocess）+ 10s 超时 + 干净环境。参考 principles 沙箱三件套。**完成：v0.4.2** |
 | ✅ | **软沙箱升级（v2）：RestrictedPython** | P1 | ⭐⭐⭐ | 用 Python 官方受限执行库（解释器层拦截 import/属性访问，防 `().__class__...` 逃逸），替代手写白名单。纯 Python 无重依赖——**轻量但认真**的沙箱。**完成：v0.4.13**（受限执行器+模式开关+内建集/模块白名单配置化） |
-| ⬜ | **软沙箱升级（v3）：资源限制** | P1 | ⭐⭐⭐ | 内存限制（psutil 监控）、输出字节上限、错误隔离（崩溃不影响主进程） |
+| ✅ | **软沙箱升级（v3）：资源限制** | P1 | ⭐⭐⭐ | 内存限制（psutil 轮询，双阈值 192/256MB + 进程树 RSS）、输出字节上限（已有）、错误隔离（已有）。Popen 轮询 + drain 线程防死锁。**完成：v0.4.17** |
 | ✅ | **进程沙箱：干净环境变量（v1.1 升级）** | P0 | ⭐⭐ | 双重过滤：①密钥名子串拦截（KEY/TOKEN/SECRET/PASSWORD/AUTH 等，无论前缀都丢）②安全名单保留。对齐 Hermes _scrub_child_env（参考 Hermes code_execution _scrub_child_env，三道规则）。**完成：v0.4.12** |
 | ✅ | **进程沙箱：工作目录隔离** | P1 | ⭐⭐ | 临时目录（tempfile.mkdtemp）执行——cwd=临时目录，脚本碰不到项目文件。restricted 纵深 + legacy 真实防线（拼接绕过写文件只能写临时目录）。**完成：v0.4.16** |
 | ⬜ | **Windows 原生隔离（Job Objects）** | P2 | ⭐⭐⭐ | Windows Job Objects / AppContainer 限制子进程内存/CPU/句柄——轻量的系统级资源限制，无需 Docker |
