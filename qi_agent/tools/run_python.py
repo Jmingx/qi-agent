@@ -18,6 +18,7 @@ v2 已解决（受限环境无 import 能力）。
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from qi_agent.tools.registry import register
@@ -110,32 +111,36 @@ def run_python(code: str) -> str:
     if blocked:
         return f"[安全拦截] {blocked}"
 
-    # 2+3+4. 子进程执行 + 时间锁 + 安全锁
+    # 2+3+4+5. 临时工作目录 + 子进程执行 + 时间锁 + 安全锁
     # restricted：受限执行器（v2 主防线）；legacy：完整 Python（过渡降级）
-    if _SANDBOX_MODE == "legacy":
-        cmd = [sys.executable, "-X", "utf8", "-c", code]
-        input_data = None
-    else:
-        cmd = [sys.executable, "-X", "utf8", _SANDBOX_RUNNER_PATH]
-        input_data = code  # 用户代码走 stdin（避免命令行长度/转义问题）
+    # 隔离锁升级（v0.4.16）：cwd=临时目录——沙箱代码的相对路径操作
+    # 全部落在临时目录，物理上碰不到项目文件（legacy 拼接绕过的真实防线）
     try:
-        # -X utf8：强制子进程 UTF-8 模式（PEP 540），输出统一 UTF-8——
-        # 否则子进程按系统 locale（Windows=GBK）编码 stdout，emoji 等会编码失败
-        result = subprocess.run(
-            cmd,
-            input=input_data,
-            capture_output=True,
-            text=True,
-            # 与 shell 同款编码处理：明确 UTF-8 解码 + 容错替换
-            encoding="utf-8",
-            errors="replace",
-            timeout=_TIMEOUT_SECONDS,
-            env=_build_safe_env(),
-        )
-        output = result.stdout or result.stderr or "(无输出)"
-        if len(output) > _MAX_OUTPUT_CHARS:
-            return output[:_MAX_OUTPUT_CHARS] + "\n...[输出已截断]"
-        return output
+        with tempfile.TemporaryDirectory(prefix="qi_sandbox_") as tmpdir:
+            if _SANDBOX_MODE == "legacy":
+                cmd = [sys.executable, "-X", "utf8", "-c", code]
+                input_data = None
+            else:
+                cmd = [sys.executable, "-X", "utf8", _SANDBOX_RUNNER_PATH]
+                input_data = code  # 用户代码走 stdin（避免命令行长度/转义问题）
+            # -X utf8：强制子进程 UTF-8 模式（PEP 540），输出统一 UTF-8——
+            # 否则子进程按系统 locale（Windows=GBK）编码 stdout，emoji 等会编码失败
+            result = subprocess.run(
+                cmd,
+                input=input_data,
+                capture_output=True,
+                text=True,
+                # 与 shell 同款编码处理：明确 UTF-8 解码 + 容错替换
+                encoding="utf-8",
+                errors="replace",
+                timeout=_TIMEOUT_SECONDS,
+                env=_build_safe_env(),
+                cwd=tmpdir,  # 隔离锁：临时工作目录
+            )
+            output = result.stdout or result.stderr or "(无输出)"
+            if len(output) > _MAX_OUTPUT_CHARS:
+                return output[:_MAX_OUTPUT_CHARS] + "\n...[输出已截断]"
+            return output
     except subprocess.TimeoutExpired:
         return f"[错误] 代码执行超时（{_TIMEOUT_SECONDS}秒）"
     except OSError as exc:

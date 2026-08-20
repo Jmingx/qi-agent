@@ -1,5 +1,10 @@
 """run_python 软沙箱测试：四锁设计验证（权限/隔离/时间/安全锁）。"""
 
+import os
+
+import pytest
+
+from qi_agent.tools.registry import _TOOL_REGISTRY
 from qi_agent.tools.run_python import run_python
 
 
@@ -181,3 +186,91 @@ def test_env_defense_in_depth(monkeypatch) -> None:
     env = rp._build_safe_env()
     # 第一道防线（密钥子串拦截）仍然拦住——这就是防御纵深
     assert "DEEPSEEK_API_KEY" not in env
+
+
+# ── 工作目录隔离（方案 v0.4.16：临时目录执行，碰不到项目文件）───────────────
+
+
+def _reload_rp(monkeypatch, **env) -> None:
+    """清理注册表 + 设置环境变量 + 重载 run_python 模块。"""
+    import importlib
+
+    import qi_agent.tools.run_python as rp
+
+    _TOOL_REGISTRY.pop("run_python", None)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    importlib.reload(rp)
+    return rp
+
+
+@pytest.fixture(autouse=True)
+def _restore_rp_default(monkeypatch):
+    """测试结束后恢复默认 restricted 模式（避免污染其他测试）。"""
+    yield
+    _TOOL_REGISTRY.pop("run_python", None)
+    monkeypatch.delenv("QI_SANDBOX_MODE", raising=False)
+    import importlib
+
+    import qi_agent.tools.run_python as rp
+
+    importlib.reload(rp)
+
+
+def test_cwd_isolated_legacy_write(monkeypatch) -> None:
+    """legacy 模式拼接绕过写文件 → 项目根【没有】probe 文件（隔离证据）。
+
+    v1 预检拦不住 getattr 拼接（清单无 getattr，且不含 "open(" 子串），
+    legacy 完整 Python 会真执行 open——但 cwd 已是临时目录，
+    文件写在临时目录而非项目根。
+    """
+    rp = _reload_rp(monkeypatch, QI_SANDBOX_MODE="legacy")
+    probe = "probe_iso_write.txt"
+    code = (
+        "f = getattr(__builtins__, 'op' + 'en')"
+        f"('{probe}', 'w'); f.write('x'); f.close()"
+    )
+    rp.run_python(code)
+    try:
+        assert not os.path.exists(probe), "隔离失效：文件写到了项目根！"
+    finally:
+        # 清理（若隔离失效导致残留，不能污染项目）
+        if os.path.exists(probe):
+            os.unlink(probe)
+
+
+def test_cwd_isolated_legacy_read(monkeypatch) -> None:
+    """legacy 拼接读项目文件 → 读不到（临时目录无该文件）。
+
+    用 pyproject.toml（项目根真实存在）——未隔离时能读到内容，
+    隔离后临时目录没有它 → FileNotFoundError。
+    """
+    rp = _reload_rp(monkeypatch, QI_SANDBOX_MODE="legacy")
+    code = (
+        "f = getattr(__builtins__, 'op' + 'en')('pyproject.toml'); "
+        "print(f.read()); f.close()"
+    )
+    result = rp.run_python(code)
+    assert "FileNotFoundError" in result  # 临时目录没有 pyproject.toml
+
+
+def test_normal_code_unaffected() -> None:
+    """正常计算不受 cwd 隔离影响（回归，默认 restricted 模式）。"""
+    result = run_python("print(1 + 1)")
+    assert "2" in result
+
+
+def test_tmpdir_cleaned() -> None:
+    """执行后临时目录不残留（TemporaryDirectory 自动清理）。"""
+    import glob
+
+    import tempfile
+
+    before = set(glob.glob(
+        os.path.join(tempfile.gettempdir(), "qi_sandbox_*")
+    ))
+    run_python("print(42)")
+    after = set(glob.glob(
+        os.path.join(tempfile.gettempdir(), "qi_sandbox_*")
+    ))
+    assert before == after  # 无新增残留目录
