@@ -16,7 +16,7 @@
 | ✅ | **软沙箱升级（v2）：RestrictedPython** | P1 | ⭐⭐⭐ | 用 Python 官方受限执行库（解释器层拦截 import/属性访问，防 `().__class__...` 逃逸），替代手写白名单。纯 Python 无重依赖——**轻量但认真**的沙箱。**完成：v0.4.13**（受限执行器+模式开关+内建集/模块白名单配置化） |
 | ⬜ | **软沙箱升级（v3）：资源限制** | P1 | ⭐⭐⭐ | 内存限制（psutil 监控）、输出字节上限、错误隔离（崩溃不影响主进程） |
 | ✅ | **进程沙箱：干净环境变量（v1.1 升级）** | P0 | ⭐⭐ | 双重过滤：①密钥名子串拦截（KEY/TOKEN/SECRET/PASSWORD/AUTH 等，无论前缀都丢）②安全名单保留。对齐 Hermes _scrub_child_env（参考 Hermes code_execution _scrub_child_env，三道规则）。**完成：v0.4.12** |
-| ⬜ | **进程沙箱：工作目录隔离** | P1 | ⭐⭐ | 在临时目录（tempfile.mkdtemp）执行，脚本碰不到项目文件 |
+| ✅ | **进程沙箱：工作目录隔离** | P1 | ⭐⭐ | 临时目录（tempfile.mkdtemp）执行——cwd=临时目录，脚本碰不到项目文件。restricted 纵深 + legacy 真实防线（拼接绕过写文件只能写临时目录）。**完成：v0.4.16** |
 | ⬜ | **Windows 原生隔离（Job Objects）** | P2 | ⭐⭐⭐ | Windows Job Objects / AppContainer 限制子进程内存/CPU/句柄——轻量的系统级资源限制，无需 Docker |
 | ⬜ | **容器沙箱：Docker 后端（远期可选）** | P2 | ⭐⭐⭐⭐ | **注意：依赖 Docker 较重**（WSL2 虚拟机、秒级启动、镜像管理）。做成"检测到 Docker 才启用，无则自动降级进程沙箱"。仅当未来需要跑**不可信代码**（RL 评测/第三方脚本/多租户）时才值得——单用户本地 agent 软沙箱已覆盖 95% 需求（参考 Hermes environments/docker.py） |
 | ⬜ | **远程沙箱：远程执行后端（远期）** | P2 | ⭐⭐⭐⭐⭐ | SSH/Modal 等远程执行（参考 Hermes environments/ssh.py、modal.py）——先留接口，不急于实现 |
