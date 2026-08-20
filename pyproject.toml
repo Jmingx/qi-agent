@@ -9,6 +9,7 @@ description = "从零构建的类 Hermes AI Agent（练手项目）"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.40",
+    "psutil>=7.2.2",
     "python-dotenv>=1.0",
     "restrictedpython>=8.5",
 ]

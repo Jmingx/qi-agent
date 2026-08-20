@@ -19,7 +19,11 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
+
+import psutil
 
 from qi_agent.tools.registry import register
 
@@ -64,6 +68,44 @@ _SANDBOX_CONFIG_PREFIX = "QI_SANDBOX_"
 _MAX_OUTPUT_CHARS = 2000
 _TIMEOUT_SECONDS = 10
 
+# 内存锁配置（v0.4.17，双阈值 + 宽限——"允许短暂冲高防误杀"的实现）：
+_MEMORY_SOFT_MB = 192    # 软阈值：持续超限开始计时（允许短暂冲高）
+_MEMORY_HARD_MB = 256    # 硬阈值：立即 kill（失控底线，不可商量）
+_MEMORY_GRACE_SEC = 2.0  # 软阈值宽限：持续超 192MB 达 2s 才 kill
+_POLL_INTERVAL = 0.5     # 轮询间隔（秒）
+
+
+def _tree_rss_mb(pid: int) -> float:
+    """进程树 RSS 总和（MB）。
+
+    关键：Windows venv 的 python.exe 是【重定向启动器】——proc.pid 是
+    launcher（~4MB），真实解释器是它的子进程（实测 append 炸弹 469MB）。
+    只查主进程会漏检内存炸弹——必须递归求和。
+    """
+    try:
+        p = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return 0.0
+    total = p.memory_info().rss
+    for child in p.children(recursive=True):
+        total += child.memory_info().rss
+    return total / 1024 / 1024
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """连子进程树一起杀（Windows 防残留）。
+
+    进程树：legacy 模式完整 Python 可能再 spawn 子进程——recursive 全杀，
+    否则 kill 父进程后子进程残留。
+    """
+    try:
+        p = psutil.Process(proc.pid)
+        for child in p.children(recursive=True):
+            child.kill()
+        p.kill()
+    except psutil.NoSuchProcess:
+        pass  # 进程已退出（无需杀）
+
 
 def _build_safe_env() -> dict:
     """双重过滤构建沙箱环境（对齐 Hermes _scrub_child_env 第 ② 条，先黑后白）。
@@ -97,6 +139,93 @@ def _check_code(code: str) -> str | None:
     return None
 
 
+def _run_with_limits(cmd: list[str], input_data: str | None, env: dict,
+                     cwd: str) -> str:
+    """Popen + 轮询循环执行：时间锁（10s）+ 内存锁（双阈值，v0.4.17）。
+
+    内存锁语义（防误杀）：
+    - 超过硬阈值 256MB → 立即 kill（失控：暴涨/泄漏，不可商量）
+    - 超过软阈值 192MB 且持续 2s → kill（缓慢增长）
+    - 瞬时冲高后回落（<2s）→ 不杀（正常任务峰值）
+
+    Args:
+        cmd: 子进程命令
+        input_data: stdin 内容（None = 不传）
+        env: 沙箱环境（双重过滤后）
+        cwd: 工作目录（临时目录）
+
+    Returns:
+        执行输出（截断后），或超时/内存超限提示
+    """
+    proc = subprocess.Popen(
+        cmd, env=env, cwd=cwd,
+        stdin=subprocess.PIPE,  # 受限模式写用户代码；不传则关闭（EOF）
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace",
+    )
+    # 写入 stdin（受限模式用户代码）——量小（KB 级），管道缓冲足够，不阻塞
+    if input_data is not None:
+        proc.stdin.write(input_data)
+        proc.stdin.close()
+    # drain 线程：持续读 stdout/stderr——防止管道缓冲区满（64KB）导致
+    # 子进程阻塞在 write 而父进程轮询等退出（经典 Popen 死锁坑）
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    def _drain(stream, chunks: list[str]) -> None:
+        for line in stream:
+            chunks.append(line)
+
+    t_out = threading.Thread(
+        target=_drain, args=(proc.stdout, stdout_chunks), daemon=True
+    )
+    t_err = threading.Thread(
+        target=_drain, args=(proc.stderr, stderr_chunks), daemon=True
+    )
+    t_out.start()
+    t_err.start()
+    start = time.monotonic()
+    over_soft_since: float | None = None  # 超过软阈值的起始时刻（回落复位）
+    while proc.poll() is None:
+        # ① 时间锁：超时 → kill 进程树
+        if time.monotonic() - start > _TIMEOUT_SECONDS:
+            _kill_process_tree(proc)
+            return f"[错误] 代码执行超时（{_TIMEOUT_SECONDS}秒）"
+        # ② 内存锁：双阈值判定（进程树 RSS 总和——venv launcher 陷阱）
+        mem_mb = _tree_rss_mb(proc.pid)
+        if mem_mb <= 0.0:
+            break  # 进程已退出（NoSuchProcess）
+        if mem_mb > _MEMORY_HARD_MB:
+            # 硬阈值：失控 → 立即 kill
+            _kill_process_tree(proc)
+            return (
+                f"[安全拦截] 内存超限（>{_MEMORY_HARD_MB}MB），"
+                f"已终止执行"
+            )
+        if mem_mb > _MEMORY_SOFT_MB:
+            # 软阈值：开始/持续计时
+            if over_soft_since is None:
+                over_soft_since = time.monotonic()
+            elif time.monotonic() - over_soft_since > _MEMORY_GRACE_SEC:
+                _kill_process_tree(proc)
+                return (
+                    f"[安全拦截] 内存持续超限（>{_MEMORY_SOFT_MB}MB "
+                    f"超过{_MEMORY_GRACE_SEC}s），已终止执行"
+                )
+        else:
+            over_soft_since = None  # 回落：复位计时（瞬时峰值放行）
+        time.sleep(_POLL_INTERVAL)
+    # 进程结束：等 drain 线程读到 EOF（输出已全部收完）
+    t_out.join(timeout=1.0)
+    t_err.join(timeout=1.0)
+    stdout = "".join(stdout_chunks)
+    stderr = "".join(stderr_chunks)
+    output = stdout or stderr or "(无输出)"
+    if len(output) > _MAX_OUTPUT_CHARS:
+        return output[:_MAX_OUTPUT_CHARS] + "\n...[输出已截断]"
+    return output
+
+
 def run_python(code: str) -> str:
     """在软沙箱中执行 Python 代码并返回输出。
 
@@ -111,10 +240,10 @@ def run_python(code: str) -> str:
     if blocked:
         return f"[安全拦截] {blocked}"
 
-    # 2+3+4+5. 临时工作目录 + 子进程执行 + 时间锁 + 安全锁
+    # 2+3+4+5. 临时工作目录 + 子进程执行 + 时间锁 + 安全锁 + 内存锁
     # restricted：受限执行器（v2 主防线）；legacy：完整 Python（过渡降级）
-    # 隔离锁升级（v0.4.16）：cwd=临时目录——沙箱代码的相对路径操作
-    # 全部落在临时目录，物理上碰不到项目文件（legacy 拼接绕过的真实防线）
+    # 隔离锁（v0.4.16）：cwd=临时目录——碰不到项目文件
+    # 内存锁（v0.4.17）：Popen 轮询双阈值（_run_with_limits 内）
     try:
         with tempfile.TemporaryDirectory(prefix="qi_sandbox_") as tmpdir:
             if _SANDBOX_MODE == "legacy":
@@ -123,26 +252,9 @@ def run_python(code: str) -> str:
             else:
                 cmd = [sys.executable, "-X", "utf8", _SANDBOX_RUNNER_PATH]
                 input_data = code  # 用户代码走 stdin（避免命令行长度/转义问题）
-            # -X utf8：强制子进程 UTF-8 模式（PEP 540），输出统一 UTF-8——
-            # 否则子进程按系统 locale（Windows=GBK）编码 stdout，emoji 等会编码失败
-            result = subprocess.run(
-                cmd,
-                input=input_data,
-                capture_output=True,
-                text=True,
-                # 与 shell 同款编码处理：明确 UTF-8 解码 + 容错替换
-                encoding="utf-8",
-                errors="replace",
-                timeout=_TIMEOUT_SECONDS,
-                env=_build_safe_env(),
-                cwd=tmpdir,  # 隔离锁：临时工作目录
+            return _run_with_limits(
+                cmd, input_data, env=_build_safe_env(), cwd=tmpdir
             )
-            output = result.stdout or result.stderr or "(无输出)"
-            if len(output) > _MAX_OUTPUT_CHARS:
-                return output[:_MAX_OUTPUT_CHARS] + "\n...[输出已截断]"
-            return output
-    except subprocess.TimeoutExpired:
-        return f"[错误] 代码执行超时（{_TIMEOUT_SECONDS}秒）"
     except OSError as exc:
         return f"[错误] 执行失败: {exc}"
 

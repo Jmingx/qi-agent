@@ -274,3 +274,42 @@ def test_tmpdir_cleaned() -> None:
         os.path.join(tempfile.gettempdir(), "qi_sandbox_*")
     ))
     assert before == after  # 无新增残留目录
+
+
+# ── v3 资源限制（方案 v0.4.17：psutil 内存锁，双阈值）────────────────────────
+
+
+def test_memory_bomb_killed() -> None:
+    """内存炸弹（持续增长型）应被内存锁 kill（v3 核心）。
+
+    持续增长 + 持续访问（while True: x.append(0)）：真实炸弹模式——
+    注意"分配后闲置"（sleep/死循环不访问）会被 Windows 工作集 trim，
+    psutil 的 rss（工作集）暴跌检测不到（方案已知局限）；增长型必然触发。
+    """
+    result = run_python("x = []\nwhile True:\n    x.append(0)")
+    assert "内存超限" in result  # 硬阈值或持续超限提示
+
+
+def test_memory_normal_ok() -> None:
+    """正常计算（小列表）不触发内存锁（不误杀）。"""
+    result = run_python("x = [i * 2 for i in range(10000)]\nprint(len(x))")
+    assert "10000" in result
+
+
+def test_kill_process_tree() -> None:
+    """_kill_process_tree 应终止子进程（含进程树，Windows 防残留）。"""
+    import subprocess
+    import sys
+
+    from qi_agent.tools.run_python import _kill_process_tree
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"]
+    )
+    try:
+        _kill_process_tree(proc)
+        proc.wait(timeout=5)  # Windows kill 异步——等待确认退出
+        assert proc.poll() is not None  # 已终止
+    finally:
+        if proc.poll() is None:
+            proc.kill()
