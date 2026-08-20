@@ -182,8 +182,17 @@ def get_tools_by_toolset(toolset: str) -> list[str]:
     return [entry.name for entry in _TOOL_REGISTRY.values() if entry.toolset == toolset]
 
 
-def validate_arguments(schema: dict, arguments: dict) -> str | None:
+def validate_arguments(schema: dict, arguments: dict,
+                       internal: set[str] | None = None) -> str | None:
     """校验工具参数（执行前），返回 None=通过，否则返回可行动的错误信息。
+
+    Args:
+        schema: 工具 schema（模型可见）
+        arguments: 待校验参数
+        internal: 本次调用中【agent 内部注入】的参数名集合（模型路径不传）——
+            这些参数跳过校验（schema 未声明也不报错）。
+            防绕过关键（v0.4.18）：模型直接传 approved 时 internal=None →
+            approved 是多余参数 → 拒绝；只有 agent 审批路径显式传入 internal。
 
     校验项（方案 docs/plans/2026-08-17-参数校验方案.md）：
     1. 必填检查：schema.required 中缺失的参数
@@ -198,15 +207,18 @@ def validate_arguments(schema: dict, arguments: dict) -> str | None:
     params = func["parameters"]
     properties = params.get("properties", {})
     required = params.get("required", [])
+    internal = internal or set()  # 本次调用的内部注入参数（agent 审批等）
 
     # 1. 必填检查：缺失的参数逐个列出
     missing = [r for r in required if r not in arguments]
     if missing:
         return f"缺少必填参数: {', '.join(missing)}"
 
-    # 2. 类型检查 + 3. 多余参数
+    # 2. 类型检查 + 3. 多余参数（internal 放行——agent 内部注入，模型 schema 不可见）
     type_map = {"string": str, "integer": int, "number": (int, float), "boolean": bool}
     for name, value in arguments.items():
+        if name in internal:
+            continue  # 内部参数（agent 注入）跳过校验
         if name not in properties:
             return f"未知参数: {name}（可用参数: {', '.join(properties)}）"
         expected = properties[name].get("type")
@@ -219,7 +231,8 @@ def validate_arguments(schema: dict, arguments: dict) -> str | None:
     return None
 
 
-def execute_tool(name: str, arguments: dict) -> str:
+def execute_tool(name: str, arguments: dict,
+                 internal: set[str] | None = None) -> str:
     """按名字执行工具，返回字符串结果。
 
     未知工具/执行异常都返回错误提示字符串，不抛出异常——
@@ -227,13 +240,18 @@ def execute_tool(name: str, arguments: dict) -> str:
 
     参数校验（执行前）：失败返回 [参数错误] 前缀的可行动错误，
     让模型区分"我传参错了"（可修正重试）vs"工具本身失败"（换工具/放弃）。
+
+    Args:
+        name: 工具名
+        arguments: 参数
+        internal: agent 内部注入参数名集合（审批等；模型路径不传）
     """
     entry = _TOOL_REGISTRY.get(name)
     if entry is None:
         return f"[工具错误] 未知工具: {name}"
 
     # 参数校验（执行前，返回可行动错误）
-    error = validate_arguments(entry.schema, arguments)
+    error = validate_arguments(entry.schema, arguments, internal)
     if error:
         return f"[参数错误] {error}"
 

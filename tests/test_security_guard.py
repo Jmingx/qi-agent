@@ -109,6 +109,40 @@ def test_plugin_intercepts_in_loop() -> None:
     assert "git push" in tool_msg["content"]
 
 
+# ── 三档判定（方案 v0.4.18：白名单放行 / 危险→NEED_APPROVAL / 红线硬拒）─────
+
+
+def test_approval_prefix_classified() -> None:
+    """危险命令（git push/rm 等）→ NEED_APPROVAL 标记（新档）。"""
+    plugin = SecurityGuardPlugin()
+    result = plugin._on_tool_call("shell", {"command": "git push origin main"})
+    assert result == "NEED_APPROVAL:git push origin main"
+    result = plugin._on_tool_call("shell", {"command": "rm -rf /tmp/x"})
+    assert result.startswith("NEED_APPROVAL:")
+
+
+def test_readonly_still_auto() -> None:
+    """只读命令（dir/echo/whoami）→ None（放行，不产生审批）。"""
+    plugin = SecurityGuardPlugin()
+    assert plugin._on_tool_call("shell", {"command": "dir"}) is None
+    assert plugin._on_tool_call("shell", {"command": "echo hello"}) is None
+    assert plugin._on_tool_call("shell", {"command": "whoami"}) is None
+
+
+def test_redline_not_approvable() -> None:
+    """红线（敏感路径）→ [安全拦截]，不产生 NEED_APPROVAL。"""
+    plugin = SecurityGuardPlugin()
+    # .env 读取（敏感路径规则）→ 硬拒（不是审批档）
+    result = plugin._on_tool_call("shell", {"command": "type .env"})
+    assert result.startswith("[安全拦截]")
+    assert not result.startswith("NEED_APPROVAL")
+    # 管道/重定向 → security_guard 放行（None）——那是 shell 工具层
+    # 危险关键词的职责（test_shell_unapproved_still_blocked 覆盖），
+    # 审批档判定只负责"危险但可审"的命令
+    result = plugin._on_tool_call("shell", {"command": "dir | findstr x"})
+    assert result is None
+
+
 # ── 路径规则（方案 v0.4.11：内置安全底线，修复 .git 绕过漏洞）──────────────
 
 

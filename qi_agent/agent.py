@@ -103,12 +103,34 @@ class Agent:
                         turn=self._turn,
                         step=step,
                     )
+                    # 审批档（v0.4.18）：security_guard 返回 NEED_APPROVAL:命令
+                    # → 发审批事件（bail）→ 插件同意(True)才执行；无监听器/拒绝 → 拦截
+                    if isinstance(decision, str) and decision.startswith("NEED_APPROVAL:"):
+                        command = decision.split(":", 1)[1]
+                        approved = self.events.bail(
+                            "agent/tool-approval",
+                            name=call.name,
+                            arguments=call.arguments,
+                            command=command,
+                            turn=self._turn,
+                            step=step,
+                        )
+                        if approved is True:
+                            # 内部注入 approved（模型 schema 不可见，防绕过）——
+                            # execute_tool 显式声明 internal，校验才放行
+                            call.arguments["approved"] = True
+                            decision = None  # 放行执行
+                        else:
+                            decision = f"[审批拒绝] 用户不同意执行: {command}"
                     if decision is not None:
                         output = str(decision)
                         duration = 0.0
                     else:
                         start = time.perf_counter()
-                        output = execute_tool(call.name, call.arguments)
+                        output = execute_tool(
+                            call.name, call.arguments,
+                            internal={"approved"} if "approved" in call.arguments else None,
+                        )
                         duration = time.perf_counter() - start
                     # 事件点：tool-result（广播，统计/审计用）
                     self.events.emit(

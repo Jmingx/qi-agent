@@ -18,6 +18,14 @@ _ARG_PARAM_MAP = {
     "read_file": "path",
 }
 
+# 需审批档：危险但可审的命令前缀（三档中的②——Claude Code ask 借鉴）
+# 命中 → NEED_APPROVAL 标记 → agent 发审批事件 → approval_gate 弹窗
+_APPROVAL_PREFIXES = (
+    "rm ", "rmdir ", "shutdown", "reboot", "git push", "git reset --hard",
+    "git checkout --", "del ", "rd ", "format ", "taskkill",
+    "net user", "reg delete", "start ",
+)
+
 
 class SecurityGuardPlugin:
     """安全审核插件：黑名单命中返回拦截提示，否则放行（None）。
@@ -37,23 +45,31 @@ class SecurityGuardPlugin:
         bus.on("agent/tool-call", self._on_tool_call, priority=200)
 
     def _on_tool_call(self, name: str, arguments: dict, **_) -> str | None:
-        """审核一次工具调用：命中任一规则返回拦截提示，否则 None（放行）。
+        """审核一次工具调用：三档判定（v0.4.18）。
 
         Args:
             name: 工具名（如 shell）
             arguments: 模型传入的参数（如 {"command": "..."}）
 
         Returns:
-            拦截提示（[安全拦截] 前缀，回填给模型）；放行时返回 None
+            - [安全拦截] 前缀：红线硬拒（回填模型）
+            - NEED_APPROVAL:<命令>：需审批档（agent 发审批事件）
+            - None：放行（白名单命令或非 shell 工具）
         """
-        # ① 用户配置黑名单（关键词）
+        # ③ 红线优先：黑名单 + 路径规则 → 硬拒（不可审批，业界共识）
         hit = self._check_blacklist(name, arguments)
         if hit:
             return hit
-        # ② 内置路径规则（安全底线）
         hit = self._check_sensitive_path(name, arguments)
         if hit:
             return hit
+        # ② 需审批档（仅 shell 命令）
+        if name == "shell":
+            command = str(arguments.get("command", ""))
+            lowered = command.lower().lstrip()
+            if any(lowered.startswith(p) for p in _APPROVAL_PREFIXES):
+                return f"NEED_APPROVAL:{command}"
+        # ① 放行（白名单命令由 shell 工具层执行）
         return None
 
     def _check_blacklist(self, name: str, arguments: dict) -> str | None:
