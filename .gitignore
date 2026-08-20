@@ -10,6 +10,9 @@ venv/
 # 插件配置（用户偏好，不进 git；模板 plugins.example.toml 进 git）
 plugins.toml
 
+# 评测产物（每次运行生成，不进 git）
+evaluation/last_report.json
+
 # IDE
 .idea/
 .vscode/
