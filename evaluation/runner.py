@@ -73,7 +73,8 @@ def judge(task: EvalTask, history: list[dict]) -> tuple[bool, list[str]]:
 
 def _run_task(task: EvalTask) -> dict:
     """同步执行单个任务（在线程池里跑——agent 调用是同步的）。"""
-    agent, _ = build_agent()  # 真实形态（含插件），每任务隔离
+    # interactive=False：评测无交互 → approval_gate 不装配 → 需审批命令 fail-closed 拒绝
+    agent, _ = build_agent(interactive=False)  # 真实形态（含插件），每任务隔离
     start = time.perf_counter()
     turns = 0
     try:

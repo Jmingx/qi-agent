@@ -29,12 +29,16 @@ def load_api_key() -> str:
     return api_key
 
 
-def build_agent(debug: bool = False, stats: bool = False) -> tuple[Agent, list]:
+def build_agent(debug: bool = False, stats: bool = False,
+                interactive: bool = True) -> tuple[Agent, list]:
     """构建 agent（真实形态）：LLM 客户端 + 插件装配（plugins.toml 配置驱动）。
 
     Args:
         debug: 注入 DebugLogger（CLI --debug）
         stats: 快捷启用 tool_stats（CLI --stats，向配置注入，不改配置文件）
+        interactive: 是否交互环境（CLI=True）——False（评测/自动化）时不装配
+            approval_gate 审批插件 → 需审批命令 fail-closed 拒绝。
+            不能靠 isatty 判断（CLI 终端跑评测 stdin 也是 tty，会真弹窗卡住）
 
     Returns:
         (agent, installed_plugins)——installed 供 CLI 会话结束打印 report()
@@ -47,5 +51,8 @@ def build_agent(debug: bool = False, stats: bool = False) -> tuple[Agent, list]:
     plugin_config = load_plugin_config()
     if stats:
         plugin_config["tool_stats"] = {"enabled": True}
+    if not interactive:
+        # 无交互环境（评测/自动化）：审批插件不装配 → fail-closed 拒绝
+        plugin_config["approval_gate"] = {"enabled": False}
     installed = load_plugins(agent.events, plugin_config)
     return agent, installed

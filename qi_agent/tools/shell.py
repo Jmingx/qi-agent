@@ -73,14 +73,21 @@ register(
     name="shell",
     toolset="builtin",
     handler=shell,
-    description="在 shell 中执行只读命令（如 pwd/ls/dir/echo/cat/type）",
+    description=(
+        "在 shell 中执行命令：只读命令（pwd/ls/dir/echo/cat/type 等）自动执行；"
+        "危险命令（rm/del/shutdown/git push 等）会弹出审批请求，用户同意后执行"
+    ),
     # 手写 schema：只暴露 command——approved 是内部参数（agent 审批注入），
     # 不进 schema → 模型看不到也传不了（传了会被参数校验拒为多余参数）
     schema={
         "type": "function",
         "function": {
             "name": "shell",
-            "description": "在 shell 中执行只读命令（如 pwd/ls/dir/echo/cat/type）",
+            "description": (
+                "在 shell 中执行命令：只读命令自动执行；危险命令（rm/del/"
+                "shutdown/git push 等）会弹出审批请求，用户同意后执行。"
+                "若命令被拒绝（[审批拒绝]），说明用户不同意，不要反复尝试"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
