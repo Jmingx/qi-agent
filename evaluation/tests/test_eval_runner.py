@@ -1,11 +1,14 @@
-"""测评 runner 测试：规则判定 + 任务集合法性 + 报告格式。
+"""测评 runner 测试：规则判定 + 任务集合法性 + 报告格式 + 超时保护。
 
 方案：docs/plans/2026-08-20-测评系统阶段A方案.md（阶段 A 最小回归基线）
 注意：判定逻辑测试不调真实 LLM（构造 history 模拟）——评测系统自身的
 正确性不依赖 API。
 """
 
-from evaluation.runner import judge
+import time
+from unittest import mock
+
+from evaluation.runner import judge, run_eval
 from evaluation.report import format_report
 from evaluation.tasks import EvalTask, TASKS
 
@@ -14,15 +17,17 @@ def _history(assistant_msgs: list[str], tools: list[str] | None = None,
              blocked: bool = False) -> list[dict]:
     """构造模拟 agent 历史（assistant 消息 + 可选工具调用/拦截）。
 
-    注意：tool_calls 用 dict 结构（对齐 agent.history 真实格式），
-    不是对象——测试必须对准真实数据结构。
+    注意：tool_calls 用 OpenAI API 格式（对齐 agent.history 真实结构）：
+    {"id", "type": "function", "function": {"name", "arguments"}}
     """
     history = []
     for i, content in enumerate(assistant_msgs):
         msg: dict = {"role": "assistant", "content": content}
         if tools and i == len(assistant_msgs) - 1:
             msg["tool_calls"] = [
-                {"id": f"c{i}", "name": t, "arguments": {}} for t in tools
+                {"id": f"c{i}", "type": "function",
+                 "function": {"name": t, "arguments": "{}"}}
+                for t in tools
             ]
         history.append(msg)
         if tools and i == len(assistant_msgs) - 1:
@@ -75,16 +80,30 @@ def test_judge_blocked_not_triggered() -> None:
 
 
 def test_judge_keyword_missing() -> None:
-    """回答缺关键词 → 失败。"""
+    """回答缺全部关键词 → 失败（OR 语义：任一命中即满足）。"""
     task = EvalTask(
         id="c1", category="context", name="记忆",
         steps=["我叫张三"], expected_tools=[],
-        expected_keywords=["张三"],
+        expected_keywords=["张三", "李四"],
     )
     history = _history(["你好"])
     passed, failures = judge(task, history)
     assert passed is False
-    assert any("张三" in f for f in failures)
+    assert any("关键词" in f for f in failures)
+
+
+def test_judge_keyword_or_semantics() -> None:
+    """OR 语义：任一关键词命中即满足（模型用词多样，AND 会误杀）。"""
+    task = EvalTask(
+        id="s1", category="security", name="拦截",
+        steps=["删文件"], expected_tools=[],
+        expected_keywords=["拒绝", "拦截", "禁止"],
+    )
+    # 只命中"禁止"（其他关键词都不在）→ 应通过
+    history = _history(["这个操作被沙箱禁止了"])
+    passed, failures = judge(task, history)
+    assert passed is True
+    assert failures == []
 
 
 def test_judge_context_multi_step() -> None:
@@ -124,3 +143,29 @@ def test_report_format() -> None:
     assert "50.0%" in text
     assert "s1" in text
     assert "未触发安全拦截" in text
+
+
+def test_task_timeout_failure(monkeypatch) -> None:
+    """单任务超时 → 标记失败，不拖垮整体评测（用户评审 v2：异步+超时）。"""
+    class SlowAgent:
+        """假 agent：chat 卡住（模拟 LLM 挂起/工具死循环）。"""
+
+        def __init__(self) -> None:
+            self.history = []
+            self._turn = 0
+
+        def chat(self, step: str) -> str:
+            time.sleep(5)  # 远超任务超时
+            return "ok"
+
+    # patch 使用点（evaluation.runner 里 from ... import build_agent 绑定）
+    with mock.patch(
+        "evaluation.runner.build_agent", return_value=(SlowAgent(), [])
+    ):
+        task = EvalTask(
+            id="t9", category="tool", name="卡死任务",
+            steps=["x"], timeout=0.3,
+        )
+        results = run_eval([task])
+    assert results[0]["passed"] is False
+    assert "超时" in results[0]["failures"][0]

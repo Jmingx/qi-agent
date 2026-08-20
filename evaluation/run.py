@@ -9,6 +9,11 @@ from evaluation.runner import run_eval
 
 def main() -> None:
     results = run_eval()
+    # 并发执行后按原顺序打印每任务结果
+    for r in results:
+        mark = "✅" if r["passed"] else "❌"
+        detail = "; ".join(r["failures"]) if r["failures"] else ""
+        print(f"[评测] {r['id']} {r['name']}: {mark} {detail}（{r['elapsed']}s）")
     report = format_report(results)
     print()
     print(report)
