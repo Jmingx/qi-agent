@@ -1,15 +1,22 @@
-"""测评 runner 测试：规则判定 + 任务集合法性 + 报告格式 + 超时保护。
+"""测评 runner 测试：规则判定 + 任务集合法性 + 报告格式 + 超时保护 + 基线对比。
 
-方案：docs/plans/2026-08-20-测评系统阶段A方案.md（阶段 A 最小回归基线）
+方案：docs/plans/2026-08-20-测评系统阶段A方案.md + 回归基线对比方案
 注意：判定逻辑测试不调真实 LLM（构造 history 模拟）——评测系统自身的
 正确性不依赖 API。
 """
 
+import json
 import time
 from unittest import mock
 
 from evaluation.runner import judge, run_eval
-from evaluation.report import format_report
+from evaluation.report import (
+    compare,
+    format_compare,
+    format_report,
+    load_report,
+    save_report,
+)
 from evaluation.tasks import EvalTask, TASKS
 
 
@@ -169,3 +176,100 @@ def test_task_timeout_failure(monkeypatch) -> None:
         results = run_eval([task])
     assert results[0]["passed"] is False
     assert "超时" in results[0]["failures"][0]
+
+
+# ── 回归基线对比（方案 v0.4.15）───────────────────────────────────────────
+
+
+def _result(id_: str, passed: bool) -> dict:
+    """构造单条评测结果。"""
+    return {"id": id_, "name": id_, "category": "tool",
+            "passed": passed, "failures": [], "turns": 1, "elapsed": 1.0}
+
+
+def test_compare_regression() -> None:
+    """本次❌上次✅ → regressions 含该任务 + delta 为负。"""
+    prev = [_result("t1", True), _result("t2", True)]
+    cur = [_result("t1", False), _result("t2", True)]
+    cmp = compare(prev, cur)
+    assert cmp["regressions"] == ["t1"]
+    assert cmp["delta_pct"] == -50.0
+
+
+def test_compare_improved() -> None:
+    """本次✅上次❌ → improved 含该任务 + delta 为正。"""
+    prev = [_result("t1", False)]
+    cur = [_result("t1", True)]
+    cmp = compare(prev, cur)
+    assert cmp["improved"] == ["t1"]
+    assert cmp["delta_pct"] == 100.0
+
+
+def test_compare_stable_and_added() -> None:
+    """相同→稳定（不进回归/改善）；新任务→added。"""
+    prev = [_result("t1", True)]
+    cur = [_result("t1", True), _result("t2", False)]
+    cmp = compare(prev, cur)
+    assert cmp["regressions"] == []
+    assert cmp["improved"] == []
+    assert cmp["added"] == ["t2"]
+
+
+def test_compare_delta_percent() -> None:
+    """通过率变化计算（15→14 = -6.2%，Python round 银行家舍入）。"""
+    prev = [_result(f"t{i}", True) for i in range(15)] + [_result("t16", False)]
+    cur = (
+        [_result(f"t{i}", True) for i in range(14)]
+        + [_result("t15", False), _result("t16", False)]
+    )
+    cmp = compare(prev, cur)
+    assert cmp["delta_pct"] == -6.2  # 6.25 银行家舍入为 6.2（round 语义）
+    assert cmp["prev_passed"] == 15
+    assert cmp["cur_passed"] == 14
+
+
+def test_format_compare_with_regression() -> None:
+    """回归时输出应含回归明细 + 告警提示。"""
+    cmp = {
+        "prev_passed": 15, "cur_passed": 14, "total": 16, "delta_pct": -6.3,
+        "regressions": ["s1"], "improved": ["e2"], "added": [],
+    }
+    text = format_compare("2026-08-20T21:58:00", cmp)
+    assert "s1" in text
+    assert "检测到回归" in text
+    assert "▼" in text
+
+
+def test_format_compare_clean() -> None:
+    """无回归 → '无回归'。"""
+    cmp = {
+        "prev_passed": 15, "cur_passed": 15, "total": 16, "delta_pct": 0.0,
+        "regressions": [], "improved": ["e2"], "added": [],
+    }
+    text = format_compare("2026-08-20T21:58:00", cmp)
+    assert "无回归" in text
+    assert "＝" in text
+
+
+def test_save_load_roundtrip(tmp_path, monkeypatch) -> None:
+    """save 后 load 一致（run_at + results）。"""
+    import evaluation.report as report_mod
+
+    monkeypatch.setattr(report_mod, "REPORT_JSON", tmp_path / "last_report.json")
+    results = [_result("t1", True)]
+    save_report(results)
+    run_at, loaded = load_report()
+    assert run_at is not None  # 时间戳已记录
+    assert loaded == results
+
+
+def test_load_legacy_format(tmp_path, monkeypatch) -> None:
+    """旧格式（纯 list，无 run_at）能读取（向后兼容）。"""
+    import evaluation.report as report_mod
+
+    p = tmp_path / "last_report.json"
+    p.write_text(json.dumps([_result("t1", True)]), encoding="utf-8")
+    monkeypatch.setattr(report_mod, "REPORT_JSON", p)
+    run_at, loaded = load_report()
+    assert run_at is None  # 旧格式无时间戳
+    assert loaded[0]["id"] == "t1"

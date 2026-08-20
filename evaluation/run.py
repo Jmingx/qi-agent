@@ -1,9 +1,15 @@
 """评测入口：uv run python -m evaluation.run
 
-跑固定任务集（真实 LLM + 真实装配），输出报告并保存 JSON 基线。
+跑固定任务集（真实 LLM + 真实装配），输出报告 + 自动对比上次基线（回归告警）。
 """
 
-from evaluation.report import format_report, save_report
+from evaluation.report import (
+    compare,
+    format_compare,
+    format_report,
+    load_report,
+    save_report,
+)
 from evaluation.runner import run_eval
 
 
@@ -19,7 +25,12 @@ def main() -> None:
     report = format_report(results)
     print()
     print(report, flush=True)
-    save_report(results)
+    # 回归基线对比：读上次 → 对比 → 打印（无上次则跳过）
+    prev_run_at, prev = load_report()
+    if prev:
+        print()
+        print(format_compare(prev_run_at, compare(prev, results)), flush=True)
+    save_report(results)  # 覆盖为本次（即新基线）
     print(f"\n报告已保存: {save_report.__globals__['REPORT_JSON']}", flush=True)
 
 
