@@ -6,15 +6,8 @@
 """
 
 import argparse
-import os
 
-from dotenv import load_dotenv
-
-from qi_agent.agent import Agent
-from qi_agent.debugger import DebugLogger
-from qi_agent.llm import LLMClient
-from qi_agent.plugins import load_plugins
-from qi_agent.plugins.config import load_plugin_config
+from qi_agent.agent_factory import build_agent
 from qi_agent.tools import get_time, read_file, run_python, shell  # noqa: F401  导入即注册内置工具
 
 # 退出命令集合
@@ -22,17 +15,6 @@ EXIT_COMMANDS = {"exit", "quit", "退出", "q"}
 
 # 清理上下文命令集合
 CLEAR_COMMANDS = {"clear"}
-
-def load_api_key() -> str:
-    """从 .env 加载 DeepSeek API key，缺失时给出明确报错。"""
-    load_dotenv()
-    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if not api_key:
-        raise SystemExit(
-            "未找到 DEEPSEEK_API_KEY。\n"
-            "请复制 .env.example 为 .env 并填入你的 DeepSeek API key。"
-        )
-    return api_key
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -47,17 +29,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--stats", action="store_true", help="会话结束打印工具调用统计")
     args = parser.parse_args(argv)
 
-    api_key = load_api_key()
-    # --debug 时注入 DebugLogger，否则不传（行为与之前完全一致）
-    logger = DebugLogger() if args.debug else None
-    agent = Agent(LLMClient(api_key), logger=logger)
-
-    # 插件装配（v0.4.9）：注册表 + 配置文件，加插件不再改这里
-    # --stats 是 tool_stats 的临时快捷开关：向配置注入启用，不改配置文件
-    plugin_config = load_plugin_config()
-    if args.stats:
-        plugin_config["tool_stats"] = {"enabled": True}
-    installed_plugins = load_plugins(agent.events, plugin_config)
+    # 构建 agent（真实形态）：LLM 客户端 + 插件装配收敛在 agent_factory
+    # （cli 与 evaluation 共用同一装配路径，保证评测测的是真实形态）
+    agent, installed_plugins = build_agent(debug=args.debug, stats=args.stats)
 
     print("欢迎使用 qi-agent！（输入 exit / quit / 退出 结束对话，clear 清理上下文。）")
     while True:
@@ -88,7 +62,7 @@ def main(argv: list[str] | None = None) -> None:
             # - 普通模式：打印 "agent> " 前缀，流式内容紧跟（打字机效果）
             # - --debug 模式：不打印前缀——日志框已展示完整链路（[USER]→[RESP]），
             #   流式文本单独一行输出，避免前缀与日志框粘连错位
-            if logger is None:
+            if agent.logger is None:
                 print("agent> ", end="", flush=True)
             reply = agent.chat(
                 user_input,
