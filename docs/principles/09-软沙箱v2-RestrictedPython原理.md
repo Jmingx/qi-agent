@@ -1,6 +1,6 @@
 # 09 软沙箱 v2：RestrictedPython 原理（principles/05 的升级篇）
 
-> 归档：2026-08-19 · 来源：沙箱主线原理讲解问答（"AST 重写怎么防住"）
+> 归档：2026-08-20 · 来源：沙箱主线原理讲解问答（"AST 重写怎么防住"）
 > 读者：agent 开发小白（有 Java 背景）
 > 关联：principles/05（run_python 沙箱三方案原理——v1 的完整设计）、docs/todos/tool-calling.md（软沙箱升级 v2，P1）
 > 定位：v1（黑名单）→ v2（RestrictedPython）升级的技术原理——从"拦什么"到"给什么"
@@ -122,4 +122,4 @@ v2：().__class__ → _getattr((), '__class__') → 守卫：双下划线属性�
 
 - 实现：`qi_agent/tools/run_python.py`（v1 现状，v2 待实施）
 - 前篇：`docs/principles/05-run_python沙箱三方案原理.md`（v1 四锁设计）
-- 方案：待评审（docs/plans/ 2026-08-19 软沙箱 v2）
+- 方案：待评审（docs/plans/ 2026-08-20 软沙箱 v2）
