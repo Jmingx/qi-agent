@@ -56,10 +56,11 @@ def run_cli_with_inputs(inputs: list[str]) -> tuple[Agent, FakeClient]:
     inputs_iter = iter(inputs)
 
     with mock.patch("builtins.input", side_effect=lambda prompt="": next(inputs_iter)):
-        with mock.patch("qi_agent.cli.load_api_key", return_value="sk-test"):
-            with mock.patch("qi_agent.cli.Agent", return_value=agent):
-                with mock.patch("qi_agent.cli.LLMClient"):
-                    main(argv=[])  # 注入空 argv，避免误读 pytest 的参数
+        # v0.4.14：装配收敛到 agent_factory——patch 使用点（from X import Y 绑定）
+        with mock.patch(
+            "qi_agent.cli.build_agent", return_value=(agent, [])
+        ):
+            main(argv=[])  # 注入空 argv，避免误读 pytest 的参数
 
     return agent, agent.client
 
@@ -96,10 +97,9 @@ def test_clear_then_continue_chat() -> None:
     agent, client = run_cli_with_inputs(["第一轮", "clear", "第二轮", "exit"])
     # 两轮真实对话 × 流式单调用（v0.4.6 起每轮 1 次）= 2
     assert client.chat_count == 2
-    # 第二轮后历史: 环境信息 + system + user + assistant = 4 条
-    # （env_info 插件 v0.4.11 默认启用，clear 后幂等重注入）
-    assert len(agent.history) == 4
-    # 环境消息在最前，其后是干净的对话历史
-    assert agent.history[0]["content"].startswith("[环境信息]")
-    assert agent.history[1] == {"role": "system", "content": "你是一个有用的助手。"}
-    assert agent.history[2] == {"role": "user", "content": "第二轮"}
+    # 第二轮后历史: system + user + assistant = 3 条
+    # （v0.4.14 起 cli 测试 mock build_agent，无插件装配——env_info 不注入；
+    #   插件装配正确性由 test_factory.py 覆盖）
+    assert len(agent.history) == 3
+    assert agent.history[0] == {"role": "system", "content": "你是一个有用的助手。"}
+    assert agent.history[1] == {"role": "user", "content": "第二轮"}
