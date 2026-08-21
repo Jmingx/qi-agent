@@ -24,10 +24,20 @@ _ARG_PARAM_MAP = {
 
 # 需审批档：危险但可审的命令前缀（三档中的②——Claude Code ask 借鉴）
 # 命中 → NEED_APPROVAL 标记 → agent 发审批事件 → approval_gate 弹窗
+# 边界（方案 2026-08-20-审批档边界调整）：rm/del/curl/wget 等用户可审批；
+# shutdown/format 等红线不在此列（见 _HARDLINE_PREFIXES）
 _APPROVAL_PREFIXES = (
-    "rm ", "rmdir ", "shutdown", "reboot", "git push", "git reset --hard",
-    "git checkout --", "del ", "rd ", "format ", "taskkill",
-    "net user", "reg delete", "start ",
+    "rm ", "rmdir ", "git push", "git reset --hard",
+    "git checkout --", "del ", "rd ", "taskkill",
+    "net user", "reg delete", "start ", "python", "py",
+    "npm", "pip", "npx", "curl", "wget",
+)
+
+# 红线前缀（不可审批、不可执行——插件层直接硬拒，先于审批档判定）：
+# 必须在插件层生效（实现时发现）：若只靠 shell 工具层硬拒，审批同意后
+# approved=True 会跳过工具层 → format/shutdown 仍可执行（漏洞）
+_HARDLINE_PREFIXES = (
+    "format", "mkfs", "dd ", "shutdown", "reboot",
 )
 
 
@@ -67,6 +77,13 @@ class SecurityGuardPlugin:
         hit = self._check_sensitive_path(name, arguments)
         if hit:
             return hit
+        # ③b 红线前缀（format/shutdown 等，v0.4.21）：插件层直接硬拒——
+        # 必须在审批档【之前】检查，否则 approved 绕过工具层后仍可执行
+        if name == "shell":
+            command = str(arguments.get("command", ""))
+            lowered = command.lower().lstrip()
+            if any(lowered.startswith(p) for p in _HARDLINE_PREFIXES):
+                return f"[安全拦截] 命令属于红线操作（不可执行）: {command}"
         # ② 需审批档（仅 shell 命令）
         if name == "shell":
             command = str(arguments.get("command", ""))

@@ -113,12 +113,25 @@ def test_plugin_intercepts_in_loop() -> None:
 
 
 def test_approval_prefix_classified() -> None:
-    """危险命令（git push/rm 等）→ NEED_APPROVAL 标记（新档）。"""
+    """可审批命令（git push/rm/curl 等）→ NEED_APPROVAL 标记（新档）。"""
     plugin = SecurityGuardPlugin()
     result = plugin._on_tool_call("shell", {"command": "git push origin main"})
     assert result == "NEED_APPROVAL:git push origin main"
     result = plugin._on_tool_call("shell", {"command": "rm -rf /tmp/x"})
     assert result.startswith("NEED_APPROVAL:")
+    result = plugin._on_tool_call("shell", {"command": "curl http://x"})
+    assert result.startswith("NEED_APPROVAL:")
+    result = plugin._on_tool_call("shell", {"command": "del C:\\x.txt"})
+    assert result.startswith("NEED_APPROVAL:")
+
+
+def test_hardline_not_approvable() -> None:
+    """红线（format/shutdown/reboot）→ [安全拦截]，不产生 NEED_APPROVAL。"""
+    plugin = SecurityGuardPlugin()
+    for cmd in ("format C:", "shutdown /s", "reboot", "mkfs /dev/sda"):
+        result = plugin._on_tool_call("shell", {"command": cmd})
+        assert result.startswith("[安全拦截]"), cmd
+        assert not result.startswith("NEED_APPROVAL"), cmd
 
 
 def test_readonly_still_auto() -> None:

@@ -12,11 +12,12 @@ _READONLY_PREFIXES = (
     "date", "time", "where", "which", "findstr",
 )
 
-# 危险命令关键词：命中即拒绝
+# 危险命令关键词（红线，命中即拒绝）：删库跑路类（磁盘级破坏）+
+# 重启/关机 + 组合命令语法（前缀检测盲区兜底——echo a | rm -rf / 组合里的
+# rm 抓不到，组合本身硬拒）。rm/del/curl 等已改审批档（方案 2026-08-20）
 _DANGEROUS_KEYWORDS = (
-    "rm ", "rm -", "del ", "rd ", "format", "shutdown", "reboot",
-    "mkfs", "dd ", ">", ">>", "|", "&&", ";", "curl", "wget",
-    "python", "pip", "npm", "git push", "git reset --hard",
+    "format", "mkfs", "dd ", "shutdown", "reboot",
+    ">", ">>", "|", "&&", ";",
 )
 
 
