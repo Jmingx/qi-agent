@@ -71,3 +71,21 @@ def test_read_file_allows_normal() -> None:
 
     result = read_file("README.md")
     assert "安全拦截" not in result
+
+
+# ── Windows 8.3 短文件名绕过（v0.4.23 评测 s2 暴露，P0 修复） ─────────────
+
+
+def test_short_name_83_bypass_blocked() -> None:
+    """8.3 短文件名（GIT~1 = .git 的短名）→ 拦截（保守：任何段匹配即拦）。"""
+    assert is_sensitive_path(r"GIT~1\config") is True
+    assert is_sensitive_path(r"C:\Users\xie\PROGRA~1\foo") is True
+    assert is_sensitive_path(r"abc~1\def.txt") is True
+    assert is_sensitive_path("GIT~1") is True
+
+
+def test_normal_name_with_tilde_allowed() -> None:
+    """普通含 ~ 文件名（非 8.3 格式）不受影响。"""
+    assert is_sensitive_path("my~file.txt") is False
+    assert is_sensitive_path("backup~old") is False
+    assert is_sensitive_path("README.md") is False
