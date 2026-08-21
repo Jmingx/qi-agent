@@ -98,13 +98,26 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
     进程树：legacy 模式完整 Python 可能再 spawn 子进程——recursive 全杀，
     否则 kill 父进程后子进程残留。
     """
+    children: list[psutil.Process] = []
     try:
         p = psutil.Process(proc.pid)
-        for child in p.children(recursive=True):
+        children = p.children(recursive=True)
+        for child in children:
             child.kill()
         p.kill()
     except psutil.NoSuchProcess:
         pass  # 进程已退出（无需杀）
+    # Windows kill 异步：等进程树退出——否则 TemporaryDirectory 清理时
+    # 目录仍被占用 → WinError 32（全量测试实测失败）
+    for child in children:
+        try:
+            child.wait(timeout=5)
+        except psutil.Error:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass  # 极端情况：放弃等待（残留由 OS 回收）
 
 
 def _build_safe_env() -> dict:

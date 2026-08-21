@@ -286,7 +286,10 @@ def test_memory_bomb_killed() -> None:
     注意"分配后闲置"（sleep/死循环不访问）会被 Windows 工作集 trim，
     psutil 的 rss（工作集）暴跌检测不到（方案已知局限）；增长型必然触发。
     """
-    result = run_python("x = []\nwhile True:\n    x.append(0)")
+    # 持续增长 + 持续访问（while True: extend 10K 元素/次）——真实炸弹模式：
+    # 步长 80KB/次 → 更快达到 192MB 软阈值，避免与 10s 超时竞争（全量负载波动时
+    # append 单元素太慢，超时可能先触发——实测教训）
+    result = run_python("x = []\nwhile True:\n    x.extend([0] * 10_000)")
     assert "内存超限" in result  # 硬阈值或持续超限提示
 
 
