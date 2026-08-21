@@ -122,30 +122,21 @@ def test_monitor_accumulates() -> None:
     assert len(m.usage_history) == 2
 
 
-def test_monitor_status_line(capsys) -> None:
-    """状态行格式：上下文/本轮/累计。"""
+def test_no_status_line_normal(capsys) -> None:
+    """正常轮（<80%）不再打印每轮状态行（交互调整 2026-08-21）。"""
     m = ResourceMonitorPlugin(config={})
     m._on_post_llm(mock.MagicMock(usage=_usage(12000, 800)))
-    out = capsys.readouterr().out
-    assert "[资源]" in out
-    assert "12,000" in out
-    assert "累计" in out
+    assert capsys.readouterr().out == ""
 
 
 def test_monitor_warning_threshold(capsys) -> None:
-    """≥80% 上下文 → 警告提示。"""
+    """≥80% 上下文 → 条件警告（平时安静，临界提醒）。"""
     m = ResourceMonitorPlugin(config={})
     # 52000/64000 ≈ 81% → 警告
     m._on_post_llm(mock.MagicMock(usage=_usage(52000, 500)))
-    assert "⚠️" in capsys.readouterr().out
-
-
-def test_monitor_quiet(capsys) -> None:
-    """quiet 模式只累积不打印。"""
-    m = ResourceMonitorPlugin(config={"quiet": True})
-    m._on_post_llm(mock.MagicMock(usage=_usage(1000, 100)))
-    assert m.total_tokens == 1100  # 累积生效
-    assert capsys.readouterr().out == ""  # 无打印
+    out = capsys.readouterr().out
+    assert "⚠️" in out
+    assert "81%" in out
 
 
 def test_monitor_report() -> None:
@@ -193,15 +184,22 @@ def test_no_usage_skip_without_messages(capsys) -> None:
 
 
 def test_no_usage_pure_estimate(capsys) -> None:
-    """无真实样本 → 纯估算状态行（~ 标记）+ 进累计。"""
+    """无真实样本 → 纯估算累积（正常阈值下无打印）。"""
     m = ResourceMonitorPlugin(config={})
     messages = [{"role": "user", "content": "hello world"}]  # est = 4 + ceil(11/4) = 7
     m._on_post_llm(mock.MagicMock(usage=None, content="hi"), messages=messages)
     assert m.estimated_calls == 1
     assert m.total_tokens == 8  # prompt 7 + completion ceil(2/4)=1
-    out = capsys.readouterr().out
-    assert "[资源]" in out
-    assert "~" in out  # 估算标记
+    assert capsys.readouterr().out == ""
+
+
+def test_estimate_warning_threshold(capsys) -> None:
+    """估算轮 ≥80% 也触发条件警告。"""
+    m = ResourceMonitorPlugin(config={})
+    # 长消息让估算 prompt 超阈值：ceil(204800/4) = 51200 → 正好 80%
+    messages = [{"role": "user", "content": "a" * 204_800}]
+    m._on_post_llm(mock.MagicMock(usage=None, content="hi"), messages=messages)
+    assert "⚠️" in capsys.readouterr().out
 
 
 def test_anchor_calibration() -> None:

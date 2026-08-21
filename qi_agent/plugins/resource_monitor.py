@@ -7,8 +7,9 @@
 - 估算兜底（DSH token-meter 同款）：流式拿不到 usage（DeepSeek 实测基本不给）时，
   estimate_messages 估算 prompt + 锚点校准（anchor_prompt + surface 增量）
 - 累积：total_tokens 累加（真实 + 估算混合，估算轮 ~ 标注）；prompt 取最新
-- 展示：每轮状态行 + 会话结束汇总 + ≥80% 上下文警告
-- quiet 模式（评测/自动化）：只累积不打印（不污染评测输出）
+- 展示（交互调整 2026-08-21）：**不打印每轮状态行**——平时安静，仅上下文
+  ≥80% 时条件警告；会话汇总走 CLI `usage` 命令（report()）
+- 评测/自动化：build_agent(interactive=False) 不装配（输出零污染）
 遗留（5.2）：上下文上限写死 64000——模型化映射表待 TODO（docs/todos/cli-ui.md）
 """
 
@@ -50,12 +51,11 @@ class ResourceMonitorPlugin:
     """资源监控：token 消耗 + 上下文占用（监听 agent/post-llm）。"""
 
     def __init__(self, config: dict | None = None) -> None:
-        config = config or {}
+        config = config or {}  # 预留业务配置段（factory 约定；当前无配置项）
         self.usage_history: list[dict] = []  # 真实样本（估算轮不进，语义不变）
         self.total_tokens = 0  # 真实 + 估算混合累计（估算轮 ~ 标注）
         self._sample_tokens = 0  # 真实样本累计（report 拆分用）
         self.estimated_calls = 0  # 估算轮次数
-        self.quiet = bool(config.get("quiet", False))  # 评测/自动化静默
         # 锚点校准（DSH projectedTokens 语义）：最近真实样本作锚点
         self._anchor_prompt: int | None = None  # 锚点 prompt_tokens
         self._anchor_surface: int | None = None  # 锚点时的 estimate_messages
@@ -83,18 +83,16 @@ class ResourceMonitorPlugin:
         self._anchor_prompt = prompt
         if messages is not None:
             self._anchor_surface = estimate_messages(messages)
-        if not self.quiet:
-            self._print_status(prompt, total, estimated=False)
+        self._maybe_warn(prompt)
 
     def _record_estimate(self, result, messages: list[dict]) -> None:
-        """估算轮：锚点校准 prompt + 内容估算 completion（诚实标注 ~）。"""
+        """估算轮：锚点校准 prompt + 内容估算 completion（~ 标注见 report）。"""
         prompt = self._estimate_prompt(messages)
         content = getattr(result, "content", None) or ""
         completion = (len(content) + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN
         self.estimated_calls += 1
         self.total_tokens += prompt + completion
-        if not self.quiet:
-            self._print_status(prompt, prompt + completion, estimated=True)
+        self._maybe_warn(prompt)
 
     def _estimate_prompt(self, messages: list[dict]) -> int:
         """估算本轮 prompt_tokens：有锚点 → 锚点 + surface 增量；无锚点 → 纯估算。
@@ -107,21 +105,19 @@ class ResourceMonitorPlugin:
             return max(0, self._anchor_prompt + (surface - self._anchor_surface))
         return surface
 
-    def _print_status(self, prompt: int, this_turn: int, estimated: bool) -> None:
-        """每轮状态行：[资源] 上下文 12,345/64,000 (19%) · 本轮 890 · 累计 45,678
+    def _maybe_warn(self, prompt: int) -> None:
+        """上下文占用 ≥80% → 条件警告（平时安静，临界提醒——交互调整 2026-08-21）。
 
-        估算轮（estimated=True）数值加 ~ 前缀——诚实标注，不冒充真实值。
+        不打印完整状态行（用户要求每轮安静）；仅在接近上下文上限时提醒，
+        保留原方案"防上下文爆炸"价值。
         """
-        mark = "~" if estimated else ""
         pct = prompt / _CONTEXT_LIMIT * 100
-        line = (
-            f"[资源] 上下文 {mark}{prompt:,}/{_CONTEXT_LIMIT:,} ({mark}{pct:.0f}%)"
-            f" · 本轮 {mark}{this_turn:,}"
-            f" · 累计 {self.total_tokens:,}"
-        )
         if pct >= _WARN_RATIO * 100:
-            line += " ⚠️ 接近上下文上限，建议 clear 或压缩"
-        print(line, flush=True)
+            print(
+                f"[资源] ⚠️ 上下文占用 {pct:.0f}%（{prompt:,}/{_CONTEXT_LIMIT:,}），"
+                "建议 clear 或压缩",
+                flush=True,
+            )
 
     def report(self) -> str:
         """会话结束汇总（CLI 退出时打印，tool_stats 同款模式）。

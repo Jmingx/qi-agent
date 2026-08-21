@@ -16,6 +16,20 @@ EXIT_COMMANDS = {"exit", "quit", "退出", "q"}
 # 清理上下文命令集合
 CLEAR_COMMANDS = {"clear"}
 
+# 资源查看命令集合（2026-08-21 交互调整：命令式查看资源消耗，不再每轮输出）
+USAGE_COMMANDS = {"usage", "资源"}
+
+
+def _print_plugin_reports(installed_plugins: list) -> None:
+    """打印所有带 report() 的插件汇总（约定：观测类插件提供 report 方法）。
+
+    会话退出时与 usage 命令共用——一次查看全会话统计。
+    """
+    for plugin in installed_plugins:
+        report = getattr(plugin, "report", None)
+        if report:
+            print(report())
+
 
 def main(argv: list[str] | None = None) -> None:
     """启动 REPL 对话循环。
@@ -57,6 +71,11 @@ def main(argv: list[str] | None = None) -> None:
             agent.clear_context()
             continue
 
+        # 资源消耗命令（2026-08-21：查看当前累计，不消耗 LLM 调用）
+        if user_input.lower() in USAGE_COMMANDS:
+            _print_plugin_reports(installed_plugins)
+            continue
+
         try:
             # 流式前缀处理：
             # - 普通模式：打印 "agent> " 前缀，流式内容紧跟（打字机效果）
@@ -80,11 +99,8 @@ def main(argv: list[str] | None = None) -> None:
             print(f"[错误] 调用失败: {exc}")
 
     # 会话结束（while break 后）：打印所有带 report() 的插件汇总
-    # （约定：观测类插件提供 report() 方法；当前只有 tool_stats）
-    for plugin in installed_plugins:
-        report = getattr(plugin, "report", None)
-        if report:
-            print(report())
+    # （约定：观测类插件提供 report() 方法；与 usage 命令共用 _print_plugin_reports）
+    _print_plugin_reports(installed_plugins)
 
 
 if __name__ == "__main__":

@@ -31,7 +31,8 @@ enabled = true
 [approval_gate]
 enabled = true
 
-# 资源监控：token 消耗 + 上下文窗口占用（每轮状态行 + 会话结束汇总 + ≥80% 警告）
+# 资源监控：token 消耗 + 上下文窗口占用（交互调整 2026-08-21：不打印每轮状态行，
+# 用 usage/资源 命令查看汇总；上下文 ≥80% 时条件警告提醒 clear）
 # 默认开（CLI）；评测/自动化自动静默（interactive=False 不装配）
 # 上下文上限：QI_CONTEXT_LIMIT 环境变量（默认 64000；模型化映射表见 TODO cli-ui.md）
 [resource_monitor]
