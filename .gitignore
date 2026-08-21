@@ -27,3 +27,6 @@ Thumbs.db
 # 测试与工具缓存
 .pytest_cache/
 .ruff_cache/
+
+# 临时脚本（用户测试用，不进版本库）
+tmp/

@@ -26,6 +26,8 @@ pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
+# 排除临时目录（用户测试脚本 tmp/，不进版本库、不参与 lint）
+extend-exclude = ["tmp"]
 
 [tool.ruff.lint]
 select = ["E", "F"]
