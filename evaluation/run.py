@@ -11,11 +11,12 @@ from evaluation.report import (
     save_report,
 )
 from evaluation.runner import run_eval
+from evaluation.tasks import TASKS
 
 
 def main() -> None:
     # 提示评测性质：真实 API 调用，需要 DEEPSEEK_API_KEY（.env）
-    print("开始评测（真实 LLM API，16 个任务，预计 1-3 分钟）...", flush=True)
+    print(f"开始评测（真实 LLM API，{len(TASKS)} 个任务，预计 1-3 分钟）...", flush=True)
     results = run_eval()
     # 并发执行后按原顺序打印每任务结果
     for r in results:
