@@ -31,6 +31,7 @@ class ChatResult:
     content: str | None
     tool_calls: list[ToolCall] | None
     assistant_message: dict = field(default_factory=dict)
+    usage: dict | None = None  # {"prompt_tokens","completion_tokens","total_tokens"}（v0.4.22）
 
 
 class LLMClient:
@@ -105,10 +106,21 @@ class LLMClient:
                 for tc in tool_calls
             ]
 
+        # usage 提取（v0.4.22 资源监控数据源）：OpenAI 兼容响应带 usage
+        # （prompt_tokens = 上下文窗口占用，API 准确值）
+        usage = None
+        if getattr(response, "usage", None) is not None:
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+
         return ChatResult(
             content=message.content,
             tool_calls=tool_calls,
             assistant_message=assistant_message,
+            usage=usage,
         )
 
     def chat_stream(
@@ -142,14 +154,28 @@ class LLMClient:
         }
         if tools:
             kwargs["tools"] = tools
+        # stream_options: 流式默认不带 usage——请求 include_usage，usage 在
+        # 最后一个 chunk（choices 为空的 chunk）返回（v0.4.22 资源监控数据源）
+        kwargs["stream_options"] = {"include_usage": True}
 
         stream = self._client.chat.completions.create(**kwargs)
 
         # 累积器
         content_parts: list[str] = []
         tool_acc: dict[int, dict] = {}  # tool_call index -> {"id","name","args":[分片]}
+        usage: dict | None = None
 
         for chunk in stream:
+            # 最后 chunk（choices 为空）：纯 usage 携带者（stream_options 请求后返回）
+            # ——必须先判断 choices 非空，否则 chunk.choices[0] IndexError
+            if not chunk.choices:
+                if getattr(chunk, "usage", None) is not None:
+                    usage = {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens,
+                    }
+                continue
             delta = chunk.choices[0].delta
             # 1. 文本增量：回调 + 累积
             if delta.content:
@@ -198,6 +224,7 @@ class LLMClient:
                 content=None,
                 tool_calls=tool_calls,
                 assistant_message=assistant_message,
+                usage=usage,
             )
 
         # 文本分支
@@ -206,4 +233,5 @@ class LLMClient:
             content=full_text,
             tool_calls=None,
             assistant_message={"role": "assistant", "content": full_text},
+            usage=usage,
         )

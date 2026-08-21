@@ -9,4 +9,5 @@ from qi_agent.plugins import security_guard  # noqa: F401  # 导入即注册
 from qi_agent.plugins import tool_stats  # noqa: F401  # 导入即注册
 from qi_agent.plugins import env_info  # noqa: F401  # 导入即注册
 from qi_agent.plugins import approval_gate  # noqa: F401  # 导入即注册
+from qi_agent.plugins import resource_monitor  # noqa: F401  # 导入即注册
 from qi_agent.plugins.registry import get_plugin_names, load_plugins, register_plugin  # noqa: F401

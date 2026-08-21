@@ -88,7 +88,12 @@ class Agent:
                 self.logger.log_request(self.messages, get_tool_schemas())
                 self.logger.log_response(result)
             # 事件点：post-llm（广播，如 usage/成本追踪）
-            self.events.emit("agent/post-llm", result=result, turn=self._turn, step=step)
+            # messages 一并传出（2026-08-21 数据源修正）：resource_monitor
+            # 在流式 usage 缺失时用消息列表估算（DSH 式混合兜底）
+            self.events.emit(
+                "agent/post-llm", result=result, messages=self.messages,
+                turn=self._turn, step=step,
+            )
 
             if result.tool_calls:
                 # 1. assistant 的 tool_calls 消息必须原样进历史（协议要求）

@@ -52,7 +52,9 @@ def build_agent(debug: bool = False, stats: bool = False,
     if stats:
         plugin_config["tool_stats"] = {"enabled": True}
     if not interactive:
-        # 无交互环境（评测/自动化）：审批插件不装配 → fail-closed 拒绝
+        # 无交互环境（评测/自动化）：审批插件 + 资源监控不装配 → fail-closed
+        # 拒绝 + 评测输出零污染（资源监控默认打印状态行会污染评测输出）
         plugin_config["approval_gate"] = {"enabled": False}
+        plugin_config["resource_monitor"] = {"enabled": False}
     installed = load_plugins(agent.events, plugin_config)
     return agent, installed
