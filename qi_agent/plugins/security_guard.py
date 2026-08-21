@@ -8,6 +8,7 @@
 """
 
 import os
+import re
 
 from qi_agent.events import EventBus
 from qi_agent.plugins.registry import register_plugin
@@ -21,6 +22,12 @@ _ARG_PARAM_MAP = {
     "read_file": "path",
     "write_file": "path",
 }
+
+# 受限环境可 import 的模块（对齐 _sandbox_runner._ALLOWED_EXTRA_MODULES 默认值）
+# run_python 降级判据：import 白名单外模块 → NEED_APPROVAL（v0.4.23 审批档）
+_RESTRICTED_MODULES = (
+    "math", "random", "json", "statistics", "fractions", "decimal",
+)
 
 # 需审批档：危险但可审的命令前缀（三档中的②——Claude Code ask 借鉴）
 # 命中 → NEED_APPROVAL 标记 → agent 发审批事件 → approval_gate 弹窗
@@ -38,6 +45,14 @@ _APPROVAL_PREFIXES = (
 # approved=True 会跳过工具层 → format/shutdown 仍可执行（漏洞）
 _HARDLINE_PREFIXES = (
     "format", "mkfs", "dd ", "shutdown", "reboot",
+)
+
+# 代码执行类命令（v0.4.23 弹窗透明）：shell 里跑这类命令 = 以完整权限执行，
+# 不受 Python 沙箱（run_python）约束——判为【沙箱升级】档（NEED_APPROVAL:沙箱升级:），
+# 弹窗明确告知"完整权限/绕沙箱"（Hermes/CC 都只是描述引导，无此透明层）。
+# 注意：python/py 也在 _APPROVAL_PREFIXES——必须先于此档判定（沙箱升级优先）。
+_CODE_EXEC_PREFIXES = (
+    "python", "py ", "node", "npm", "pip", "npx",
 )
 
 
@@ -84,6 +99,14 @@ class SecurityGuardPlugin:
             lowered = command.lower().lstrip()
             if any(lowered.startswith(p) for p in _HARDLINE_PREFIXES):
                 return f"[安全拦截] 命令属于红线操作（不可执行）: {command}"
+        # ② 沙箱升级档（v0.4.23，先于普通审批档）：代码执行类命令（python/
+        # py/node/npm/pip 等）→ 弹窗告知"完整权限（不受沙箱约束）"——用户
+        # 批准 = 显式沙箱升级（DSH approveBashEscalation 同款语义）
+        if name == "shell":
+            command = str(arguments.get("command", ""))
+            lowered = command.lower().lstrip()
+            if any(lowered.startswith(p) for p in _CODE_EXEC_PREFIXES):
+                return f"NEED_APPROVAL:沙箱升级:{command}"
         # ② 需审批档（仅 shell 命令）
         if name == "shell":
             command = str(arguments.get("command", ""))
@@ -98,7 +121,27 @@ class SecurityGuardPlugin:
                 return f"NEED_APPROVAL:覆盖写入 {path}"
             if not _is_inside_project(path):
                 return f"NEED_APPROVAL:项目外写入 {path}"
+        # run_python 沙箱降级档（v0.4.23，环境变量开关退役）：import 白名单外
+        # 模块 → 审批弹窗（对齐 shell 三档）——用户批准后 approved 注入走完整 Python
+        if name == "run_python":
+            code = str(arguments.get("code", ""))
+            need = self._needs_sandbox_downgrade(code)
+            if need:
+                return f"NEED_APPROVAL:{need}"
         # ① 放行（白名单命令由工具层执行；项目内新增文件自动写入）
+        return None
+
+    @staticmethod
+    def _needs_sandbox_downgrade(code: str) -> str | None:
+        """run_python 代码是否需要沙箱降级：import 受限白名单外模块。
+
+        restricted 环境只放行 _RESTRICTED_MODULES；需要其他模块的代码
+        → NEED_APPROVAL 弹窗（降级=用户逐次批准，环境变量静默降级已退役）。
+        """
+        for m in re.finditer(r"^\s*(?:import|from)\s+([\w.]+)", code, re.M):
+            module = m.group(1).split(".")[0]
+            if module not in _RESTRICTED_MODULES:
+                return f"代码需要 import '{module}'（受限环境白名单外），需降级审批"
         return None
 
     def _check_blacklist(self, name: str, arguments: dict) -> str | None:

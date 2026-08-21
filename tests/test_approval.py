@@ -141,3 +141,69 @@ def test_shell_model_cant_bypass() -> None:
     error = validate_arguments(entry.schema, {"command": "shutdown /s", "approved": True})
     assert error is not None  # 多余参数被拒
     assert "approved" in error
+
+
+# ── run_python 沙箱降级审批（v0.4.23） ────────────────────────────────────
+
+
+def test_run_python_downgrade_prompt(monkeypatch) -> None:
+    """run_python 降级弹窗：专用文案（含"降级沙箱"）+ 无 a=总是允许。"""
+    plugin = ApprovalGatePlugin()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    with mock.patch("builtins.input", return_value="y") as m_input:
+        assert plugin._on_tool_approval(
+            "代码需要 import 'requests'（受限环境白名单外），需降级审批",
+            name="run_python",
+        ) is True
+    prompt = m_input.call_args.args[0]
+    assert "降级沙箱" in prompt
+    assert "总是允许" not in prompt  # 决策点 3：run_python 不提供 a
+
+
+def test_run_python_downgrade_no_always_allow(monkeypatch) -> None:
+    """run_python 降级：输入 a 视为拒绝且不记忆（a=总是允许 禁用）。"""
+    plugin = ApprovalGatePlugin()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    with mock.patch("builtins.input", return_value="a"):
+        assert plugin._on_tool_approval("代码需要降级", name="run_python") is False
+    assert plugin._approved_prefixes == []  # 未记忆
+
+
+def test_run_python_downgrade_fail_closed() -> None:
+    """run_python 降级非交互（评测/管道）→ 自动拒绝。"""
+    plugin = ApprovalGatePlugin()
+    with mock.patch("sys.stdin.isatty", return_value=False):
+        assert plugin._on_tool_approval("代码需要降级", name="run_python") is False
+
+
+# ── shell 代码执行命令 = 沙箱升级审批（v0.4.23，弹窗透明） ───────────────
+
+
+def test_sandbox_escalation_prompt(monkeypatch) -> None:
+    """沙箱升级弹窗：专用文案（⚠️ 完整权限）+ 无 a=总是允许。"""
+    plugin = ApprovalGatePlugin()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    with mock.patch("builtins.input", return_value="y") as m_input:
+        assert plugin._on_tool_approval(
+            "沙箱升级:python -c 'print(1)'", name="shell"
+        ) is True
+    prompt = m_input.call_args.args[0]
+    assert "完整权限" in prompt
+    assert "沙箱" in prompt
+    assert "总是允许" not in prompt  # 代码执行档不提供 a
+
+
+def test_sandbox_escalation_no_always_allow(monkeypatch) -> None:
+    """沙箱升级输入 a → 拒绝且不记忆（防总允许=变相全局放行代码执行）。"""
+    plugin = ApprovalGatePlugin()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    with mock.patch("builtins.input", return_value="a"):
+        assert plugin._on_tool_approval("沙箱升级:python -c 'x'", name="shell") is False
+    assert plugin._approved_prefixes == []
+
+
+def test_sandbox_escalation_fail_closed() -> None:
+    """沙箱升级非交互（评测）→ 自动拒绝。"""
+    plugin = ApprovalGatePlugin()
+    with mock.patch("sys.stdin.isatty", return_value=False):
+        assert plugin._on_tool_approval("沙箱升级:python -c 'x'", name="shell") is False

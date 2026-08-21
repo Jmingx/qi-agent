@@ -24,27 +24,48 @@ class ApprovalGatePlugin:
     def install(self, bus: EventBus) -> None:
         bus.on("agent/tool-approval", self._on_tool_approval, priority=100)
 
-    def _on_tool_approval(self, command: str, **_) -> bool | None:
+    def _on_tool_approval(self, command: str, name: str | None = None, **_) -> bool | None:
         """审批决策：True=同意 / False=拒绝 / None=无意见（等同拒绝）。
 
         fail-closed 语义：返回 None 与 False 效果相同（agent 只认 True 放行）。
+        沙箱相关审批（v0.4.23，弹窗透明）不提供 a=总是允许：
+        - name=run_python：沙箱降级（完整 Python 执行该次代码）
+        - command 前缀 "沙箱升级:"：shell 代码执行命令（完整权限，不受沙箱约束）
+        总允许 = 变相恢复全局放行，与逐次确认的安全语义冲突。
         """
-        # 会话记忆：同前缀已允许 → 直接同意（不弹窗）
-        if any(command.startswith(p) for p in self._approved_prefixes):
+        # 会话记忆：同前缀已允许 → 直接同意（不弹窗；沙箱相关档无 a 不记忆）
+        if name != "run_python" and not command.startswith("沙箱升级:") and any(
+            command.startswith(p) for p in self._approved_prefixes
+        ):
             return True
         # 无交互环境（评测/管道/自动化）→ 拒绝（fail-closed 双保险）
         if not sys.stdin.isatty():
             return False
-        # 弹窗确认
-        answer = input(
-            f"[审批] 执行命令 '{command}'？(y=同意 / n=拒绝 / a=总是允许) "
-        ).strip().lower()
-        if answer in ("y", "a"):
-            if answer == "a":
-                # 会话级前缀记忆（用户决策点 5=命令前缀）：记住第一个 token
-                # （`rm /tmp/a` 允许 → 同前缀 `rm` 系列放行；已知悉误放行风险）
-                tokens = command.strip().split()
-                self._approved_prefixes.append(tokens[0] if tokens else command)
+        if name == "run_python":
+            # 沙箱降级弹窗：逐次确认（用户决策点 3：不提供 a=总是允许）
+            answer = input(
+                f"[审批] 降级沙箱安全等级（完整 Python 执行）？{command}"
+                " (y=同意 / n=拒绝) "
+            ).strip().lower()
+        elif command.startswith("沙箱升级:"):
+            # shell 代码执行命令弹窗（v0.4.23 弹窗透明）：明确告知完整权限
+            real_command = command.split(":", 1)[1]
+            answer = input(
+                f"[审批] ⚠️ 命令以完整权限执行（不受沙箱约束），确认升级沙箱权限？\n"
+                f"命令: {real_command} (y=同意 / n=拒绝) "
+            ).strip().lower()
+        else:
+            # 弹窗确认（shell/write_file 等现状）
+            answer = input(
+                f"[审批] 执行命令 '{command}'？(y=同意 / n=拒绝 / a=总是允许) "
+            ).strip().lower()
+        if answer == "y":
+            return True
+        if answer == "a" and name != "run_python" and not command.startswith("沙箱升级:"):
+            # 会话级前缀记忆（用户决策点 5=命令前缀）：记住第一个 token
+            # （`rm /tmp/a` 允许 → 同前缀 `rm` 系列放行；已知悉误放行风险）
+            tokens = command.strip().split()
+            self._approved_prefixes.append(tokens[0] if tokens else command)
             return True
         return False
 

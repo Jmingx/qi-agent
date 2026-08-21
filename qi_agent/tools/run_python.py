@@ -27,15 +27,6 @@ import psutil
 
 from qi_agent.tools.registry import register
 
-# 沙箱执行模式（过渡方案，v0.4.13）：
-#   restricted（默认）：v2 受限执行（最安全）
-#   legacy（显式降级）：v1 静态扫描 + 完整 Python（现状行为，有 v1 绕过风险）
-# ⚠️ 过渡方案：降级操作将来应走【用户审核机制】（shell 三档权限 TODO）——
-#    环境变量开关届时退役，改为弹窗确认"确认降级沙箱安全等级？"
-_SANDBOX_MODE = os.getenv("QI_SANDBOX_MODE", "restricted").strip().lower()
-if _SANDBOX_MODE not in ("restricted", "legacy"):
-    _SANDBOX_MODE = "restricted"  # 未知值回落最安全默认
-
 # 受限执行器路径（子进程入口，不注册为工具）
 _SANDBOX_RUNNER_PATH = str(Path(__file__).parent / "_sandbox_runner.py")
 
@@ -239,27 +230,37 @@ def _run_with_limits(cmd: list[str], input_data: str | None, env: dict,
     return output
 
 
-def run_python(code: str) -> str:
+def run_python(code: str, approved: bool = False) -> str:
     """在软沙箱中执行 Python 代码并返回输出。
+
+    沙箱模式（v0.4.23 审批档，环境变量开关已退役）：
+    - approved=False（默认）：restricted 受限执行（v2 主防线，最安全）
+    - approved=True（用户弹窗审批后 agent 内部注入，模型 schema 不可见）：
+      该次调用降级为完整 Python（legacy）——跳过 v1 静态扫描，用户承担该次风险。
+      模型无法传 approved（schema 不暴露 + 参数校验拒绝多余参数）——
+      降级只发生在用户批准之后（对齐 shell 三档权限）。
 
     Args:
         code: 要执行的 Python 代码片段
+        approved: 审批注入（内部参数，非模型可传）
 
     Returns:
         执行输出（stdout/stderr），或安全拦截/错误提示。
     """
     # 1. v1 快速预检：静态扫描（明显恶意直接拒，省子进程）
-    blocked = _check_code(code)
-    if blocked:
-        return f"[安全拦截] {blocked}"
+    #    approved=True 时跳过——用户已批准降级，承担该次代码风险
+    if not approved:
+        blocked = _check_code(code)
+        if blocked:
+            return f"[安全拦截] {blocked}"
 
     # 2+3+4+5. 临时工作目录 + 子进程执行 + 时间锁 + 安全锁 + 内存锁
-    # restricted：受限执行器（v2 主防线）；legacy：完整 Python（过渡降级）
+    # restricted（默认）：受限执行器（v2 主防线）；legacy（仅审批降级）：完整 Python
     # 隔离锁（v0.4.16）：cwd=临时目录——碰不到项目文件
     # 内存锁（v0.4.17）：Popen 轮询双阈值（_run_with_limits 内）
     try:
         with tempfile.TemporaryDirectory(prefix="qi_sandbox_") as tmpdir:
-            if _SANDBOX_MODE == "legacy":
+            if approved:  # 沙箱降级（v0.4.23）：完整 Python 执行该次代码
                 cmd = [sys.executable, "-X", "utf8", "-c", code]
                 input_data = None
             else:
@@ -276,5 +277,38 @@ register(
     name="run_python",
     toolset="builtin",
     handler=run_python,
-    description="在软沙箱中执行 Python 代码片段（安全受限：禁危险操作，10秒超时）",
+    description=(
+        "在软沙箱中执行 Python 代码片段（安全受限：禁危险操作，10秒超时）。"
+        "【引导】模型生成的探测/处理/计算类 Python 代码请用本工具（沙箱执行）；"
+        "只执行单条 shell 命令用 shell 工具。受限环境只支持 math/random/json "
+        "等基础模块；需要其他模块（如 requests）的代码会弹窗请求降级审批，"
+        "用户同意后以完整 Python 执行"
+    ),
+    # 手写 schema：只暴露 code——approved 是内部参数（agent 审批注入），
+    # 不进 schema → 模型看不到也传不了（传了会被参数校验拒为多余参数）
+    # 注意：模型看到的描述是 schema.function.description（register description
+    # 仅内部元数据）——引导文案必须写在这里
+    schema={
+        "type": "function",
+        "function": {
+            "name": "run_python",
+            "description": (
+                "在软沙箱中执行 Python 代码片段（安全受限：禁危险操作，10秒超时）。"
+                "【引导】模型生成的探测/处理/计算类 Python 代码请用本工具（沙箱执行）；"
+                "只执行单条 shell 命令用 shell 工具。受限环境只支持 math/random/json "
+                "等基础模块；需要其他模块（如 requests）的代码会弹窗请求降级审批，"
+                "用户同意后以完整 Python 执行"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "要执行的 Python 代码",
+                    },
+                },
+                "required": ["code"],
+            },
+        },
+    },
 )

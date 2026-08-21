@@ -209,3 +209,57 @@ def test_blacklist_and_path_both_work() -> None:
     path_hit = plugin._on_tool_call("shell", {"command": "type .env"})
     assert path_hit is not None
     assert "敏感路径" in path_hit
+
+
+# ── run_python 沙箱降级判据（v0.4.23，方案 2026-08-21） ───────────────────
+
+
+def test_run_python_downgrade_needs_approval() -> None:
+    """run_python 代码 import 受限白名单外模块 → NEED_APPROVAL 降级档。"""
+    plugin = _make_plugin()
+    result = plugin._on_tool_call("run_python", {"code": "import requests\nprint(1)"})
+    assert isinstance(result, str)
+    assert result.startswith("NEED_APPROVAL:")
+    assert "requests" in result
+
+
+def test_run_python_no_downgrade_allowed() -> None:
+    """白名单内模块（math）或普通代码 → 放行（None）。"""
+    plugin = _make_plugin()
+    assert plugin._on_tool_call("run_python", {"code": "print(1 + 1)"}) is None
+    assert plugin._on_tool_call("run_python", {"code": "import math\nprint(1)"}) is None
+
+
+def test_run_python_downgrade_from_import() -> None:
+    """from X import Y 同样触发降级判据。"""
+    plugin = _make_plugin()
+    result = plugin._on_tool_call("run_python", {"code": "from pandas import read_csv"})
+    assert isinstance(result, str)
+    assert result.startswith("NEED_APPROVAL:")
+    assert "pandas" in result
+
+
+# ── shell 代码执行类命令 = 沙箱升级档（v0.4.23，弹窗透明） ───────────────
+
+
+def test_code_exec_command_sandbox_escalation() -> None:
+    """python/py/node 等代码执行类命令 → 沙箱升级档（NEED_APPROVAL:沙箱升级:）。"""
+    plugin = _make_plugin()
+    for cmd in ("python -c 'print(1)'", "py -c 'print(1)'", "node -e 'x'",
+                "pip install requests", "npm install"):
+        result = plugin._on_tool_call("shell", {"command": cmd})
+        assert isinstance(result, str), f"{cmd} 应判档"
+        assert result.startswith("NEED_APPROVAL:沙箱升级:"), f"{cmd} → {result}"
+
+
+def test_code_exec_prefix_unaffected() -> None:
+    """非代码执行命令保持普通审批档（沙箱升级判据不误伤）。"""
+    plugin = _make_plugin()
+    result = plugin._on_tool_call("shell", {"command": "rm /tmp/x"})
+    assert result == "NEED_APPROVAL:rm /tmp/x"  # 普通档（无沙箱升级前缀）
+
+
+def test_code_exec_whitelist_unchanged() -> None:
+    """只读白名单命令（pwd 等）不受影响。"""
+    plugin = _make_plugin()
+    assert plugin._on_tool_call("shell", {"command": "pwd"}) is None

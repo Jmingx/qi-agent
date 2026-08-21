@@ -133,8 +133,10 @@ register(
     description=(
         "在 shell 中执行命令：只读命令（pwd/ls/dir/echo/cat/type 等）自动执行；"
         "危险命令（rm/del/shutdown/git push 等）会弹出审批请求，用户同意后执行。"
-        "启动 GUI 应用/游戏/服务器等常驻程序时 background=true（立即返回，"
-        "程序独立运行）；普通命令用默认同步模式（等待输出）"
+        "【引导】执行 Python 代码请用 run_python 工具（沙箱执行）；本工具的 "
+        "python/py/node 等代码执行命令以完整权限运行（不受沙箱约束），"
+        "会弹窗确认沙箱权限升级。启动 GUI 应用/游戏/服务器等常驻程序时 "
+        "background=true（立即返回，程序独立运行）；普通命令用默认同步模式（等待输出）"
     ),
     # 手写 schema：只暴露 command + background——approved 是内部参数（agent
     # 审批注入），不进 schema → 模型看不到也传不了（传了会被参数校验拒为多余参数）
@@ -145,7 +147,10 @@ register(
             "description": (
                 "在 shell 中执行命令：只读命令自动执行；危险命令（rm/del/"
                 "shutdown/git push 等）会弹出审批请求，用户同意后执行。"
-                "若命令被拒绝（[审批拒绝]），说明用户不同意，不要反复尝试"
+                "【引导】执行 Python 代码请用 run_python 工具（沙箱执行）；"
+                "本工具的 python/py/node 等代码执行命令以完整权限运行（不受"
+                "沙箱约束），会弹窗确认沙箱权限升级。若命令被拒绝（[审批拒绝]），"
+                "说明用户不同意，不要反复尝试"
             ),
             "parameters": {
                 "type": "object",

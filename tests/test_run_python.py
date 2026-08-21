@@ -217,20 +217,21 @@ def _restore_rp_default(monkeypatch):
     importlib.reload(rp)
 
 
-def test_cwd_isolated_legacy_write(monkeypatch) -> None:
-    """legacy 模式拼接绕过写文件 → 项目根【没有】probe 文件（隔离证据）。
+def test_cwd_isolated_legacy_write() -> None:
+    """legacy 模式（审批降级）拼接绕过写文件 → 项目根【没有】probe 文件（隔离证据）。
 
     v1 预检拦不住 getattr 拼接（清单无 getattr，且不含 "open(" 子串），
     legacy 完整 Python 会真执行 open——但 cwd 已是临时目录，
     文件写在临时目录而非项目根。
     """
-    rp = _reload_rp(monkeypatch, QI_SANDBOX_MODE="legacy")
+    from qi_agent.tools.run_python import run_python
+
     probe = "probe_iso_write.txt"
     code = (
         "f = getattr(__builtins__, 'op' + 'en')"
         f"('{probe}', 'w'); f.write('x'); f.close()"
     )
-    rp.run_python(code)
+    run_python(code, approved=True)  # 审批降级（v0.4.23，替代 QI_SANDBOX_MODE=legacy）
     try:
         assert not os.path.exists(probe), "隔离失效：文件写到了项目根！"
     finally:
@@ -239,18 +240,19 @@ def test_cwd_isolated_legacy_write(monkeypatch) -> None:
             os.unlink(probe)
 
 
-def test_cwd_isolated_legacy_read(monkeypatch) -> None:
+def test_cwd_isolated_legacy_read() -> None:
     """legacy 拼接读项目文件 → 读不到（临时目录无该文件）。
 
     用 pyproject.toml（项目根真实存在）——未隔离时能读到内容，
     隔离后临时目录没有它 → FileNotFoundError。
     """
-    rp = _reload_rp(monkeypatch, QI_SANDBOX_MODE="legacy")
+    from qi_agent.tools.run_python import run_python
+
     code = (
         "f = getattr(__builtins__, 'op' + 'en')('pyproject.toml'); "
         "print(f.read()); f.close()"
     )
-    result = rp.run_python(code)
+    result = run_python(code, approved=True)  # 审批降级（v0.4.23）
     assert "FileNotFoundError" in result  # 临时目录没有 pyproject.toml
 
 

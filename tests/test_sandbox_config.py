@@ -1,7 +1,9 @@
-"""沙箱配置测试：执行模式开关 + 内建集/import 白名单扩展。
+"""沙箱配置测试：内建集/import 白名单扩展 + 审批降级档（v0.4.23）。
 
 方案：docs/plans/2026-08-19-软沙箱v2方案.md（决策点 4/5）
++ docs/plans/2026-08-21-run_python审批档方案.md
 注意：环境变量在 import 时读取（模块级）——测试需清理注册表后 reload 模块。
+QI_SANDBOX_MODE 已退役（v0.4.23）：降级走审批（approved 注入），环境变量无效。
 """
 
 import importlib
@@ -28,30 +30,53 @@ def _restore_env(monkeypatch):
     """测试结束后恢复默认环境并重载模块（避免污染其他测试）。"""
     yield
     _TOOL_REGISTRY.pop("run_python", None)
-    monkeypatch.delenv("QI_SANDBOX_MODE", raising=False)
     monkeypatch.delenv("QI_SANDBOX_EXTRA_BUILTINS", raising=False)
     monkeypatch.delenv("QI_SANDBOX_EXTRA_MODULES", raising=False)
     importlib.reload(rp)
 
 
-def test_mode_default_restricted(monkeypatch) -> None:
-    """未配置 QI_SANDBOX_MODE 应默认 restricted。"""
-    _reload(monkeypatch)
-    assert rp._SANDBOX_MODE == "restricted"
-
-
-def test_mode_legacy_works(monkeypatch) -> None:
-    """QI_SANDBOX_MODE=legacy 应进入 legacy 路径（现状行为）。"""
+def test_sandbox_mode_env_retired(monkeypatch) -> None:
+    """QI_SANDBOX_MODE 已退役（v0.4.23）：设 legacy 也不影响——restricted 唯一默认。"""
     _reload(monkeypatch, QI_SANDBOX_MODE="legacy")
-    assert rp._SANDBOX_MODE == "legacy"
-    result = rp.run_python("print(1 + 1)")
-    assert "2" in result
+    assert not hasattr(rp, "_SANDBOX_MODE")  # 模块级开关已删除
+    # 环境变量无效：import sys 仍被 v1 静态扫描拦（未走 legacy）
+    result = rp.run_python("import sys; print(1)")
+    assert "安全拦截" in result
 
 
-def test_mode_invalid_falls_back(monkeypatch) -> None:
-    """非法模式值应回落 restricted（最安全默认）。"""
-    _reload(monkeypatch, QI_SANDBOX_MODE="whatever")
-    assert rp._SANDBOX_MODE == "restricted"
+def test_approved_runs_legacy(monkeypatch) -> None:
+    """approved=True（用户审批后注入）：该次调用走完整 Python（legacy）。"""
+    _reload(monkeypatch)
+    result = rp.run_python("import sys; print(sys.version_info.major)", approved=True)
+    assert "3" in result  # import sys 在 v1 黑名单，approved 跳过 v1 + legacy 执行
+
+
+def test_approved_skips_v1_scan(monkeypatch) -> None:
+    """approved=True 跳过 v1 静态扫描（用户批准承担该次风险）。"""
+    _reload(monkeypatch)
+    result = rp.run_python("import os; print('approved-ok')", approved=True)
+    assert "approved-ok" in result
+
+
+def test_no_approval_stays_restricted(monkeypatch) -> None:
+    """无 approved（默认）：v1 扫描照常拦截危险代码。"""
+    _reload(monkeypatch)
+    result = rp.run_python("import os; print(1)")
+    assert "安全拦截" in result
+
+
+def test_run_python_schema_hides_approved(monkeypatch) -> None:
+    """run_python schema 只暴露 code——approved 是内部参数（模型不可见）。"""
+    from qi_agent.tools.registry import get_tool_schemas
+
+    _reload(monkeypatch)
+    for s in get_tool_schemas():
+        if s["function"]["name"] == "run_python":
+            props = s["function"]["parameters"]["properties"]
+            assert list(props.keys()) == ["code"]
+            assert "approved" not in props
+            return
+    raise AssertionError("run_python schema 未找到")
 
 
 def test_extra_builtins_allowed(monkeypatch) -> None:
