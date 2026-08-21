@@ -166,3 +166,49 @@ def test_shell_long_running_timeout_not_hang(monkeypatch) -> None:
     elapsed = time.time() - t0
     assert "超时" in result
     assert elapsed < 10  # 修复前永久卡死；修复后 ~2s 返回
+
+
+def _kill_pid_tree(pid: int) -> None:
+    """清理测试启动的常驻进程树（ping -t 不退出，必须杀防残留）。"""
+    import psutil
+
+    try:
+        proc = psutil.Process(pid)
+        for child in proc.children(recursive=True):
+            child.kill()
+        proc.kill()
+    except psutil.Error:
+        pass  # 已退出
+
+
+def test_shell_background_returns_fast() -> None:
+    """background=True：常驻进程（ping -t 模拟游戏）立即返回，不阻塞对话。"""
+    import re
+    import time
+
+    from qi_agent.tools.shell import shell
+
+    t0 = time.time()
+    result = shell("ping -t 127.0.0.1", approved=True, background=True)
+    elapsed = time.time() - t0
+    assert "已启动" in result
+    assert elapsed < 2  # 异步立即返回（同步路径会 10s 超时）
+    # 清理常驻进程（防残留）
+    pid = int(re.search(r"PID (\d+)", result).group(1))
+    _kill_pid_tree(pid)
+
+
+def test_shell_background_process_alive() -> None:
+    """background=True 返回的 PID 进程真实存在（异步启动成功）。"""
+    import re
+    import time
+
+    import psutil
+
+    from qi_agent.tools.shell import shell
+
+    result = shell("ping -t 127.0.0.1", approved=True, background=True)
+    pid = int(re.search(r"PID (\d+)", result).group(1))
+    time.sleep(0.3)  # 给进程一点启动时间
+    assert psutil.pid_exists(pid)
+    _kill_pid_tree(pid)
