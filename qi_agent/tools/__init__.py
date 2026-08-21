@@ -4,7 +4,7 @@
 新工具 = 在 tools/ 下新建文件并在此导入。
 """
 
-from qi_agent.tools import get_time, read_file, run_python, shell  # noqa: F401  导入即注册
+from qi_agent.tools import get_time, read_file, run_python, shell, write_file  # noqa: F401  导入即注册
 from qi_agent.tools.registry import (  # noqa: F401  对外导出注册表操作
     _TOOL_REGISTRY,
     execute_tool,
@@ -25,4 +25,5 @@ __all__ = [
     "read_file",
     "run_python",
     "shell",
+    "write_file",
 ]

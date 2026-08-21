@@ -7,15 +7,19 @@
 - 默认黑名单空 = 零规则 = 行为不变（零侵入），用户配置后生效
 """
 
+import os
+
 from qi_agent.events import EventBus
 from qi_agent.plugins.registry import register_plugin
 from qi_agent.tools.path_security import is_sensitive_path
+from qi_agent.tools.write_file import _is_inside_project
 
 # 工具名 -> 参数名映射（从 arguments 里取待审核内容）
 _ARG_PARAM_MAP = {
     "shell": "command",
     "run_python": "code",
     "read_file": "path",
+    "write_file": "path",
 }
 
 # 需审批档：危险但可审的命令前缀（三档中的②——Claude Code ask 借鉴）
@@ -69,7 +73,15 @@ class SecurityGuardPlugin:
             lowered = command.lower().lstrip()
             if any(lowered.startswith(p) for p in _APPROVAL_PREFIXES):
                 return f"NEED_APPROVAL:{command}"
-        # ① 放行（白名单命令由 shell 工具层执行）
+        # write_file 四档（v0.4.19）：红线已在上方路径规则检查（_ARG_PARAM_MAP
+        # 含 write_file→path）；这里补覆盖/越界审批档
+        if name == "write_file":
+            path = str(arguments.get("path", ""))
+            if os.path.exists(path):
+                return f"NEED_APPROVAL:覆盖写入 {path}"
+            if not _is_inside_project(path):
+                return f"NEED_APPROVAL:项目外写入 {path}"
+        # ① 放行（白名单命令由工具层执行；项目内新增文件自动写入）
         return None
 
     def _check_blacklist(self, name: str, arguments: dict) -> str | None:
@@ -90,21 +102,28 @@ class SecurityGuardPlugin:
         return None
 
     def _check_sensitive_path(self, name: str, arguments: dict) -> str | None:
-        """内置路径规则：shell 命令中的路径 token 命中敏感路径 → 拦截。
+        """内置路径规则：工具参数中的路径命中敏感路径 → 拦截。
 
         修复真实对抗暴露的绕过（v0.4.10）：模型通过 type .git\\config 读取
         敏感文件——path_security 只接入了 read_file，shell 没接。
-        token 化：去引号 + 空格拆分（安全优先，宁可误伤）。
+        - shell：命令 token 化（去引号 + 空格拆分，安全优先宁可误伤）
+        - 带 path 参数的工具（read_file/write_file，v0.4.19）：直接检查路径
         """
-        if name != "shell":
+        if name == "shell":
+            cmd = str(arguments.get("command", ""))
+            tokens = cmd.replace('"', "").split()
+            for token in tokens:
+                if is_sensitive_path(token):
+                    return (
+                        f"[安全拦截] shell 命令包含敏感路径: '{token}'，"
+                        f"已拒绝执行"
+                    )
             return None
-        cmd = str(arguments.get("command", ""))
-        tokens = cmd.replace('"', "").split()
-        for token in tokens:
-            if is_sensitive_path(token):
+        param = _ARG_PARAM_MAP.get(name)
+        if param and param in arguments:
+            if is_sensitive_path(str(arguments[param])):
                 return (
-                    f"[安全拦截] shell 命令包含敏感路径: '{token}'，"
-                    f"已拒绝执行"
+                    f"[安全拦截] {name} 目标为敏感路径，已拒绝执行"
                 )
         return None
 
