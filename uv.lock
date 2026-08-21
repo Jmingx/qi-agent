@@ -416,7 +416,7 @@ wheels = [
 
 [[package]]
 name = "qi-agent"
-version = "0.1.0"
+version = "0.4.22"
 source = { editable = "." }
 dependencies = [
     { name = "openai" },
