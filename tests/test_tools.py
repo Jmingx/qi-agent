@@ -145,3 +145,24 @@ def test_run_python_unicode_output() -> None:
 
     result = run_python("print('ok-emoji-\\U0001F600')")
     assert "ok-emoji" in result
+
+
+def test_shell_long_running_timeout_not_hang(monkeypatch) -> None:
+    """长驻命令（如启动游戏）超时后快速返回，不卡死（Windows 管道死锁修复 2026-08-21）。
+
+    复现：subprocess.run(timeout=...) 超时后 kill 的只是 cmd 外壳——被启动的
+    长驻程序（ping -t 模拟游戏）仍持有 stdout/stderr 管道 → run 内部第二次
+    communicate() 等 EOF 永远等不到 → agent 卡死（实测 exit 124）。
+    修复：Popen + communicate(timeout) + 超时杀进程树 + 立即返回。
+    """
+    import time
+
+    import qi_agent.tools.shell as sh
+
+    monkeypatch.setattr(sh, "_COMMAND_TIMEOUT", 2)  # 缩短超时加速测试
+    t0 = time.time()
+    # approved=True 跳过白名单（ping 不在只读白名单，模拟审批通过的启动命令）
+    result = sh.shell("ping -t 127.0.0.1", approved=True)
+    elapsed = time.time() - t0
+    assert "超时" in result
+    assert elapsed < 10  # 修复前永久卡死；修复后 ~2s 返回

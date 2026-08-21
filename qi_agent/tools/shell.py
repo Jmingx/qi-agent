@@ -4,7 +4,12 @@
 等）以及管道/重定向/复合命令，防止 agent 被诱导执行破坏性操作。
 """
 
+import psutil
+
 from qi_agent.tools.registry import register
+
+# 命令执行超时（秒）。长驻程序（游戏/服务器）超时后杀进程树——见 _kill_process_tree
+_COMMAND_TIMEOUT = 10
 
 # shell 只读白名单：允许的命令前缀（阶段 2 安全设计，完整权限模型留后续阶段）
 _READONLY_PREFIXES = (
@@ -19,6 +24,21 @@ _DANGEROUS_KEYWORDS = (
     "format", "mkfs", "dd ", "shutdown", "reboot",
     ">", ">>", "|", "&&", ";",
 )
+
+
+def _kill_process_tree(proc) -> None:
+    """杀进程树（Windows 超时修复：kill 外壳 cmd 不会杀它启动的子进程）。
+
+    对齐 run_python 沙箱 v3 的进程树清理：递归杀所有子进程再杀自己，
+    避免超时后残留孤儿进程（如启动的游戏/长驻程序）。
+    """
+    try:
+        parent = psutil.Process(proc.pid)
+        for child in parent.children(recursive=True):
+            child.kill()
+        parent.kill()
+    except psutil.Error:
+        pass  # 进程已退出（竞态窗口），无需处理
 
 
 def shell(command: str, approved: bool = False) -> str:
@@ -49,25 +69,35 @@ def shell(command: str, approved: bool = False) -> str:
     # 3. 执行（subprocess 不经过 shell，避免注入）
     import subprocess
 
+    # Windows 死锁修复（2026-08-21 实测）：subprocess.run(timeout=...) 超时后
+    # kill 的只是 cmd.exe 外壳——被启动的长驻程序（如游戏）仍持有 stdout/stderr
+    # 管道 → run 内部第二次 communicate() 等 EOF 永远等不到 → agent 卡死。
+    # 改用 Popen + communicate(timeout)：超时后杀进程树 + 立即返回，不再等管道。
+    proc = subprocess.Popen(
+        command,  # 原始命令交给系统执行（只读白名单已拦截风险）
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        # Windows 编码坑：默认按系统 locale（GBK）解码子进程输出，
+        # UTF-8/二进制内容会 UnicodeDecodeError（reader 线程炸→输出丢失）。
+        # 明确 UTF-8 + errors="replace"：不炸，乱码字节替换为 �
+        encoding="utf-8",
+        errors="replace",
+    )
     try:
-        result = subprocess.run(
-            command,  # 原始命令交给系统执行（只读白名单已拦截风险）
-            shell=True,
-            capture_output=True,
-            text=True,
-            # Windows 编码坑：默认按系统 locale（GBK）解码子进程输出，
-            # UTF-8/二进制内容会 UnicodeDecodeError（reader 线程炸→输出丢失）。
-            # 明确 UTF-8 + errors="replace"：不炸，乱码字节替换为 �
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-        output = result.stdout or result.stderr or "(无输出)"
-        return output if len(output) <= 2000 else output[:2000] + "\n...[内容过长已截断]"
+        out, err = proc.communicate(timeout=_COMMAND_TIMEOUT)
     except subprocess.TimeoutExpired:
-        return "[错误] 命令执行超时（10秒）"
+        _kill_process_tree(proc)  # 杀 cmd 外壳 + 其启动的长驻程序
+        return (
+            "[错误] 命令执行超时（10秒），已终止。"
+            "提示：启动 GUI 应用/游戏/服务器等长驻程序请用 start 前缀"
+            "（如 start 游戏.exe），立即返回不等待"
+        )
     except OSError as exc:
         return f"[错误] 命令执行失败: {exc}"
+    output = out or err or "(无输出)"
+    return output if len(output) <= 2000 else output[:2000] + "\n...[内容过长已截断]"
 
 
 register(
@@ -76,7 +106,9 @@ register(
     handler=shell,
     description=(
         "在 shell 中执行命令：只读命令（pwd/ls/dir/echo/cat/type 等）自动执行；"
-        "危险命令（rm/del/shutdown/git push 等）会弹出审批请求，用户同意后执行"
+        "危险命令（rm/del/shutdown/git push 等）会弹出审批请求，用户同意后执行。"
+        "启动 GUI 应用/游戏/服务器等长驻程序必须用 start 前缀（如 start 游戏.exe）"
+        "——立即返回不等待；直接运行会超时终止"
     ),
     # 手写 schema：只暴露 command——approved 是内部参数（agent 审批注入），
     # 不进 schema → 模型看不到也传不了（传了会被参数校验拒为多余参数）
