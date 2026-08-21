@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qi-agent"
-version = "0.1.0"
+version = "0.4.22"
 description = "从零构建的类 Hermes AI Agent（练手项目）"
 requires-python = ">=3.11"
 dependencies = [
