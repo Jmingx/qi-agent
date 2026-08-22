@@ -5,9 +5,12 @@
 """
 
 from qi_agent.tools import (  # noqa: F401  导入即注册
+    file_delete,
     get_time,
+    list_dir,
     read_file,
     run_python,
+    search_files,
     shell,
     web_extract,
     web_search,
@@ -29,9 +32,12 @@ __all__ = [
     "get_tool_schemas",
     "get_tools_by_toolset",
     "_TOOL_REGISTRY",
+    "file_delete",
     "get_time",
+    "list_dir",
     "read_file",
     "run_python",
+    "search_files",
     "shell",
     "web_extract",
     "web_search",
