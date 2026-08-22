@@ -8,6 +8,7 @@
 import argparse
 
 from qi_agent.agent_factory import build_agent
+from qi_agent.interaction import TerminalInteraction, set_interaction_provider
 from qi_agent.tools import get_time, read_file, run_python, shell  # noqa: F401  导入即注册内置工具
 
 # 退出命令集合
@@ -42,6 +43,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--debug", action="store_true", help="打印 LLM 交互调试日志")
     parser.add_argument("--stats", action="store_true", help="会话结束打印工具调用统计")
     args = parser.parse_args(argv)
+
+    # 交互注入（v0.4.26）：clarify 等交互工具注册终端实现——未来 Web/GUI
+    # 换 InteractionProvider 实现即可，工具零改动（交互与工具分离架构）
+    set_interaction_provider(TerminalInteraction())
 
     # 构建 agent（真实形态）：LLM 客户端 + 插件装配收敛在 agent_factory
     # （cli 与 evaluation 共用同一装配路径，保证评测测的是真实形态）
