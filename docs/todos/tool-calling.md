@@ -64,13 +64,25 @@
 
 ## 六、更多工具（利用新架构，1 文件 1 工具）
 
+> 调研基线（2026-08-22）：对照 Hermes（70+ 工具）与 DSH（能力包制）全量
+> 清单，按"实用性 × 学习价值 × qi-agent 阶段"筛选。第一梯队（todo /
+> clarify / patch）是纯逻辑工具无外部依赖，建议优先；第二梯队（子代理/
+> 定时/会话搜索/看板）复杂度高，后续。
+
 | 状态 | 条目 | 价值 | 难度 | 说明 |
 |------|------|------|------|------|
-| ⬜ | **list_dir 工具** | P1 | ⭐ | 列出目录内容（读路径信息，配合 read_file） |
+| ✅ | **list_dir 工具** | P1 | ⭐ | 列出目录内容（读路径信息，配合 read_file）。**完成 v0.4.26**：结构化返回（名称/类型/大小），敏感目录不列出 |
 | ✅ | **write_file 工具（读写能力）** | P0 | ⭐⭐⭐ | 四档路径判定：敏感拒（红线不可审批）/项目内新增自动/覆盖审批/越界审批。复用 is_sensitive_path + approval_gate + approved 内部参数；工具层兜底 fail-closed。**完成：v0.4.19** |
-| ⬜ | **read_file 分页升级** | P1 | ⭐⭐ | 大文件读取：固定 2000 字符截断 → offset/limit 行级分页（对齐 Hermes 75 行/offset 分段读），模型可分段读完大文件（方案已写待评审） |
+| ✅ | **read_file 分页升级** | P1 | ⭐⭐ | 大文件读取：offset/limit 行级分页（对齐 Hermes 75 行/offset 分段读）+ header 元信息（"第 X-Y 行（共 N 行）"）+ tail 续读提示（可行动信息设计）+ 50K 字符双保险。**完成：v0.4.20**（方案 docs/plans/2026-08-20-read_file分页升级方案.md） |
 | ⬜ | **calc 计算器工具** | P2 | ⭐ | 安全表达式求值（ast 解析，不用 eval——教学点：eval 危险 vs ast 安全） |
-| ⬜ | **todo 工具** | P2 | ⭐⭐ | 任务清单管理（参考 Hermes todo_tool.py，练手状态存储） |
+| ✅ | **todo 任务清单** | P1 | ⭐⭐ | 任务清单管理（参考 Hermes todo_tool / DSH tool-todo 的 todo_write）。agent 长任务自我追踪——"计划 5 件做完 2 件"，不再靠对话记忆；状态管理练手（CRUD + 完成判定 + 持久化）。**完成 v0.4.26**：单工具 action 分发（create/list/update/complete/delete）+ TodoStore 内存会话级 + 状态机（pending→in_progress→completed 终态不可回退）+ id 不重用 + 纯内存放行不审批 + **线程安全（并行 create 加锁）**。**⚠ 遗留**：长任务自动跟踪未实现——模型不会主动 list，靠对话记忆脑补（真实暴露：建 2 条任务脑补 9 步清单）。修复 = 状态注入上下文（对齐 Hermes format_for_injection），已记 context-management.md"todo 状态注入上下文"条目，随上下文管理整块实施 |
+| ✅ | **clarify 澄清提问** | P1 | ⭐⭐ | agent 主动问用户（参考 Hermes clarify_tool / DSH interaction ask-user）——"你要删的是 A 还是 B？"。补全交互能力：qi-agent 已有审批弹窗（安全交互），缺信息澄清（信息交互）。**完成 v0.4.26**：交互抽象层 InteractionProvider（工具与交互分离——CLI 注入 TerminalInteraction，未来 Web/GUI 换实现工具零改动）+ 薄分发器 + fail-safe（未注册/非 tty 返回 [交互不可用] 不挂死）+ 选项 ≤4。**⚠ 遗留**：真实对话交互未验证——单测覆盖 provider 委托/选项/超时/fail-safe，但 CLI 注入 + 真实提问流程未做端到端手工验收（须在 cli.py 注入 TerminalInteraction 后跑一次真实对话确认） |
+| ✅ | **patch 精确编辑** | P1 | ⭐⭐⭐ | 小改动精确替换（参考 Hermes patch_parser / DSH str_replace_editor）——write_file 整文件覆盖 vs patch 单行替换（省 token + 不覆盖别处）。**完成 v0.4.26**：正则策略链 3 个保守策略（exact/whitespace_flexible/indentation_flexible，Hermes 9 策略保守子集）+ 原子性（匹配失败不写文件）+ diff 展示 + 编辑审批档（声明式 approval）+ 敏感路径红线 |
+| ⬜ | **subagent 子代理（delegate_task）** | P2 | ⭐⭐⭐⭐ | 子代理并行跑子任务（参考 Hermes delegate_tool / DSH subagent 包：codex/claude-code/dsh-sdk providers）——并行工具调用的下一级（并行 agent）。注意：嵌套限制、结果汇总、隔离上下文 |
+| ⬜ | **cronjob 定时任务** | P2 | ⭐⭐⭐ | 定时后台执行（参考 Hermes cronjob_tools）——"每天 9 点检查 X"。需要后台调度器 + 持久化任务表 |
+| ⬜ | **session_search 会话搜索** | P2 | ⭐⭐⭐ | 历史会话检索（参考 Hermes session_search_tool，FTS5）——前置：会话持久化存储 |
+| ⬜ | **kanban 看板** | P2 | ⭐⭐⭐ | 任务可视化（列/卡片，参考 Hermes kanban_tools×12：create/block/unblock/comment/heartbeat 等）——todo 的升级版，先做 todo |
+| ❌ | **浏览器自动化全家 / 媒体生成 / 平台生态** | — | — | **调研排除（2026-08-22）**：浏览器全家（CDP 驱动重，qi-agent 阶段过早）；媒体生成（image/video/tts 需外部 API + RX6500 4GB 跑不动）；平台生态（discord/feishu/yuanbao/homeassistant 平台绑定）；read_image（deepseek-v4-flash 无 vision，做了模型也看不懂） |
 
 ---
 
