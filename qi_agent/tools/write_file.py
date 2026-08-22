@@ -28,6 +28,23 @@ def _is_inside_project(path: str) -> bool:
         return False
 
 
+def _approval_condition(arguments: dict) -> str | None:
+    """write_file 审批条件（v0.4.26 声明式，从 security_guard 迁移）。
+
+    覆盖已有文件 / 项目外路径 → 返回审批描述；否则 None（放行）。
+    工具自声明自己的权限策略——security_guard 插件查 registry 执行，
+    插件本身零工具名分支。
+    """
+    path = str(arguments.get("path", ""))
+    if not path:
+        return None
+    if os.path.exists(path):
+        return f"覆盖写入 {path}"
+    if not _is_inside_project(path):
+        return f"项目外写入 {path}"
+    return None
+
+
 def write_file(path: str, content: str, approved: bool = False) -> str:
     """写文件（UTF-8）。
 
@@ -69,6 +86,8 @@ register(
         "写文件（UTF-8）：项目内新增文件自动允许；覆盖已有文件或项目外"
         "路径需用户审批。不能写敏感文件（.env/.git 等）"
     ),
+    # 审批声明（v0.4.26 声明式）：条件审批——覆盖/越界 → 弹窗（工具自声明）
+    approval=_approval_condition,
     # 手写 schema：只暴露 path/content——approved 是内部参数（agent 审批注入）
     schema={
         "type": "function",

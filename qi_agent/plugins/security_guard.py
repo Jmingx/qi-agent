@@ -7,18 +7,11 @@
 - 默认黑名单空 = 零规则 = 行为不变（零侵入），用户配置后生效
 """
 
-import os
-import re
-
 from qi_agent.events import EventBus
 from qi_agent.plugins.registry import register_plugin
 from qi_agent.security.path_security import is_sensitive_path
-from qi_agent.security.rules import (
-    APPROVAL_PREFIXES,
-    CODE_EXEC_PREFIXES,
-    HARDLINE_PREFIXES,
-)
-from qi_agent.tools.write_file import _is_inside_project
+from qi_agent.security.rules import HARDLINE_PREFIXES
+from qi_agent.tools.registry import get_tool
 
 # 工具名 -> 参数名映射（从 arguments 里取待审核内容）
 _ARG_PARAM_MAP = {
@@ -27,14 +20,6 @@ _ARG_PARAM_MAP = {
     "read_file": "path",
     "write_file": "path",
 }
-
-# 受限环境可 import 的模块（对齐 _sandbox_runner._ALLOWED_EXTRA_MODULES 默认值）
-# run_python 降级判据：import 白名单外模块 → NEED_APPROVAL（v0.4.23 审批档）
-# 注意：这是"沙箱内容策略"（模块白名单），与命令权限规则（security/rules.py）
-# 正交，故保留在本插件（方案 2026-08-22 决策点 2）
-_RESTRICTED_MODULES = (
-    "math", "random", "json", "statistics", "fractions", "decimal",
-)
 
 
 class SecurityGuardPlugin:
@@ -74,55 +59,31 @@ class SecurityGuardPlugin:
         if hit:
             return hit
         # ③b 红线前缀（format/shutdown 等，v0.4.21）：插件层直接硬拒——
-        # 必须在审批档【之前】检查，否则 approved 绕过工具层后仍可执行
+        # 必须在审批档【之前】检查，否则 approved 绕过工具层后仍可执行。
+        # 红线是系统级底线（不可审批），不随工具声明——工具注册表可能被
+        # 动态修改，底线必须硬编码在插件（安全底线哲学）
         if name == "shell":
             command = str(arguments.get("command", ""))
             lowered = command.lower().lstrip()
             if any(lowered.startswith(p) for p in HARDLINE_PREFIXES):
                 return f"[安全拦截] 命令属于红线操作（不可执行）: {command}"
-        # ② 沙箱升级档（v0.4.23，先于普通审批档）：代码执行类命令（python/
-        # py/node/npm/pip 等）→ 弹窗告知"完整权限（不受沙箱约束）"——用户
-        # 批准 = 显式沙箱升级（DSH approveBashEscalation 同款语义）
-        if name == "shell":
-            command = str(arguments.get("command", ""))
-            lowered = command.lower().lstrip()
-            if any(lowered.startswith(p) for p in CODE_EXEC_PREFIXES):
-                return f"NEED_APPROVAL:沙箱升级:{command}"
-        # ② 需审批档（仅 shell 命令）
-        if name == "shell":
-            command = str(arguments.get("command", ""))
-            lowered = command.lower().lstrip()
-            if any(lowered.startswith(p) for p in APPROVAL_PREFIXES):
-                return f"NEED_APPROVAL:{command}"
-        # write_file 四档（v0.4.19）：红线已在上方路径规则检查（_ARG_PARAM_MAP
-        # 含 write_file→path）；这里补覆盖/越界审批档
-        if name == "write_file":
-            path = str(arguments.get("path", ""))
-            if os.path.exists(path):
-                return f"NEED_APPROVAL:覆盖写入 {path}"
-            if not _is_inside_project(path):
-                return f"NEED_APPROVAL:项目外写入 {path}"
-        # run_python 沙箱降级档（v0.4.23，环境变量开关退役）：import 白名单外
-        # 模块 → 审批弹窗（对齐 shell 三档）——用户批准后 approved 注入走完整 Python
-        if name == "run_python":
-            code = str(arguments.get("code", ""))
-            need = self._needs_sandbox_downgrade(code)
-            if need:
-                return f"NEED_APPROVAL:{need}"
+        # ④ 工具级审批声明（v0.4.26 声明式判档）：查 registry 的
+        # ToolEntry.approval——工具注册时自声明权限策略（无条件模板 /
+        # 条件函数），插件查表执行，零工具名分支。新增需审批工具只改
+        # 工具文件（register(approval=...)），本插件无需改动。
+        # 边界：系统级底线（黑名单/敏感路径/红线）永远优先于工具声明
+        rule = get_tool(name).approval if get_tool(name) else None
+        if rule is not None:
+            if callable(rule):
+                desc = rule(arguments)
+            else:
+                try:
+                    desc = rule.format(**arguments)
+                except (KeyError, IndexError):
+                    desc = rule  # 缺参/占位符不匹配 → 回退模板本身
+            if desc:
+                return f"NEED_APPROVAL:{desc}"
         # ① 放行（白名单命令由工具层执行；项目内新增文件自动写入）
-        return None
-
-    @staticmethod
-    def _needs_sandbox_downgrade(code: str) -> str | None:
-        """run_python 代码是否需要沙箱降级：import 受限白名单外模块。
-
-        restricted 环境只放行 _RESTRICTED_MODULES；需要其他模块的代码
-        → NEED_APPROVAL 弹窗（降级=用户逐次批准，环境变量静默降级已退役）。
-        """
-        for m in re.finditer(r"^\s*(?:import|from)\s+([\w.]+)", code, re.M):
-            module = m.group(1).split(".")[0]
-            if module not in _RESTRICTED_MODULES:
-                return f"代码需要 import '{module}'（受限环境白名单外），需降级审批"
         return None
 
     def _check_blacklist(self, name: str, arguments: dict) -> str | None:

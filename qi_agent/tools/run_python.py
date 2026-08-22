@@ -16,6 +16,7 @@ v2 已解决（受限环境无 import 能力）。
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,12 @@ _FORBIDDEN_PATTERNS = (
     "import os", "import sys", "import subprocess", "import shutil",
     "import socket", "__import__", "eval(", "exec(", "open(",
     "().__class__", "__subclasses__", "__globals__",
+)
+
+# 受限环境可 import 的模块（沙箱内容策略，v0.4.26 从 security_guard 迁移）——
+# 审批条件判据：import 白名单外模块 → 降级审批弹窗（用户批准后完整 Python 执行）
+_RESTRICTED_MODULES = (
+    "math", "random", "json", "statistics", "fractions", "decimal",
 )
 
 # 第一道防线：密钥特征子串（对齐 Hermes _SECRET_SUBSTRINGS，先黑后白）
@@ -273,6 +280,20 @@ def run_python(code: str, approved: bool = False) -> str:
         return f"[错误] 执行失败: {exc}"
 
 
+def _approval_condition(arguments: dict) -> str | None:
+    """run_python 审批条件（v0.4.26 声明式，从 security_guard 迁移）。
+
+    import 受限白名单外模块 → 返回降级审批描述；否则 None（放行）。
+    工具自声明权限策略——security_guard 插件查 registry 执行。
+    """
+    code = str(arguments.get("code", ""))
+    for m in re.finditer(r"^\s*(?:import|from)\s+([\w.]+)", code, re.M):
+        module = m.group(1).split(".")[0]
+        if module not in _RESTRICTED_MODULES:
+            return f"代码需要 import '{module}'（受限环境白名单外），需降级审批"
+    return None
+
+
 register(
     name="run_python",
     toolset="builtin",
@@ -284,6 +305,8 @@ register(
         "等基础模块；需要其他模块（如 requests）的代码会弹窗请求降级审批，"
         "用户同意后以完整 Python 执行"
     ),
+    # 审批声明（v0.4.26 声明式）：条件审批——import 白名单外 → 降级弹窗
+    approval=_approval_condition,
     # 手写 schema：只暴露 code——approved 是内部参数（agent 审批注入），
     # 不进 schema → 模型看不到也传不了（传了会被参数校验拒为多余参数）
     # 注意：模型看到的描述是 schema.function.description（register description

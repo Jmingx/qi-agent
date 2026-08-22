@@ -6,11 +6,36 @@
 
 import psutil
 
-from qi_agent.security.rules import HARDLINE_PREFIXES, SHELL_COMBINATOR_SYNTAX
+from qi_agent.security.rules import (
+    APPROVAL_PREFIXES,
+    CODE_EXEC_PREFIXES,
+    HARDLINE_PREFIXES,
+    SHELL_COMBINATOR_SYNTAX,
+)
 from qi_agent.tools.registry import register
 
 # 命令执行超时（秒）。长驻程序（游戏/服务器）超时后杀进程树——见 _kill_process_tree
 _COMMAND_TIMEOUT = 10
+
+
+def _approval_condition(arguments: dict) -> str | None:
+    """shell 审批条件（v0.4.26 声明式，从 security_guard 迁移）。
+
+    命令前缀匹配（对齐 security_guard 判档语义）：
+    - 代码执行类（python/node/npm/pip 等）→ 沙箱升级档：以完整权限运行
+      （不受 run_python 沙箱约束），描述带"沙箱升级:"前缀——先于普通
+      审批档判定（弹窗透明，v0.4.23）
+    - 需审批命令（rm/git push 等）→ 普通审批档，描述即命令本身
+    - 红线（format/shutdown）不在此函数——那是插件的系统级底线
+      （不可审批、硬拒）；只读白名单命令 → None（放行）
+    """
+    command = str(arguments.get("command", ""))
+    lowered = command.lower().lstrip()
+    if any(lowered.startswith(p) for p in CODE_EXEC_PREFIXES):
+        return f"沙箱升级:{command}"
+    if any(lowered.startswith(p) for p in APPROVAL_PREFIXES):
+        return command
+    return None
 
 # shell 只读白名单：允许的命令前缀（阶段 2 安全设计，完整权限模型留后续阶段）
 _READONLY_PREFIXES = (
@@ -132,6 +157,9 @@ register(
         "会弹窗确认沙箱权限升级。启动 GUI 应用/游戏/服务器等常驻程序时 "
         "background=true（立即返回，程序独立运行）；普通命令用默认同步模式（等待输出）"
     ),
+    # 审批声明（v0.4.26 声明式）：条件审批——命令前缀匹配（代码执行 →
+    # 沙箱升级档；危险命令 → 普通审批档；红线由插件系统级底线硬拒）
+    approval=_approval_condition,
     # 手写 schema：只暴露 command + background——approved 是内部参数（agent
     # 审批注入），不进 schema → 模型看不到也传不了（传了会被参数校验拒为多余参数）
     schema={

@@ -161,3 +161,57 @@ def test_get_tool_schemas_contains_all() -> None:
         assert "schema_x" in names
     finally:
         _cleanup("schema_x")
+
+
+# ── approval 审批声明字段（v0.4.26 声明式判档）────────────────────────────
+
+
+def test_register_approval_template() -> None:
+    """register 带 approval 模板字符串 → ToolEntry.approval 保存。"""
+    def my_tool() -> str:
+        return "ok"
+
+    register(name="appr_tpl", handler=my_tool, approval="删除文件 {path}")
+    try:
+        assert _TOOL_REGISTRY["appr_tpl"].approval == "删除文件 {path}"
+    finally:
+        _cleanup("appr_tpl")
+
+
+def test_register_approval_callable() -> None:
+    """register 带 approval 条件函数 → ToolEntry.approval 保存（callable）。"""
+    def my_tool() -> str:
+        return "ok"
+
+    def cond(arguments: dict) -> str | None:
+        return "命中" if arguments.get("x") else None
+
+    register(name="appr_fn", handler=my_tool, approval=cond)
+    try:
+        assert _TOOL_REGISTRY["appr_fn"].approval is cond
+    finally:
+        _cleanup("appr_fn")
+
+
+def test_register_approval_default_none() -> None:
+    """默认 approval=None（放行，不产生审批）。"""
+    def my_tool() -> str:
+        return "ok"
+
+    register(name="appr_none", handler=my_tool)
+    try:
+        assert _TOOL_REGISTRY["appr_none"].approval is None
+    finally:
+        _cleanup("appr_none")
+
+
+def test_tool_decorator_approval() -> None:
+    """@tool 装饰器支持 approval 参数。"""
+    @tool(description="兼容测试", approval="测试操作 {x}")
+    def legacy_appr(x: str) -> str:
+        return x
+
+    try:
+        assert _TOOL_REGISTRY["legacy_appr"].approval == "测试操作 {x}"
+    finally:
+        _cleanup("legacy_appr")

@@ -37,6 +37,14 @@ class ToolEntry:
     description: str = ""           # 一句话描述
     check_fn: Callable | None = None        # 环境检查（返回 False 不注册）
     requires_env: list[str] = field(default_factory=list)  # 需要的环境变量
+    approval: str | Callable[[dict], str | None] | None = None
+    # 审批声明（v0.4.26 声明式判档）：工具在注册时自声明权限策略——
+    # str     = 无条件审批模板（"删除文件 {path}"，{param} 从参数填充，
+    #           缺参/不匹配回退模板本身）
+    # callable = 条件审批函数：接收 arguments，返回审批描述 str（需审批）
+    #           或 None（放行）
+    # None    = 默认放行（不产生审批）
+    # 由 security_guard 插件查 registry 执行；插件本身零工具名分支。
 
 
 def _log_registered(entry: "ToolEntry") -> None:
@@ -61,6 +69,7 @@ def register(
     description: str = "",
     check_fn: Callable | None = None,
     requires_env: list[str] | None = None,
+    approval: str | Callable[[dict], str | None] | None = None,
 ) -> None:
     """显式注册一个工具。
 
@@ -72,6 +81,8 @@ def register(
         description: 工具描述
         check_fn: 环境检查函数，返回 False 时跳过注册（优雅降级）
         requires_env: 需要的环境变量列表，缺失时跳过注册
+        approval: 审批声明（v0.4.26）——无条件模板 str / 条件函数 callable /
+            None 放行。security_guard 插件查 registry 判档，插件零改动
 
     Raises:
         ValueError: 工具名重复且未显式 override
@@ -113,12 +124,14 @@ def register(
         description=description,
         check_fn=check_fn,
         requires_env=envs,
+        approval=approval,
     )
     _TOOL_REGISTRY[name] = entry
     _log_registered(entry)
 
 
-def tool(description: str = "", toolset: str = "builtin") -> Callable:
+def tool(description: str = "", toolset: str = "builtin",
+         approval: str | Callable[[dict], str | None] | None = None) -> Callable:
     """装饰器：register() 的便捷封装（向后兼容，现有用法零改动）。
 
     用法:
@@ -128,7 +141,8 @@ def tool(description: str = "", toolset: str = "builtin") -> Callable:
 
     def decorator(fn: Callable) -> Callable:
         # 转调 register()：schema 自动从签名生成
-        register(name=fn.__name__, toolset=toolset, handler=fn, description=description)
+        register(name=fn.__name__, toolset=toolset, handler=fn,
+                 description=description, approval=approval)
         return fn  # 原样返回，不改变函数本身
 
     return decorator
@@ -170,6 +184,14 @@ def _build_schema(fn: Callable, description: str) -> dict:
             },
         },
     }
+
+
+def get_tool(name: str) -> "ToolEntry | None":
+    """按名字取工具条目（未注册返回 None）。
+
+    供插件/内部逻辑读取工具元信息（如审批声明 approval，v0.4.26）。
+    """
+    return _TOOL_REGISTRY.get(name)
 
 
 def get_tool_schemas() -> list[dict]:
