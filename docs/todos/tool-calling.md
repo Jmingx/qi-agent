@@ -41,6 +41,7 @@
 |------|------|------|------|------|
 | ✅ | **工具并行执行（线程池）** | P1 | ⭐⭐⭐ | 一次 tool_calls 多个工具并行执行（当前串行）。**用线程池（concurrent.futures.ThreadPoolExecutor）**——注意：线程池解决的是"并发调度"不是"省进程创建"；参考 Hermes DaemonThreadPoolExecutor（daemon 线程防退出卡死）。注意 DeepSeek 限流，并发数 ≤3。**完成 v0.4.25（2026-08-22）**：见上方"并行工具调用"条目（三阶段：主线程判档/审批 → max_workers=10 并行 → 按序回填；实测 2 工具一次往返 3.0s） |
 | ✅ | **Web 工具（web_search + web_extract）** | P1 | ⭐⭐⭐ | 联网搜索 + 网页提取。**完成 v0.4.26（2026-08-22）**：web_search 双后端自动降级（DeepSeek 官方搜索 web_search_20250305 主——复用 key/国内直连/结构化，参考 DSH；Bing HTML 兜底——ck 链接还原 base64url）；web_extract 标题+正文提取 + **SSRF 防护**（拒绝内网/本地，云元数据 169.254.169.254 等）；零新依赖（urllib+html.parser）；Hermes 对照：其 ddgs/tavily 国内不可用/需 key（check_web_api_key=False 实测），qi-agent 是更优解 |
+| ✅ | **文件域工具（list_dir + search_files + file_delete）** | P1 | ⭐⭐ | 补文件域空缺。**完成 v0.4.26（2026-08-22，用户要求边界清晰）**：list_dir 结构化列目录（敏感目录不列出）；search_files 纯 Python 内容搜索（os.walk+正则，不依赖 rg，返回 文件:行号:匹配行）；file_delete 破坏性→审批档（security_guard NEED_APPROVAL）+敏感路径红线（approved 也拒）+只删文件；边界三原则：正交/安全主线（只读放行写删审批）/描述交叉引用 |
 | ❌ | **run_python 常驻 worker（进程复用）** | P2 | ⭐⭐⭐ | **已丢弃（2026-08-22 用户决策）**：性能账分析——python 启动 ~300ms vs LLM 秒级，复用省 <1% 收益；且复用破坏沙箱隔离（上次执行的变量/import 残留 = 隔离失效），安全底线 > 微性能。参考 Hermes code_execution RPC 设计留档 |
 | ⬜ | **异步工具支持（is_async）** | P1 | ⭐⭐⭐ | register() 增加 is_async 字段（对齐 Hermes），execute_tool 区分同步/异步 handler（asyncio.run 包装） |
 | ⬜ | **工具调用去重/幂等** | P2 | ⭐⭐ | 相同参数重复调用时（如 get_time 被调两次）可缓存或提示，避免浪费 API 轮次 |
