@@ -154,3 +154,101 @@ def test_unknown_tool_does_not_crash() -> None:
     # 错误信息作为 tool 结果回填
     tool_msg = [m for m in agent.history if m["role"] == "tool"][-1]
     assert "未知工具" in tool_msg["content"]
+
+
+# ── 并行工具调用（方案 2026-08-22，DeepSeek 并行返回实测通过）─────────────
+
+
+def test_parallel_tool_calls_all_executed() -> None:
+    """模型一次返回 2 个 tool_calls → 两个都执行、结果按原顺序回填。"""
+    client = ScriptedClient([
+        make_result(None, tool_calls=[
+            ToolCall(id="call_1", name="read_file",
+                     arguments={"path": "pyproject.toml"}),
+            ToolCall(id="call_2", name="shell", arguments={"command": "pwd"}),
+        ]),
+        make_result("两个都执行了"),
+    ])
+    agent = Agent(client)
+    reply = agent.chat("帮我读项目配置并看当前目录")
+    assert reply == "两个都执行了"
+    tool_msgs = [m for m in agent.history if m["role"] == "tool"]
+    assert len(tool_msgs) == 2
+    # 回填顺序 = call 原顺序（call_1 在前，模型按 index 对应）
+    assert tool_msgs[0]["tool_call_id"] == "call_1"
+    assert tool_msgs[1]["tool_call_id"] == "call_2"
+    assert "qi-agent" in tool_msgs[0]["content"]  # read_file 真执行了
+    assert tool_msgs[1]["content"] != "[安全拦截]"  # pwd 白名单放行
+
+
+def test_parallel_tool_result_events_in_order() -> None:
+    """tool-result 事件按 call 原顺序 emit（监听器状态配对依赖顺序）。"""
+    from qi_agent.events import EventBus
+
+    emitted: list[str] = []
+    bus = EventBus()
+    bus.on("agent/tool-result", lambda **kw: emitted.append(kw["name"]))
+    client = ScriptedClient([
+        make_result(None, tool_calls=[
+            ToolCall(id="c1", name="shell", arguments={"command": "pwd"}),
+            ToolCall(id="c2", name="shell", arguments={"command": "dir"}),
+        ]),
+        make_result("完成"),
+    ])
+    agent = Agent(client, events=bus)
+    agent.chat("看下目录")
+    assert emitted == ["shell", "shell"]  # 两个事件按序（同名工具也不乱）
+
+
+def test_parallel_blocked_call_still_emits() -> None:
+    """并行中拦截的 call 也广播 tool-result（与串行现状语义一致）。"""
+    from qi_agent.events import EventBus
+
+    emitted: list[str] = []
+    bus = EventBus()
+    bus.on("agent/tool-result", lambda **kw: emitted.append(kw["output"][:6]))
+    # 脚本：第一轮 2 个 tool_calls（第二个是未知工具 → 工具层拦截）
+    client = ScriptedClient([
+        make_result(None, tool_calls=[
+            ToolCall(id="c1", name="shell", arguments={"command": "pwd"}),
+            ToolCall(id="c2", name="no_such_tool", arguments={}),
+        ]),
+        make_result("完成"),
+    ])
+    agent = Agent(client, events=bus)
+    agent.chat("执行")
+    assert emitted[0].startswith("C:") or emitted[0].startswith("/")  # pwd 输出
+    assert emitted[1].startswith("[工具")  # 未知工具错误也广播
+
+
+def test_parallel_actually_concurrent() -> None:
+    """并行证据：第一个工具执行等第二个也进入才完成（串行下必超时失败）。"""
+    import threading
+    from unittest import mock
+
+    first_in = threading.Event()
+    both_in = threading.Event()
+
+    def fake_execute(name: str, arguments: dict, internal=None) -> str:
+        # 先进入的调用：等第二个也进入（并行才可能；串行时等 2s 超时）
+        if not first_in.is_set():
+            first_in.set()
+            ok = both_in.wait(timeout=2)
+            return f"{name}-ok-{ok}"
+        both_in.set()  # 第二个进入：通知第一个
+        return f"{name}-ok"
+
+    with mock.patch("qi_agent.agent.execute_tool", side_effect=fake_execute):
+        client = ScriptedClient([
+            make_result(None, tool_calls=[
+                ToolCall(id="c1", name="shell", arguments={"command": "pwd"}),
+                ToolCall(id="c2", name="shell", arguments={"command": "dir"}),
+            ]),
+            make_result("完成"),
+        ])
+        agent = Agent(client)
+        agent.chat("看目录")
+    tool_msgs = [m for m in agent.history if m["role"] == "tool"]
+    assert len(tool_msgs) == 2
+    # 第一个调用等到了第二个 → ok-True（并行实锤；串行实现会 ok-False）
+    assert "ok-True" in tool_msgs[0]["content"] or "ok-True" in tool_msgs[1]["content"]

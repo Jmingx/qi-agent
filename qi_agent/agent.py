@@ -8,14 +8,35 @@
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol
 
 from qi_agent.debugger import DebugLogger
 from qi_agent.events import EventBus
-from qi_agent.llm import ChatResult
+from qi_agent.llm import ChatResult, ToolCall
 from qi_agent.tools.registry import execute_tool, get_tool_schemas
 
 DEFAULT_SYSTEM_PROMPT = "你是一个有用的助手。"
+
+# 并行工具调用上限（方案 2026-08-22，用户拍板 10）：
+# 模型一次返回多个 tool_calls 时线程池并发执行——最多 N 个工具同时跑
+# （安全阀非常态——模型实际通常发 2-5 个；同时天然是子进程并发边界）
+_MAX_PARALLEL_TOOLS = 10
+
+
+def _execute_with_timing(name: str, arguments: dict) -> tuple[str, float]:
+    """执行单个工具并计时（并行线程入口——只做执行，不发事件/不碰历史）。
+
+    并行线程只允许调用本函数：事件（tool-result）与回填（messages）必须
+    回主线程——监听器状态非线程安全（tool_stats _call_start 同名覆盖、
+    count += 1 非原子、logger 文件写），方案 2026-08-22 决策点 4。
+    """
+    start = time.perf_counter()
+    output = execute_tool(
+        name, arguments,
+        internal={"approved"} if "approved" in arguments else None,
+    )
+    return output, time.perf_counter() - start
 
 
 class ChatClient(Protocol):
@@ -98,7 +119,11 @@ class Agent:
             if result.tool_calls:
                 # 1. assistant 的 tool_calls 消息必须原样进历史（协议要求）
                 self.messages.append(result.assistant_message)
-                # 2. 逐个执行工具，结果回填（tool_call_id 一一对应）
+                # 2. 并行执行（方案 2026-08-22）：三阶段——
+                #    阶段1 主线程判档+审批（串行，弹窗一次一个）
+                #    阶段2 线程池并行执行（只 execute_tool）
+                #    阶段3 主线程按 call 原顺序 emit + 回填（监听器状态单线程）
+                pending: dict[str, tuple[ToolCall, str | None]] = {}
                 for call in result.tool_calls:
                     # 事件点：tool-call（短路决策：返回非 None 则拦截，值作为结果回填）
                     decision = self.events.bail(
@@ -127,16 +152,33 @@ class Agent:
                             decision = None  # 放行执行
                         else:
                             decision = f"[审批拒绝] 用户不同意执行: {command}"
+                    pending[call.id] = (call, decision)
+
+                # 阶段 2：线程池并行执行待运行的 calls（拦截的已在阶段 1 定结果）
+                outputs: dict[str, tuple[str, float]] = {}
+                to_run = {
+                    cid: (call, dec)
+                    for cid, (call, dec) in pending.items() if dec is None
+                }
+                if to_run:
+                    with ThreadPoolExecutor(
+                        max_workers=_MAX_PARALLEL_TOOLS
+                    ) as pool:
+                        futures = {
+                            cid: pool.submit(_execute_with_timing, call.name, call.arguments)
+                            for cid, (call, _) in to_run.items()
+                        }
+                        for cid, fut in futures.items():
+                            outputs[cid] = fut.result()
+
+                # 阶段 3：主线程按 call 原顺序 emit + 回填（顺序 = 模型请求顺序，
+                # tool_stats 等监听器的状态配对依赖此顺序）
+                for call in result.tool_calls:
+                    decision = pending[call.id][1]
                     if decision is not None:
-                        output = str(decision)
-                        duration = 0.0
+                        output, duration = str(decision), 0.0
                     else:
-                        start = time.perf_counter()
-                        output = execute_tool(
-                            call.name, call.arguments,
-                            internal={"approved"} if "approved" in call.arguments else None,
-                        )
-                        duration = time.perf_counter() - start
+                        output, duration = outputs[call.id]
                     # 事件点：tool-result（广播，统计/审计用）
                     self.events.emit(
                         "agent/tool-result",
