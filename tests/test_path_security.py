@@ -1,6 +1,6 @@
 """路径安全检查测试：敏感路径拦截 + 路径规范化防绕过。"""
 
-from qi_agent.tools.path_security import is_sensitive_path
+from qi_agent.security.path_security import is_sensitive_path
 
 
 def test_sensitive_env_file() -> None:

@@ -6,6 +6,7 @@
 
 import psutil
 
+from qi_agent.security.rules import HARDLINE_PREFIXES, SHELL_COMBINATOR_SYNTAX
 from qi_agent.tools.registry import register
 
 # 命令执行超时（秒）。长驻程序（游戏/服务器）超时后杀进程树——见 _kill_process_tree
@@ -15,14 +16,6 @@ _COMMAND_TIMEOUT = 10
 _READONLY_PREFIXES = (
     "pwd", "ls", "dir", "echo", "cat", "type", "whoami",
     "date", "time", "where", "which", "findstr",
-)
-
-# 危险命令关键词（红线，命中即拒绝）：删库跑路类（磁盘级破坏）+
-# 重启/关机 + 组合命令语法（前缀检测盲区兜底——echo a | rm -rf / 组合里的
-# rm 抓不到，组合本身硬拒）。rm/del/curl 等已改审批档（方案 2026-08-20）
-_DANGEROUS_KEYWORDS = (
-    "format", "mkfs", "dd ", "shutdown", "reboot",
-    ">", ">>", "|", "&&", ";",
 )
 
 
@@ -57,8 +50,9 @@ def shell(command: str, approved: bool = False, background: bool = False) -> str
     cmd = command.strip().lower()
 
     if not approved:
-        # 1. 危险关键词拦截（必须先于白名单判断）
-        for keyword in _DANGEROUS_KEYWORDS:
+        # 1. 危险关键词拦截（必须先于白名单判断）——规则来自 security/rules.py
+        #    单一来源（方案 2026-08-22）：红线 + 组合语法两组并集
+        for keyword in (*HARDLINE_PREFIXES, *SHELL_COMBINATOR_SYNTAX):
             if keyword in cmd:
                 return f"[安全拦截] 命令包含危险操作 ({keyword.strip()})，已拒绝执行"
 

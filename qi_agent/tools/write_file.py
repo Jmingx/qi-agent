@@ -13,7 +13,7 @@
 import os
 from pathlib import Path
 
-from qi_agent.tools.path_security import is_sensitive_path
+from qi_agent.security.path_security import is_sensitive_path
 from qi_agent.tools.registry import register
 
 # 项目根（写文件限定的默认范围；测试可 monkeypatch）

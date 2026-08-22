@@ -12,7 +12,12 @@ import re
 
 from qi_agent.events import EventBus
 from qi_agent.plugins.registry import register_plugin
-from qi_agent.tools.path_security import is_sensitive_path
+from qi_agent.security.path_security import is_sensitive_path
+from qi_agent.security.rules import (
+    APPROVAL_PREFIXES,
+    CODE_EXEC_PREFIXES,
+    HARDLINE_PREFIXES,
+)
 from qi_agent.tools.write_file import _is_inside_project
 
 # 工具名 -> 参数名映射（从 arguments 里取待审核内容）
@@ -25,34 +30,10 @@ _ARG_PARAM_MAP = {
 
 # 受限环境可 import 的模块（对齐 _sandbox_runner._ALLOWED_EXTRA_MODULES 默认值）
 # run_python 降级判据：import 白名单外模块 → NEED_APPROVAL（v0.4.23 审批档）
+# 注意：这是"沙箱内容策略"（模块白名单），与命令权限规则（security/rules.py）
+# 正交，故保留在本插件（方案 2026-08-22 决策点 2）
 _RESTRICTED_MODULES = (
     "math", "random", "json", "statistics", "fractions", "decimal",
-)
-
-# 需审批档：危险但可审的命令前缀（三档中的②——Claude Code ask 借鉴）
-# 命中 → NEED_APPROVAL 标记 → agent 发审批事件 → approval_gate 弹窗
-# 边界（方案 2026-08-20-审批档边界调整）：rm/del/curl/wget 等用户可审批；
-# shutdown/format 等红线不在此列（见 _HARDLINE_PREFIXES）
-_APPROVAL_PREFIXES = (
-    "rm ", "rmdir ", "git push", "git reset --hard",
-    "git checkout --", "del ", "rd ", "taskkill",
-    "net user", "reg delete", "start ", "python", "py",
-    "npm", "pip", "npx", "curl", "wget",
-)
-
-# 红线前缀（不可审批、不可执行——插件层直接硬拒，先于审批档判定）：
-# 必须在插件层生效（实现时发现）：若只靠 shell 工具层硬拒，审批同意后
-# approved=True 会跳过工具层 → format/shutdown 仍可执行（漏洞）
-_HARDLINE_PREFIXES = (
-    "format", "mkfs", "dd ", "shutdown", "reboot",
-)
-
-# 代码执行类命令（v0.4.23 弹窗透明）：shell 里跑这类命令 = 以完整权限执行，
-# 不受 Python 沙箱（run_python）约束——判为【沙箱升级】档（NEED_APPROVAL:沙箱升级:），
-# 弹窗明确告知"完整权限/绕沙箱"（Hermes/CC 都只是描述引导，无此透明层）。
-# 注意：python/py 也在 _APPROVAL_PREFIXES——必须先于此档判定（沙箱升级优先）。
-_CODE_EXEC_PREFIXES = (
-    "python", "py ", "node", "npm", "pip", "npx",
 )
 
 
@@ -97,7 +78,7 @@ class SecurityGuardPlugin:
         if name == "shell":
             command = str(arguments.get("command", ""))
             lowered = command.lower().lstrip()
-            if any(lowered.startswith(p) for p in _HARDLINE_PREFIXES):
+            if any(lowered.startswith(p) for p in HARDLINE_PREFIXES):
                 return f"[安全拦截] 命令属于红线操作（不可执行）: {command}"
         # ② 沙箱升级档（v0.4.23，先于普通审批档）：代码执行类命令（python/
         # py/node/npm/pip 等）→ 弹窗告知"完整权限（不受沙箱约束）"——用户
@@ -105,13 +86,13 @@ class SecurityGuardPlugin:
         if name == "shell":
             command = str(arguments.get("command", ""))
             lowered = command.lower().lstrip()
-            if any(lowered.startswith(p) for p in _CODE_EXEC_PREFIXES):
+            if any(lowered.startswith(p) for p in CODE_EXEC_PREFIXES):
                 return f"NEED_APPROVAL:沙箱升级:{command}"
         # ② 需审批档（仅 shell 命令）
         if name == "shell":
             command = str(arguments.get("command", ""))
             lowered = command.lower().lstrip()
-            if any(lowered.startswith(p) for p in _APPROVAL_PREFIXES):
+            if any(lowered.startswith(p) for p in APPROVAL_PREFIXES):
                 return f"NEED_APPROVAL:{command}"
         # write_file 四档（v0.4.19）：红线已在上方路径规则检查（_ARG_PARAM_MAP
         # 含 write_file→path）；这里补覆盖/越界审批档

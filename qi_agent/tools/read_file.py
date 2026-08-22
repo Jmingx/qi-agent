@@ -10,7 +10,7 @@
 - 字符上限 50_000 双保险：2000 行超大文件防撑爆上下文
 """
 
-from qi_agent.tools.path_security import is_sensitive_path
+from qi_agent.security.path_security import is_sensitive_path
 from qi_agent.tools.registry import register
 
 # 单次返回字符上限（双保险：limit 2000 行仍可能超大）
