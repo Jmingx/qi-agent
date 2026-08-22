@@ -8,6 +8,7 @@
 import argparse
 
 from qi_agent.agent_factory import build_agent
+from qi_agent.context.sticky import remember
 from qi_agent.interaction import TerminalInteraction, set_interaction_provider
 from qi_agent.tools import get_time, read_file, run_python, shell  # noqa: F401  导入即注册内置工具
 
@@ -16,6 +17,10 @@ EXIT_COMMANDS = {"exit", "quit", "退出", "q"}
 
 # 清理上下文命令集合
 CLEAR_COMMANDS = {"clear"}
+
+# 重要信息命令前缀（阶段 B3，方案 2026-08-22）：/remember <内容>
+# sticky 挂 system prompt——用户要求保留的信息永不裁剪
+REMEMBER_PREFIX = "/remember"
 
 # 资源查看命令集合（2026-08-21 交互调整：命令式查看资源消耗，不再每轮输出）
 USAGE_COMMANDS = {"usage", "资源"}
@@ -76,6 +81,16 @@ def main(argv: list[str] | None = None) -> None:
             agent.clear_context()
             continue
 
+        # 重要信息命令（阶段 B3）：/remember <内容> → sticky（永不裁剪）
+        if user_input.startswith(REMEMBER_PREFIX):
+            content = user_input[len(REMEMBER_PREFIX):].strip()
+            if content:
+                remember(content)
+                print(f"已记住：{content}")
+            else:
+                print("用法：/remember <要记住的内容>")
+            continue
+
         # 资源消耗命令（2026-08-21：查看当前累计，不消耗 LLM 调用）
         if user_input.lower() in USAGE_COMMANDS:
             _print_plugin_reports(installed_plugins)
@@ -84,9 +99,9 @@ def main(argv: list[str] | None = None) -> None:
         try:
             # 流式前缀处理：
             # - 普通模式：打印 "agent> " 前缀，流式内容紧跟（打字机效果）
-            # - --debug 模式：不打印前缀——日志框已展示完整链路（[USER]→[RESP]），
-            #   流式文本单独一行输出，避免前缀与日志框粘连错位
-            if agent.logger is None:
+            # - --debug 模式：不打印前缀——日志插件已展示完整链路
+            #   （[USER]→[RESP]），流式文本单独一行输出，避免前缀粘连
+            if not args.debug:
                 print("agent> ", end="", flush=True)
             reply = agent.chat(
                 user_input,

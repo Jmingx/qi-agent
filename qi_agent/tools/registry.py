@@ -17,6 +17,9 @@ from typing import Callable, get_type_hints
 # 注册表：工具名 -> ToolEntry（改用结构化条目，对齐 Hermes ToolEntry 思想）
 _TOOL_REGISTRY: dict[str, "ToolEntry"] = {}
 
+# 工具输出统一截断上限（阶段 B2，方案 2026-08-22）：registry 出口兜底
+_TOOL_OUTPUT_LIMIT = 2000
+
 # Python 类型 -> JSON Schema 类型映射（自动生成 schema 用）
 _TYPE_MAP = {
     str: "string",
@@ -45,6 +48,11 @@ class ToolEntry:
     #           或 None（放行）
     # None    = 默认放行（不产生审批）
     # 由 security_guard 插件查 registry 执行；插件本身零工具名分支。
+    output_limit: int = _TOOL_OUTPUT_LIMIT
+    # 输出截断上限（阶段 B2，方案 2026-08-22）：registry 出口统一截断
+    # 兜底（默认 2000 字符）——各工具不再各自为政，截断策略一处改。
+    # 例外：read_file 注册 50_000（行级分页语义——一次可返回大块，
+    # 模型用 offset 续读；统一 2000 会破坏分页设计）
 
 
 def _log_registered(entry: "ToolEntry") -> None:
@@ -70,6 +78,7 @@ def register(
     check_fn: Callable | None = None,
     requires_env: list[str] | None = None,
     approval: str | Callable[[dict], str | None] | None = None,
+    output_limit: int | None = None,
 ) -> None:
     """显式注册一个工具。
 
@@ -83,6 +92,8 @@ def register(
         requires_env: 需要的环境变量列表，缺失时跳过注册
         approval: 审批声明（v0.4.26）——无条件模板 str / 条件函数 callable /
             None 放行。security_guard 插件查 registry 判档，插件零改动
+        output_limit: 输出截断上限（阶段 B2）——默认 2000；read_file 等
+            分页工具可调大（50_000）
 
     Raises:
         ValueError: 工具名重复且未显式 override
@@ -125,6 +136,7 @@ def register(
         check_fn=check_fn,
         requires_env=envs,
         approval=approval,
+        output_limit=output_limit or _TOOL_OUTPUT_LIMIT,
     )
     _TOOL_REGISTRY[name] = entry
     _log_registered(entry)
@@ -281,7 +293,16 @@ def execute_tool(name: str, arguments: dict,
         result = entry.handler(**arguments)
         # 统一转成字符串返回（LLM 只能读文本）
         if isinstance(result, str):
-            return result
-        return json.dumps(result, ensure_ascii=False)
+            text = result
+        else:
+            text = json.dumps(result, ensure_ascii=False)
+        # 出口统一截断（阶段 B2，方案 2026-08-22）：工具各自内部截断
+        # 保留（兜底双保险），registry 是最终闸门——截断策略一处改
+        if len(text) > entry.output_limit:
+            text = (
+                text[:entry.output_limit]
+                + f"\n...[输出过长已截断（{len(text)} 字符，上限 {entry.output_limit}）]"
+            )
+        return text
     except Exception as exc:  # 工具内部异常 → 转为错误消息回填给 LLM
         return f"[工具错误] {name} 执行失败: {exc}"

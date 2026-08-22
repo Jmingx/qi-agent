@@ -11,7 +11,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol
 
-from qi_agent.debugger import DebugLogger
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult, ToolCall
 from qi_agent.tools.registry import execute_tool, get_tool_schemas
@@ -55,15 +54,33 @@ class Agent:
         client: ChatClient,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         max_turns: int = 8,
-        logger: DebugLogger | None = None,
         events: EventBus | None = None,
     ) -> None:
         self.client = client
         self.max_turns = max_turns
-        self.logger = logger  # 可选调试日志器（依赖注入，None 时无日志）
         self.system_prompt = system_prompt  # 初始化系统提示词
         self.events = events or EventBus()  # 事件总线（默认空总线：零侵入）
+        # 注：日志/上下文管理等横切关注点全部插件化（监听 agent/* 事件），
+        # agent 核心保持零侵入——2026-08-22 用户架构修正
+        # API usage 累计（阶段 A2，方案 2026-08-22）：每轮 result.usage
+        # 累加 prompt/completion/total——会话结束 /stats 汇总打印。
+        # 这是纯观测（不改发送内容）；改写逻辑走插件（context_manager）
+        self._usage: dict[str, int] = {
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+        }
         self._reset_messages()
+
+    def get_usage(self) -> dict[str, int]:
+        """累计 API usage（阶段 A2：prompt/completion/total tokens）。"""
+        return dict(self._usage)
+
+    def usage_report(self) -> str:
+        """人类可读汇总（/stats 或会话退出打印）。"""
+        u = self._usage
+        return (
+            f"[用量] 累计 {u['total_tokens']} tokens"
+            f"（prompt {u['prompt_tokens']} + completion {u['completion_tokens']}）"
+        )
 
     def chat(
         self,
@@ -86,15 +103,20 @@ class Agent:
         """
         self.messages.append({"role": "user", "content": user_input})
         self._turn += 1  # 会话内轮数计数（事件 payload 用）
-        # 事件点：turn-start（广播，通知类监听者）
+        # 事件点：turn-start（广播，通知类监听者——debug_logger 打印 [USER]）
         self.events.emit("agent/turn-start", user_input=user_input)
-        if self.logger:
-            self.logger.log_user_input(user_input)
 
         for step in range(self.max_turns):
-            # 事件点：pre-step（瀑布改写：插件可注入/修改消息历史）
+            # 事件点：pre-step（瀑布改写：插件可注入/修改消息历史——
+            # context_manager 插件在此做滑动裁剪，agent 零侵入）
             self.messages = self.events.waterfall(
                 "agent/pre-step", self.messages, turn=self._turn, step=step
+            )
+            # 事件点：pre-llm（广播，请求前——debug_logger 打印 [CTX]/[REQ]，
+            # 未来压缩预检等插件也在此挂）
+            self.events.emit(
+                "agent/pre-llm", messages=self.messages,
+                tools=get_tool_schemas(), turn=self._turn, step=step,
             )
             if stream_callback is not None:
                 # 流式模式：一次调用（on_delta 打字机 + 累积完整结果）
@@ -105,16 +127,18 @@ class Agent:
             else:
                 # 普通模式：chat()（向后兼容）
                 result = self.client.chat(self.messages, tools=get_tool_schemas())
-            if self.logger:
-                self.logger.log_request(self.messages, get_tool_schemas())
-                self.logger.log_response(result)
-            # 事件点：post-llm（广播，如 usage/成本追踪）
+            # 事件点：post-llm（广播，如 usage/成本追踪/debug_logger [RESP]）
             # messages 一并传出（2026-08-21 数据源修正）：resource_monitor
             # 在流式 usage 缺失时用消息列表估算（DSH 式混合兜底）
             self.events.emit(
                 "agent/post-llm", result=result, messages=self.messages,
                 turn=self._turn, step=step,
             )
+            # usage 累计（阶段 A2）：流式/非流式 result.usage 都可能为
+            # None（旧 API/流式缺 usage）——容错跳过
+            if result.usage:
+                for key in self._usage:
+                    self._usage[key] += int(result.usage.get(key, 0) or 0)
 
             if result.tool_calls:
                 # 1. assistant 的 tool_calls 消息必须原样进历史（协议要求）
@@ -179,7 +203,7 @@ class Agent:
                         output, duration = str(decision), 0.0
                     else:
                         output, duration = outputs[call.id]
-                    # 事件点：tool-result（广播，统计/审计用）
+                    # 事件点：tool-result（广播，统计/审计/debug_logger [TOOL]）
                     self.events.emit(
                         "agent/tool-result",
                         name=call.name,
@@ -187,8 +211,6 @@ class Agent:
                         output=output,
                         duration=duration,
                     )
-                    if self.logger:
-                        self.logger.log_tool_call(call.name, call.arguments, output)
                     self.messages.append(
                         {
                             "role": "tool",
@@ -200,11 +222,9 @@ class Agent:
                 # 3. 没有工具调用 → 这就是最终答案
                 # （流式/普通模式的 result 都是标准 ChatResult，统一处理）
                 content = result.content or ""
-                # 事件点：final-answer（广播，观察/存储用）
+                # 事件点：final-answer（广播，观察/存储/debug_logger [ANSWER]）
                 self.events.emit("agent/final-answer", content=content)
                 self.messages.append(result.assistant_message)
-                if self.logger:
-                    self.logger.log_final_answer(content)
                 return content
 
         # 4. 超限防护：防止工具死循环烧 API 额度
@@ -216,6 +236,8 @@ class Agent:
         self._reset_messages()
 
     def _reset_messages(self) -> None:
+        # 注意：sticky 挂载由 context_manager 插件在 pre-step 幂等注入
+        # （agent 保持零侵入——system 组装不在此处做上下文管理逻辑）
         self.messages: list[dict] = [
             {"role": "system", "content": self.system_prompt},
         ]

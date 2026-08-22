@@ -74,6 +74,9 @@ register(
         "读取指定路径的文本文件内容（行级分页：offset 起始行、limit 最大行数；"
         "返回中带总行数与续读提示，大文件可分段读取）"
     ),
+    # 输出上限豁免（阶段 B2）：行级分页语义——一次可返回大块（50K），
+    # 模型用 offset 续读；registry 统一 2000 会破坏分页设计
+    output_limit=50_000,
     # 手写 schema（offset/limit 有默认值，非必填）
     schema={
         "type": "function",
