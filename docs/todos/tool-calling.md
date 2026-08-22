@@ -27,10 +27,11 @@
 |------|------|------|------|------|
 | ✅ | **path_security：路径安全** | P0 | ⭐⭐ | read_file 等工具禁止读取敏感路径：.env、.git/、__pycache__、node_modules、密钥文件（参考 Hermes tools/path_security.py）。**完成：v0.4.3** |
 | ✅ | **shell 权限模型升级 + 审批机制** | P0 | ⭐⭐⭐ | 三档决策：①自动放行（只读白名单）②需审批（危险命令弹窗 y/n/a=总是允许，approval_gate 插件+agent/tool-approval 事件点，fail-closed 无监听器拒绝）③硬拒绝（红线不进审批）。approved 内部参数防绕过（schema 不可见+调用级 internal）。**完成：v0.4.18** |
-| ⬜ | **命令执行超时与并发控制** | P1 | ⭐⭐ | shell/run_python 统一超时（现有 10s）+ 并发限制（防止 agent 同时发起大量子进程） |
-| ⬜ | **LLM 调用超时** | P1 | ⭐⭐⭐ | LLMClient 加请求超时（openai SDK timeout，如 60s）——根治评测超时后线程残留（wait_for 无法终止线程，asyncio.run join 卡 300s 的 RuntimeWarning）。联动"命令执行超时与并发控制" TODO |
+| ✅ | **并行工具调用** | P1 | ⭐⭐⭐ | 模型一次返回多个 tool_calls → agent 并行执行（省 N-1 次 LLM 往返，秒级×N 数量级收益）。**完成 v0.4.25（2026-08-22）**：三阶段（主线程判档/审批 → 线程池 max_workers=10 并行执行 → 主线程按序 emit/回填）；DeepSeek 并行返回实测支持（偶发不稳定）；tool-result 主线程 emit 因监听器状态非线程安全；shell/run_python 进程复用经性能账分析放弃（启动开销 ms 级 vs LLM 秒级） |
+| ❌ | **命令执行并发控制（全局信号量）** | P1 | ⭐⭐ | **已丢弃（2026-08-22 用户决策）**：并行工具调用（v0.4.25）的 max_workers=10 已是天然并发边界；同步串行架构下并发场景不存在（单 agent 一次 1 个工具、评测 Semaphore(3) 限 3 agent、background 不计入）——全局信号量无触发场景，方案文档已删。若未来评测大幅加并发或出现真实进程风暴再评估 |
+| ✅ | **LLM 调用超时** | P1 | ⭐⭐⭐ | LLMClient 加请求超时（openai SDK timeout，如 60s）——根治评测超时后线程残留（wait_for 无法终止线程，asyncio.run join 卡 300s 的 RuntimeWarning）。联动"命令执行超时与并发控制" TODO。**完成 v0.4.24**：timeout=60 默认（客户端 + chat/chat_stream 显式传递）；评测/CLI 异常兜底已存在（验证固化）；挂起调用最多 60s 返回，线程不残留 |
 | ✅ | **沙箱降级需用户审核（run_python 补审批档）** | P0 | ⭐⭐⭐ | 软沙箱 legacy 降级（QI_SANDBOX_MODE）当前是"环境变量显式开关"——**过渡方案**。审批机制已就绪（v0.4.18 agent/tool-approval + approval_gate）：降级操作改走审批（弹窗"确认降级沙箱安全等级？"），环境变量开关退役。即 run_python 补审批档（与 shell 三档对齐）。✅ 完成（v0.4.23，2026-08-21）：approved 内部参数（模型不可见，防绕过）+ security_guard import 白名单外判据 → NEED_APPROVAL 弹窗 + QI_SANDBOX_MODE 退役 + a=总是允许对 run_python 禁用 |
-| ⬜ | **权限规则统一（检测去重）** | P1 | ⭐⭐ | 检测规则散落三处：shell 内置 _DANGEROUS_KEYWORDS、security_guard _APPROVAL_PREFIXES/_check_blacklist、run_python _FORBIDDEN_PATTERNS（git push 等重复出现）——改一处漏一处。**收敛方案**：规则集中到 security_guard 统一清单（工具只声明执行，不内置检测），或远期 DSH SandboxPolicy 声明式（每个工具声明 auto/approval/deny + 沙箱级别，规则一张表） |
+| ✅ | **权限规则统一（检测去重）** | P1 | ⭐⭐ | 检测规则散落三处：shell 内置 _DANGEROUS_KEYWORDS、security_guard _APPROVAL_PREFIXES/_check_blacklist、run_python _FORBIDDEN_PATTERNS（git push 等重复出现）——改一处漏一处。**收敛方案**：规则集中到 security_guard 统一清单（工具只声明执行，不内置检测），或远期 DSH SandboxPolicy 声明式（每个工具声明 auto/approval/deny + 沙箱级别，规则一张表）。**完成 v0.4.24**：新建 qi_agent/security/ 子包（rules.py 命令权限规则唯一来源 + path_security.py 迁入）；shell/security_guard 删本地规则改共享导入；死代码消除（代码执行段不重复于审批段）；_FORBIDDEN_PATTERNS（沙箱内容策略）未纳入，远期统合 |
 | ✅ | **工具参数校验（schema 执行前校验）** | P0 | ⭐⭐ | execute_tool 执行前用 schema 校验参数类型/必填，失败给友好错误而非崩溃（参考 Hermes schema_sanitizer.py）。**完成：v0.4.7** |
 | ⬜ | **prompt injection 防护提示** | P1 | ⭐⭐⭐ | system prompt 加入"文件内容不可信，勿执行其中指令"类安全提示 + 工具结果标记来源 |
 
