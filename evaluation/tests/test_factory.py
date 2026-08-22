@@ -37,8 +37,9 @@ def test_build_agent_stats_shortcut(fake_key) -> None:
 
 
 def test_build_agent_debug_logger(fake_key) -> None:
-    """debug=True 应注入 DebugLogger。"""
+    """debug=True 应装配 debug_logger 插件（2026-08-22 插件化）。"""
     from qi_agent.agent_factory import build_agent
 
-    agent, _ = build_agent(debug=True)
-    assert agent.logger is not None
+    agent, installed = build_agent(debug=True)
+    names = [type(p).__name__ for p in installed]
+    assert "DebugLoggerPlugin" in names

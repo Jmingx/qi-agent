@@ -11,7 +11,6 @@ import os
 from dotenv import load_dotenv
 
 from qi_agent.agent import Agent
-from qi_agent.debugger import DebugLogger
 from qi_agent.llm import LLMClient
 from qi_agent.plugins import load_plugins
 from qi_agent.plugins.config import load_plugin_config
@@ -34,7 +33,7 @@ def build_agent(debug: bool = False, stats: bool = False,
     """构建 agent（真实形态）：LLM 客户端 + 插件装配（plugins.toml 配置驱动）。
 
     Args:
-        debug: 注入 DebugLogger（CLI --debug）
+        debug: 装配 debug_logger 插件（CLI --debug，事件驱动日志）
         stats: 快捷启用 tool_stats（CLI --stats，向配置注入，不改配置文件）
         interactive: 是否交互环境（CLI=True）——False（评测/自动化）时不装配
             approval_gate 审批插件 → 需审批命令 fail-closed 拒绝。
@@ -44,11 +43,14 @@ def build_agent(debug: bool = False, stats: bool = False,
         (agent, installed_plugins)——installed 供 CLI 会话结束打印 report()
     """
     api_key = load_api_key()
-    logger = DebugLogger() if debug else None
-    agent = Agent(LLMClient(api_key), logger=logger)
+    agent = Agent(LLMClient(api_key))
 
     # 插件装配（v0.4.9）：注册表 + 配置文件，加插件不再改这里
     plugin_config = load_plugin_config()
+    if debug:
+        # --debug：装配调试日志插件（事件驱动打印 [USER]/[REQ]/[RESP] 等，
+        # 2026-08-22 插件化——不再注入 Agent.logger）
+        plugin_config["debug_logger"] = {"enabled": True}
     if stats:
         plugin_config["tool_stats"] = {"enabled": True}
     if not interactive:
