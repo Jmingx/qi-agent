@@ -273,3 +273,34 @@ def test_load_legacy_format(tmp_path, monkeypatch) -> None:
     run_at, loaded = load_report()
     assert run_at is None  # 旧格式无时间戳
     assert loaded[0]["id"] == "t1"
+
+
+# ── LLM 调用异常兜底（v0.4.24，配套 LLM timeout）────────────────────────
+
+
+def test_task_llm_error_fails_gracefully() -> None:
+    """任务内 LLM 抛异常（超时/网络）→ 任务失败，不拖垮整体评测。
+
+    v0.4.24 配套：LLMClient 加 timeout 后，挂起的 LLM 调用最多 timeout 秒
+    抛 APITimeoutError——runner 若只捕获 wait_for 超时，异常会冒泡让
+    asyncio.run 整体崩溃；必须兜底为单任务失败。
+    """
+
+    class ErrorAgent:
+        """假 agent：chat 抛异常（模拟 LLM 超时/网络错误）。"""
+
+        def __init__(self) -> None:
+            self.history = []
+
+        def chat(self, step: str) -> str:
+            raise TimeoutError("LLM 调用超时（60s）")
+
+    with mock.patch(
+        "evaluation.runner.build_agent", return_value=(ErrorAgent(), [])
+    ):
+        task = EvalTask(
+            id="t10", category="tool", name="LLM异常任务", steps=["x"],
+        )
+        results = run_eval([task])
+    assert results[0]["passed"] is False
+    assert "LLM 调用超时" in results[0]["failures"][0]

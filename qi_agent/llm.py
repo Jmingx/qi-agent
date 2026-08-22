@@ -43,11 +43,15 @@ class LLMClient:
         model: str = "deepseek-v4-flash",
         base_url: str = "https://api.deepseek.com",
         temperature: float = 0.7,
+        timeout: float = 60.0,
     ) -> None:
         self.model = model
         self.temperature = temperature
+        self.timeout = timeout
         # OpenAI SDK 兼容 DeepSeek：只需替换 base_url 与 api_key
-        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        # timeout（v0.4.24）：请求超时兜底——评测 wait_for 超时无法终止线程，
+        # LLM 调用自带 timeout 后最多 timeout 秒返回（抛异常），线程不残留
+        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None) -> ChatResult:
         """发送消息列表（可选带工具定义），返回结构化结果。
@@ -66,6 +70,7 @@ class LLMClient:
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
+            "timeout": self.timeout,  # v0.4.24：显式传（防客户端默认漂移）
         }
         if tools:
             kwargs["tools"] = tools
@@ -151,6 +156,7 @@ class LLMClient:
             "messages": messages,
             "temperature": self.temperature,
             "stream": True,  # 流式：返回迭代器而非完整对象
+            "timeout": self.timeout,  # v0.4.24：显式传（防客户端默认漂移）
         }
         if tools:
             kwargs["tools"] = tools
