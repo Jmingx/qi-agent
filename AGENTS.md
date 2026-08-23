@@ -32,15 +32,15 @@
 - 用户需要审阅代码变动（便于学习与把控），"自动提交"不得越过此规则
 
 ### 8. 双仓维护策略（P0，用户明确要求，2026-08-22）
-- **本地仓与远程仓分离维护**：本地保留全部文档（docs/）与完整 git log；远程仓**不上传 docs**（公开仓库不暴露内部文档）
-- **从现在开始的 git log 可以上传远程仓**（远程历史从干净基线累积，不再单提交覆盖）
+- **本地仓与远程仓分离维护**：本地 git **完整跟踪** docs/、AGENTS.md、.hermes/（有版本历史、可 diff、可回退）；远程仓**不上传 docs/AGENTS.md**（公开仓库不暴露内部文档）
+- **从现在开始的 git log 可以上传远程仓**（代码提交的 log 保留，docs 提交不推）
 - 具体约定：
-  - 本地 `main` 分支：基线 = 远程干净树（origin/main），docs/ 已 gitignore（本地工作区资产，不进 git 跟踪）——提交 = 纯代码/测试/配置，可直接 `git push` 远程
-  - 本地 `history-archive` 分支：完整历史（含 docs 提交），**本地-only，永不推送**
-  - `docs/`、`.hermes/` 目录：gitignore（本地保留，不进版本库）
-  - 远程仓：只含代码/测试/配置/README/AGENTS.md
-- 禁止把 docs/ 内容加入任何可推送的提交；推送前检查 `git status` 无 docs 变更
-- 教训（2026-08-22）：曾误把含 docs 历史的 main force push 到远程（checkout 失败未检查）——推送前必须验证分支状态与远程树
+  - 本地 `main` 分支：**完整跟踪**（代码 + docs + AGENTS.md + .hermes 正常提交），日常开发提交都在 main
+  - **推送远程走 `release-push.sh` 脚本**：在 worktree（.release-wt/）里基于 origin/main 建立发布分支，把 main 上新增的**代码提交**（跳过 `docs:` 前缀提交、跳过含 docs/AGENTS.md 变更的提交）cherry-pick 过去，push 到远程 main——远程历史 = 纯代码提交序列（log 保留）
+  - 远程仓：只含代码/测试/配置/README
+  - 推送前脚本打印将推送的提交清单供确认（P0-3 精神）
+- 禁止把 docs/ 内容加入任何可推送的提交；推送前检查脚本输出的提交清单
+- 教训（2026-08-22）：曾误把含 docs 历史的 main force push 到远程（checkout 失败未检查）；曾把 docs gitignore 导致本地 git 不再维护文档（违背"本地维护"本意）——推送前必须验证分支状态与提交清单
 
 ## P1 要求
 
