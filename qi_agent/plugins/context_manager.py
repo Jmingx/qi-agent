@@ -6,50 +6,113 @@ inject 注入 / estimator 估算），换算法不碰插件（config 选策略�
 
   [context_manager]
   enabled = true
-  budget = 100000          # 裁剪预算（None 禁用）
-  strategy = window        # window（滑动裁剪）| summarize（摘要压缩，阶段 C）
+  window = 128000          # 上下文窗口（DeepSeek 上限）
+  threshold = 0.7          # 压缩触发阈值（窗口占比）
+  keep_recent = 10         # 压缩时保留的最近消息组数
+  strategy = summarize     # window（滑动裁剪）| summarize（摘要压缩）
+  budget = 100000          # window 策略的裁剪预算
 
 事件挂载：
-  agent/pre-step  → 改写历史（裁剪/压缩——超预算/超阈值才动）
-  agent/pre-llm   → 注入（sticky/todo 上下文，幂等）
-  agent/post-llm  → usage 累计 → should_compress 检查（阶段 C）
+  agent/post-llm  → 采集真实 usage（response.prompt_tokens）→ 触发检查
+                    （用户要求：token 消耗不用估算，从 response 实时获取）
+  agent/pre-step  → 改写历史（压缩/裁剪）
+  agent/pre-llm   → 注入（sticky/todo 上下文，幂等）——阶段 D
 
-设计说明：对齐 Hermes ContextEngine——一个引擎承载上下文管理的
-全生命周期（感知 → 决策 → 行动），算法可插拔。
+压缩执行：summarizer 依赖注入（测试 mock；默认实现惰性建 LLMClient，
+首次压缩才创建——不压缩零开销）。
 """
 
+from qi_agent.context.compressor import (
+    assemble,
+    build_summary_prompt,
+    compress_messages,
+    should_compress,
+)
 from qi_agent.context.sticky import get_sticky_text
 from qi_agent.context.window import trim_messages
 from qi_agent.events import EventBus
 from qi_agent.plugins.registry import register_plugin
 
 
-class ContextManagerPlugin:
-    """上下文管理编排器：裁剪/压缩/注入按事件分发（算法在 context/ 模块）。"""
+def _default_summarizer(messages: list[dict]) -> str:
+    """默认摘要实现：独立 LLM 调用（惰性建 client，压缩才发生）。"""
+    from qi_agent.agent_factory import load_api_key
+    from qi_agent.llm import LLMClient
 
-    def __init__(self, config: dict | None = None) -> None:
+    client = LLMClient(load_api_key())
+    result = client.chat([{"role": "user", "content": build_summary_prompt(messages)}])
+    return result.content or "[摘要失败]"
+
+
+class ContextManagerPlugin:
+    """上下文管理编排器：压缩/裁剪/注入按事件分发（算法在 context/ 模块）。"""
+
+    def __init__(self, config: dict | None = None,
+                 summarizer=None) -> None:
         config = config or {}
-        # token 预算（默认 100K ≈ DeepSeek 窗口 78%——短对话零影响，
-        # 长对话自动保护）；None/0 = 禁用裁剪
+        # 上下文窗口与压缩阈值（真实 usage 驱动，方案阶段 C）
+        self.window: int = config.get("window", 128_000)
+        self.threshold: float = config.get("threshold", 0.7)
+        self.keep_recent: int = config.get("keep_recent", 10)
+        # 算法选择：window（滑动裁剪）| summarize（摘要压缩）| hybrid
+        self.strategy: str = config.get("strategy", "summarize")
+        # window 策略的裁剪预算（None 禁用裁剪）
         self.budget: int | None = config.get("budget", 100_000)
-        # 算法选择（阶段 C 扩展）：window | summarize | hybrid
-        self.strategy: str = config.get("strategy", "window")
+        # 摘要器注入（测试 mock；默认惰性 LLMClient）
+        self._summarizer = summarizer or _default_summarizer
+        # 最近一次真实 usage（post-llm 采集）
+        self._last_prompt_tokens: int = 0
+        self._compression_pending: bool = False
 
     def install(self, bus: EventBus) -> None:
-        """监听 pre-step（改写）——pre-llm 注入在阶段 C/D 挂。"""
+        """pre-step 改写历史（裁剪/压缩）+ post-llm 采真实 usage。"""
         bus.on("agent/pre-step", self._on_pre_step, priority=100)
+        bus.on("agent/post-llm", self._on_post_llm, priority=50)
 
-    # ── pre-step：改写历史（裁剪/压缩） ───────────────────────────────────
+    # ── post-llm：真实 usage 采集 → 触发检查 ──────────────────────────────
+
+    def _on_post_llm(self, result, **extra) -> None:
+        """从 response 实时获取 usage.prompt_tokens（不估算）→ 超阈值标记压缩。"""
+        usage = getattr(result, "usage", None)
+        if not usage or not usage.get("prompt_tokens"):
+            return  # 无 usage（异常/兜底场景）——本次不触发
+        self._last_prompt_tokens = usage["prompt_tokens"]
+        if self.strategy in ("summarize", "hybrid") and should_compress(
+            usage["prompt_tokens"], self.window, self.threshold
+        ):
+            self._compression_pending = True
+            print(
+                f"[CTX] 上下文占用 {usage['prompt_tokens']}/{self.window} tokens"
+                f"（{usage['prompt_tokens'] / self.window:.0%}）超阈值"
+                f" {self.threshold:.0%} → 摘要压缩"
+            )
+
+    # ── pre-step：改写历史（sticky 挂载 + 压缩/裁剪） ─────────────────────
 
     def _on_pre_step(self, messages: list[dict], **extra) -> list[dict]:
-        """瀑布改写：①sticky 挂载（幂等）②按策略改写（当前 window 裁剪）。"""
+        """瀑布改写：①sticky 挂载（幂等）②压缩/裁剪。"""
         messages = self._mount_sticky(messages)
-        if self.budget:
+        if self._compression_pending:
+            messages = self._do_compress(messages)
+            self._compression_pending = False
+        elif self.strategy == "window" and self.budget:
             messages, trimmed = trim_messages(messages, self.budget)
             if trimmed:
                 print(f"[CTX] 已裁剪 {trimmed} 组早期历史（预算 {self.budget} tokens）")
-        # 阶段 C：strategy=summarize 时在此走 compressor（超阈值 → 摘要替换）
         return messages
+
+    def _do_compress(self, messages: list[dict]) -> list[dict]:
+        """执行摘要压缩：早期历史 → 摘要（独立 LLM 调用）→ 组装。"""
+        early, _ = compress_messages(messages, keep_recent=self.keep_recent)
+        if not early:
+            return messages  # 没有可压缩的早期历史
+        summary = self._summarizer(early)
+        compressed = assemble(messages, summary, keep_recent=self.keep_recent)
+        print(
+            f"[CTX] 已压缩：{len([m for m in messages if m.get('role') != 'system'])}"
+            f" → {len([m for m in compressed if m.get('role') != 'system'])} 条消息"
+        )
+        return compressed
 
     @staticmethod
     def _mount_sticky(messages: list[dict]) -> list[dict]:
@@ -69,10 +132,10 @@ class ContextManagerPlugin:
         return [updated] + messages[1:]
 
 
-# 自注册：默认开（零规则 = 行为不变，预算内不裁剪）
+# 自注册：默认开（strategy=summarize，真实 usage 驱动；零规则 = 行为不变）
 register_plugin(
     name="context_manager",
     factory=ContextManagerPlugin,
-    description="上下文管理入口（裁剪/压缩/注入/算法选择，事件驱动）",
+    description="上下文管理入口（压缩/裁剪/注入/算法选择，真实 usage 驱动）",
     default_enabled=True,
 )

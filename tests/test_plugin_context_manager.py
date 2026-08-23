@@ -28,9 +28,11 @@ def _clean_sticky():
 
 
 def _make_agent(budget: int | None = 100_000) -> Agent:
-    """装配 context_manager 插件的 agent（真实形态：Agent + 插件 install）。"""
+    """装配 context_manager 插件的 agent（strategy=window——裁剪测试语义）。"""
     agent = Agent(client=_FakeClient(), events=EventBus())
-    plugin = ContextManagerPlugin(config={"budget": budget})
+    plugin = ContextManagerPlugin(
+        config={"budget": budget, "strategy": "window"}
+    )
     plugin.install(agent.events)
     return agent
 
