@@ -3,15 +3,17 @@
 方案：docs/plans/2026-08-20-shell三档权限与审批机制方案.md
 分层：工具管执行 · 插件管决策（security_guard 判档）· 插件管交互（本插件弹窗）
 设计（业界对照）：
-- fail-closed：无监听器 / 非 tty（评测、管道）→ 自动拒绝（Hermes deny fast）
+- fail-closed：无监听器 / 交互不可用（非 tty 评测、管道）→ 自动拒绝（Hermes deny fast）
 - 会话级记忆：a=总是允许 → 记住命令【前缀】→ 同前缀命令不再弹窗
   （用户决策点 5：命令前缀，非精确——体验优先，已明示误放行风险）
 - 红线不进审批：security_guard 在 tool-call 层已硬拒，本插件只处理 NEED_APPROVAL 档
+
+交互统一（2026-08-23 排查修正）：input() 硬编码 → InteractionProvider 抽象层
+（ask_user）——与 clarify 同一交互通道，未来 Web/GUI 换实现本插件零改动。
 """
 
-import sys
-
 from qi_agent.events import EventBus
+from qi_agent.interaction import InteractionUnavailableError, ask_user
 from qi_agent.plugins.registry import register_plugin
 
 
@@ -38,27 +40,32 @@ class ApprovalGatePlugin:
             command.startswith(p) for p in self._approved_prefixes
         ):
             return True
-        # 无交互环境（评测/管道/自动化）→ 拒绝（fail-closed 双保险）
-        if not sys.stdin.isatty():
-            return False
-        if name == "run_python":
-            # 沙箱降级弹窗：逐次确认（用户决策点 3：不提供 a=总是允许）
-            answer = input(
-                f"[审批] 降级沙箱安全等级（完整 Python 执行）？{command}"
-                " (y=同意 / n=拒绝) "
-            ).strip().lower()
-        elif command.startswith("沙箱升级:"):
-            # shell 代码执行命令弹窗（v0.4.23 弹窗透明）：明确告知完整权限
-            real_command = command.split(":", 1)[1]
-            answer = input(
-                f"[审批] ⚠️ 命令以完整权限执行（不受沙箱约束），确认升级沙箱权限？\n"
-                f"命令: {real_command} (y=同意 / n=拒绝) "
-            ).strip().lower()
-        else:
-            # 弹窗确认（shell/write_file 等现状）
-            answer = input(
-                f"[审批] 执行命令 '{command}'？(y=同意 / n=拒绝 / a=总是允许) "
-            ).strip().lower()
+        # 交互走抽象层（2026-08-23）：ask_user 内部检查 isatty，非 tty 抛
+        # InteractionUnavailableError → fail-closed 拒绝（评测/管道双保险）
+        try:
+            if name == "run_python":
+                # 沙箱降级弹窗：逐次确认（用户决策点 3：不提供 a=总是允许）
+                answer = ask_user(
+                    f"[审批] 降级沙箱安全等级（完整 Python 执行）？{command}",
+                    choices=["y", "n"],
+                )
+            elif command.startswith("沙箱升级:"):
+                # shell 代码执行命令弹窗（v0.4.23 弹窗透明）：明确告知完整权限
+                real_command = command.split(":", 1)[1]
+                answer = ask_user(
+                    f"[审批] ⚠️ 命令以完整权限执行（不受沙箱约束），确认升级沙箱权限？\n"
+                    f"命令: {real_command}",
+                    choices=["y", "n"],
+                )
+            else:
+                # 弹窗确认（shell/write_file 等现状）
+                answer = ask_user(
+                    f"[审批] 执行命令 '{command}'？",
+                    choices=["y", "n", "a"],
+                )
+        except InteractionUnavailableError:
+            return False  # fail-closed：交互不可用 → 拒绝
+        answer = str(answer).strip().lower()
         if answer == "y":
             return True
         if answer == "a" and name != "run_python" and not command.startswith("沙箱升级:"):

@@ -4,7 +4,6 @@
 关键：monkeypatch _PROJECT_ROOT 指向 tmp_path——项目内/外可控测试
 """
 
-from unittest import mock
 
 import pytest
 
@@ -148,9 +147,18 @@ def test_write_approval_flow(project) -> None:
     SecurityGuardPlugin().install(bus)
     ApprovalGatePlugin().install(bus)
     agent = Agent(FakeWriteClient(), events=bus)
-    with mock.patch("sys.stdin.isatty", return_value=True), \
-         mock.patch("builtins.input", return_value="y"):
+    # 交互抽象层（2026-08-23）：注入假 provider 模拟用户同意
+    from qi_agent.interaction import set_interaction_provider
+
+    class _YesProvider:
+        def ask(self, question, choices=None, timeout=None):
+            return "y"
+
+    set_interaction_provider(_YesProvider())
+    try:
         agent.chat("覆盖文件")
+    finally:
+        set_interaction_provider(None)
     # 审批同意 → 写入成功
     tool_msgs = [m["content"] for m in agent.history if m["role"] == "tool"]
     assert any("已写入" in str(m) for m in tool_msgs)

@@ -1,53 +1,77 @@
-"""审批机制测试：agent/tool-approval 事件点 + approval_gate 插件 + shell approved。
+"""审批插件测试（2026-08-23 交互抽象层改造）：走 InteractionProvider。
 
-方案：docs/plans/2026-08-20-shell三档权限与审批机制方案.md（决策点 1-7 已批准）
+改前：monkeypatch builtins.input 模拟用户输入
+改后：注入 FakeProvider（ask_user → provider.ask）——与 clarify 同一
+交互通道；无 provider / 回答耗尽 = 交互不可用 → fail-closed 拒绝。
 """
 
-from unittest import mock
+import pytest
 
-from qi_agent.agent import Agent
 from qi_agent.events import EventBus
+from qi_agent.interaction import (
+    InteractionUnavailableError,
+    set_interaction_provider,
+)
 from qi_agent.llm import ChatResult, ToolCall
 from qi_agent.plugins.approval_gate import ApprovalGatePlugin
-from qi_agent.tools.shell import shell
+
+
+class FakeProvider:
+    """可编程交互提供者：预设回答序列 + 记录问题与选项。"""
+
+    def __init__(self, answers: list[str] | None = None) -> None:
+        self.answers = list(answers or [])
+        self.questions: list[str] = []
+        self.choices_list: list[list | None] = []
+
+    def ask(self, question: str, choices: list[str] | None = None,
+            timeout: float | None = None) -> str:
+        self.questions.append(question)
+        self.choices_list.append(choices)
+        if not self.answers:
+            raise InteractionUnavailableError("回答耗尽（测试断言不应弹窗）")
+        return self.answers.pop(0)
+
+
+@pytest.fixture
+def fake_provider(monkeypatch) -> FakeProvider:
+    """注入假 provider（approval_gate 走 ask_user → 本 provider）。"""
+    provider = FakeProvider()
+    set_interaction_provider(provider)
+    yield provider
+    set_interaction_provider(None)
+
+
+def _set_answers(provider: FakeProvider, answers: list[str]) -> None:
+    provider.answers = list(answers)
 
 
 class FakeShellClient:
-    """测试替身：第一轮返回 shell 工具调用，之后返回文本。"""
+    """测试替身：shell 执行命令（配合审批插件链路）。"""
 
     def __init__(self, command: str) -> None:
-        self.command = command
-        self.calls = 0
+        self._command = command
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None) -> ChatResult:
-        self.calls += 1
-        if self.calls == 1:
-            return ChatResult(
-                content=None,
-                tool_calls=[ToolCall(
-                    id="call_1", name="shell", arguments={"command": self.command}
-                )],
-                assistant_message={
-                    "role": "assistant", "content": None,
-                    "tool_calls": [{
-                        "id": "call_1", "type": "function",
-                        "function": {"name": "shell",
-                                     "arguments": f'{{"command": "{self.command}"}}'},
-                    }],
-                },
-            )
+        # 模型第一轮：请求 shell 执行命令
+        tool_call_msg = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "shell", "arguments": f'{{"command": "{self._command}"}}'}}
+            ],
+        }
         return ChatResult(
-            content="最终答案", tool_calls=None,
-            assistant_message={"role": "assistant", "content": "最终答案"},
+            content=None,
+            tool_calls=[ToolCall(id="c1", name="shell", arguments={"command": self._command})],
+            assistant_message=tool_call_msg,
         )
 
 
-def _make_agent(command: str, plugin: ApprovalGatePlugin | None) -> Agent:
-    """构造 agent：判档插件（security_guard）+ 审批插件（或 None = fail-closed）。
-
-    注意：security_guard 必须挂载——三档判定（NEED_APPROVAL）由它产生，
-    审批事件才被触发；approval_gate 控制审批交互。
-    """
+def _make_agent(command: str, plugin: ApprovalGatePlugin | None) -> object:
+    """构造 agent：判档插件（security_guard）+ 审批插件（或 None = fail-closed）。"""
+    from qi_agent.agent import Agent
     from qi_agent.plugins.security_guard import SecurityGuardPlugin
 
     bus = EventBus()
@@ -57,7 +81,7 @@ def _make_agent(command: str, plugin: ApprovalGatePlugin | None) -> Agent:
     return Agent(FakeShellClient(command), events=bus)
 
 
-def _tool_output(agent: Agent) -> str:
+def _tool_output(agent) -> str:
     """取 agent 历史中最后一条 tool 消息内容。"""
     for m in reversed(agent.history):
         if m["role"] == "tool":
@@ -68,26 +92,22 @@ def _tool_output(agent: Agent) -> str:
 # ── 事件点 + 插件行为 ─────────────────────────────────────────────────────
 
 
-def test_approval_event_denies(monkeypatch) -> None:
+def test_approval_event_denies(fake_provider) -> None:
     """审批插件拒绝 → 工具不执行，回填 [审批拒绝]。"""
+    _set_answers(fake_provider, ["n"])
     plugin = ApprovalGatePlugin()
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
     agent = _make_agent("git push origin main", plugin)
     agent.chat("帮我 push")
     assert "审批拒绝" in _tool_output(agent)
     assert "git push" in _tool_output(agent)
 
 
-def test_approval_event_agrees(monkeypatch) -> None:
+def test_approval_event_agrees(fake_provider) -> None:
     """审批插件同意 → 工具执行（approved 注入，命令真实执行）。"""
+    _set_answers(fake_provider, ["y"])
     plugin = ApprovalGatePlugin()
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
     agent = _make_agent("echo approved-ok", plugin)
     agent.chat("跑个 echo")
-    # echo 在白名单（放行）；用 git push 验证同意后执行：
-    # （echo 不触发审批，此用例验证同意路径不拒绝）
     assert "审批拒绝" not in _tool_output(agent)
 
 
@@ -98,24 +118,22 @@ def test_approval_fail_closed() -> None:
     assert "审批拒绝" in _tool_output(agent)  # fail-closed：无监听器 = 拒绝
 
 
-def test_approval_no_tty_denies() -> None:
-    """非 tty（评测/管道）→ 自动拒绝（fail-closed 双保险）。"""
+def test_approval_no_interaction_denies() -> None:
+    """交互不可用（无 provider = 非 tty 评测/管道）→ 自动拒绝（fail-closed）。"""
+    set_interaction_provider(None)  # 模拟无交互环境
     plugin = ApprovalGatePlugin()
-    with mock.patch("sys.stdin.isatty", return_value=False):
-        result = plugin._on_tool_approval("rm /tmp/x")
-    assert result is False
+    assert plugin._on_tool_approval("rm /tmp/x") is False
 
 
-def test_approval_session_memory(monkeypatch) -> None:
+def test_approval_session_memory(fake_provider) -> None:
     """a=总是允许 → 同前缀命令第二次不再弹窗（直接同意）。"""
+    _set_answers(fake_provider, ["a"])
     plugin = ApprovalGatePlugin()
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     # 第一次：用户选 a（总是允许）
-    with mock.patch("builtins.input", return_value="a"):
-        assert plugin._on_tool_approval("rm /tmp/a") is True
-    # 第二次：同前缀（rm ...）不再调 input，直接同意
-    with mock.patch("builtins.input", side_effect=AssertionError("不应弹窗")):
-        assert plugin._on_tool_approval("rm /tmp/b") is True
+    assert plugin._on_tool_approval("rm /tmp/a") is True
+    # 第二次：同前缀（rm ...）不再弹窗（回答耗尽 → 不应被调用），直接同意
+    _set_answers(fake_provider, [])
+    assert plugin._on_tool_approval("rm /tmp/b") is True
 
 
 # ── shell approved 参数 ───────────────────────────────────────────────────
@@ -123,12 +141,16 @@ def test_approval_session_memory(monkeypatch) -> None:
 
 def test_shell_approved_param() -> None:
     """approved=True → 非白名单命令可执行（审批同意路径）。"""
+    from qi_agent.tools.shell import shell
+
     result = shell("echo approved-exec", approved=True)
     assert "[安全拦截]" not in result
 
 
 def test_shell_unapproved_still_blocked() -> None:
     """无 approved → 非白名单命令拒绝（工具层兜底保持）。"""
+    from qi_agent.tools.shell import shell
+
     result = shell("shutdown /s")
     assert "[安全拦截]" in result
 
@@ -146,64 +168,62 @@ def test_shell_model_cant_bypass() -> None:
 # ── run_python 沙箱降级审批（v0.4.23） ────────────────────────────────────
 
 
-def test_run_python_downgrade_prompt(monkeypatch) -> None:
+def test_run_python_downgrade_prompt(fake_provider) -> None:
     """run_python 降级弹窗：专用文案（含"降级沙箱"）+ 无 a=总是允许。"""
+    _set_answers(fake_provider, ["y"])
     plugin = ApprovalGatePlugin()
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    with mock.patch("builtins.input", return_value="y") as m_input:
-        assert plugin._on_tool_approval(
-            "代码需要 import 'requests'（受限环境白名单外），需降级审批",
-            name="run_python",
-        ) is True
-    prompt = m_input.call_args.args[0]
+    assert plugin._on_tool_approval(
+        "代码需要 import 'requests'（受限环境白名单外），需降级审批",
+        name="run_python",
+    ) is True
+    prompt = fake_provider.questions[-1]
     assert "降级沙箱" in prompt
     assert "总是允许" not in prompt  # 决策点 3：run_python 不提供 a
+    assert fake_provider.choices_list[-1] == ["y", "n"]  # 选项无 a
 
 
-def test_run_python_downgrade_no_always_allow(monkeypatch) -> None:
+def test_run_python_downgrade_no_always_allow(fake_provider) -> None:
     """run_python 降级：输入 a 视为拒绝且不记忆（a=总是允许 禁用）。"""
+    _set_answers(fake_provider, ["a"])
     plugin = ApprovalGatePlugin()
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    with mock.patch("builtins.input", return_value="a"):
-        assert plugin._on_tool_approval("代码需要降级", name="run_python") is False
+    assert plugin._on_tool_approval("代码需要降级", name="run_python") is False
     assert plugin._approved_prefixes == []  # 未记忆
 
 
 def test_run_python_downgrade_fail_closed() -> None:
-    """run_python 降级非交互（评测/管道）→ 自动拒绝。"""
+    """run_python 降级交互不可用（评测/管道）→ 自动拒绝。"""
+    set_interaction_provider(None)
     plugin = ApprovalGatePlugin()
-    with mock.patch("sys.stdin.isatty", return_value=False):
-        assert plugin._on_tool_approval("代码需要降级", name="run_python") is False
+    assert plugin._on_tool_approval("代码需要降级", name="run_python") is False
 
 
 # ── shell 代码执行命令 = 沙箱升级审批（v0.4.23，弹窗透明） ───────────────
 
 
-def test_sandbox_escalation_prompt(monkeypatch) -> None:
+def test_sandbox_escalation_prompt(fake_provider) -> None:
     """沙箱升级弹窗：专用文案（⚠️ 完整权限）+ 无 a=总是允许。"""
+    _set_answers(fake_provider, ["y"])
     plugin = ApprovalGatePlugin()
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    with mock.patch("builtins.input", return_value="y") as m_input:
-        assert plugin._on_tool_approval(
-            "沙箱升级:python -c 'print(1)'", name="shell"
-        ) is True
-    prompt = m_input.call_args.args[0]
+    assert plugin._on_tool_approval(
+        "沙箱升级:python -c 'print(1)'", name="shell"
+    ) is True
+    prompt = fake_provider.questions[-1]
     assert "完整权限" in prompt
     assert "沙箱" in prompt
     assert "总是允许" not in prompt  # 代码执行档不提供 a
+    assert fake_provider.choices_list[-1] == ["y", "n"]
 
 
-def test_sandbox_escalation_no_always_allow(monkeypatch) -> None:
+def test_sandbox_escalation_no_always_allow(fake_provider) -> None:
     """沙箱升级输入 a → 拒绝且不记忆（防总允许=变相全局放行代码执行）。"""
+    _set_answers(fake_provider, ["a"])
     plugin = ApprovalGatePlugin()
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    with mock.patch("builtins.input", return_value="a"):
-        assert plugin._on_tool_approval("沙箱升级:python -c 'x'", name="shell") is False
+    assert plugin._on_tool_approval("沙箱升级:python -c 'x'", name="shell") is False
     assert plugin._approved_prefixes == []
 
 
 def test_sandbox_escalation_fail_closed() -> None:
-    """沙箱升级非交互（评测）→ 自动拒绝。"""
+    """沙箱升级交互不可用（评测）→ 自动拒绝。"""
+    set_interaction_provider(None)
     plugin = ApprovalGatePlugin()
-    with mock.patch("sys.stdin.isatty", return_value=False):
-        assert plugin._on_tool_approval("沙箱升级:python -c 'x'", name="shell") is False
+    assert plugin._on_tool_approval("沙箱升级:python -c 'x'", name="shell") is False
