@@ -36,7 +36,8 @@
 - **从现在开始的 git log 可以上传远程仓**（代码提交的 log 保留，docs 提交不推）
 - 具体约定：
   - 本地 `main` 分支：**完整跟踪**（代码 + docs + AGENTS.md + .hermes 正常提交），日常开发提交都在 main
-  - **推送远程走 `release-push.sh` 脚本**：在 worktree（.release-wt/）里基于 origin/main 建立发布分支，把 main 上新增的**代码提交**（跳过 `docs:` 前缀提交、跳过含 docs/AGENTS.md 变更的提交）cherry-pick 过去，push 到远程 main——远程历史 = 纯代码提交序列（log 保留）
+  - **推送远程走 `release-push.sh` 脚本**：在 worktree（.release-wt/）里基于 origin/main 建立发布分支，把 main 上新增的**代码提交**（跳过 `docs:` 前缀提交、跳过含 docs/AGENTS.md/.hermes/release-push.sh 变更的提交——即所有本地-only 文件）cherry-pick 过去，push 到远程 main——远程历史 = 纯代码提交序列（log 保留）
+  - 本地-only 文件清单：docs/、AGENTS.md、.hermes/、release-push.sh（本地 git 完整跟踪维护，永不推远程）
   - 远程仓：只含代码/测试/配置/README
   - 推送前脚本打印将推送的提交清单供确认（P0-3 精神）
 - 禁止把 docs/ 内容加入任何可推送的提交；推送前检查脚本输出的提交清单
