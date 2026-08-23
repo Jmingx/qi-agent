@@ -3,9 +3,10 @@
 方案：docs/plans/2026-08-20-资源监控插件方案.md + docs/plans/2026-08-21-资源监控数据源修正方案.md
 设计：
 - 监听 agent/post-llm（每次 LLM 调用后触发；result 含 usage，messages 供估算兜底）
-- 真实样本（DeepSeek 非流式/偶发流式）：usage 直接用（API 准确值）
-- 估算兜底（DSH token-meter 同款）：流式拿不到 usage（DeepSeek 实测基本不给）时，
-  estimate_messages 估算 prompt + 锚点校准（anchor_prompt + surface 增量）
+- 真实样本（普通 + 流式，2026-08-22 修复后均可获取）：usage 直接用（API 准确值）
+- 估算兜底（DSH token-meter 同款）：仅 usage 真缺失时（异常/极端场景），
+  estimate_messages 估算 prompt + 锚点校准（anchor_prompt + surface 增量）；
+  估算轮有标注（estimated_calls）——统计以真实为主，估算只保底
 - 累积：total_tokens 累加（真实 + 估算混合，估算轮 ~ 标注）；prompt 取最新
 - 展示（交互调整 2026-08-21）：**不打印每轮状态行**——平时安静，仅上下文
   ≥80% 时条件警告；会话汇总走 CLI `usage` 命令（report()）

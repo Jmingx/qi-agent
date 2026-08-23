@@ -45,14 +45,32 @@ def test_pre_llm_logs_request(capsys) -> None:
 
 
 def test_pre_llm_logs_context(capsys) -> None:
-    """pre-llm 事件 → [CTX] 上下文占用日志。"""
+    """pre-llm 事件 → [CTX] 上下文占用日志（估算标注）。"""
     _make_plugin()._on_pre_llm(
         [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}],
         [],
     )
     out = capsys.readouterr().out
     assert "[CTX]" in out
+    assert "估算" in out  # 估算标注（真实值见 [RESP] usage）
     assert "tokens" in out
+
+
+def test_post_llm_logs_real_usage(capsys) -> None:
+    """post-llm 事件 → [RESP] 含真实 usage（prompt/completion/total）。"""
+    _make_plugin()._on_post_llm(
+        ChatResult(
+            content="答案是42", tool_calls=None,
+            assistant_message={"role": "assistant", "content": "答案是42"},
+            usage={"prompt_tokens": 85, "completion_tokens": 43,
+                   "total_tokens": 128},
+        )
+    )
+    out = capsys.readouterr().out
+    assert "[RESP]" in out
+    assert "usage（真实）" in out
+    assert "prompt=85" in out
+    assert "total=128" in out
 
 
 def test_post_llm_logs_response_content(capsys) -> None:

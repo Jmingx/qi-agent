@@ -76,15 +76,30 @@ class DebugLoggerPlugin:
         self._log_context_breakdown(messages, tools)
         self._log_request(messages, tools)
 
-    def _on_post_llm(self, result, **_) -> None:
+    def _on_post_llm(self, result, **extra) -> None:
+        # 真实 usage 统计（2026-08-22：准确 token 消耗——response 实时值，
+        # 用于统计与事实窗口维护；估算仅作 pre-llm 预测）
+        usage_line = ""
+        usage = getattr(result, "usage", None)
+        if usage:
+            usage_line = (
+                f"  usage（真实）: prompt={usage.get('prompt_tokens', '?')} "
+                f"completion={usage.get('completion_tokens', '?')} "
+                f"total={usage.get('total_tokens', '?')}"
+            )
         if result.tool_calls:
             lines = [
                 f"  tool_call id={tc.id}, name={tc.name}, arguments={_to_json(tc.arguments)}"
                 for tc in result.tool_calls
             ]
+            if usage_line:
+                lines.append(usage_line)
             _print_box(f"[RESP] 模型响应（请求 {len(result.tool_calls)} 个工具调用）", lines)
         else:
-            _print_box("[RESP] 模型响应（直接回答）", [_truncate(str(result.content or ""))])
+            lines = [_truncate(str(result.content or ""))]
+            if usage_line:
+                lines.append(usage_line)
+            _print_box("[RESP] 模型响应（直接回答）", lines)
 
     def _on_tool_result(self, name: str, arguments: dict,
                         output: str, **_) -> None:
@@ -100,11 +115,11 @@ class DebugLoggerPlugin:
 
     def _log_context_breakdown(self, messages: list[dict],
                                tools: list[dict] | None) -> None:
-        """打印上下文构成（阶段 A3）：system/tools/历史 占比 + 窗口占用。"""
+        """打印上下文构成（估算——请求前预测用；真实值见 [RESP] usage）。"""
         from qi_agent.context.breakdown import compute_breakdown, format_breakdown
 
         breakdown = compute_breakdown(messages, tools or [])
-        _print_box("[CTX] 上下文占用", [format_breakdown(breakdown)])
+        _print_box("[CTX] 上下文占用（估算）", [format_breakdown(breakdown)])
 
     def _log_request(self, messages: list[dict], tools: list[dict] | None) -> None:
         """打印发送给模型的完整请求：全部消息历史 + 工具定义。"""
