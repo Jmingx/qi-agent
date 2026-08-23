@@ -37,3 +37,16 @@ enabled = true
 # 上下文上限：QI_CONTEXT_LIMIT 环境变量（默认 64000；模型化映射表见 TODO cli-ui.md）
 [resource_monitor]
 enabled = true
+
+# 上下文管理（阶段 C，2026-08-23）：策略链 sticky→compress→window
+# [context_manager]
+# enabled = true
+# chain = ["sticky", "compress", "window"]
+# [context_manager.compress]
+# window = 128000          # 上下文窗口（DeepSeek 上限）
+# threshold = 0.7          # 触发压缩阈值（占用 70% 即压）
+# keep_recent = 10         # 最近保留的消息组数（细节不丢）
+# compression_model = "deepseek-chat"   # 压缩用独立模型（缺省=复用主模型，
+#                                       # 独立小模型省主模型 token）
+# [context_manager.window]
+# budget = 100000          # 滑动窗口裁剪预算（兜底）

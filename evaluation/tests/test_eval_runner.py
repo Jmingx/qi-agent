@@ -21,19 +21,24 @@ from evaluation.tasks import EvalTask, TASKS
 
 
 def _history(assistant_msgs: list[str], tools: list[str] | None = None,
-             blocked: bool = False) -> list[dict]:
+             blocked: bool = False,
+             tool_actions: dict[str, str] | None = None) -> list[dict]:
     """构造模拟 agent 历史（assistant 消息 + 可选工具调用/拦截）。
 
     注意：tool_calls 用 OpenAI API 格式（对齐 agent.history 真实结构）：
     {"id", "type": "function", "function": {"name", "arguments"}}
+    tool_actions：工具名 → action 值（写入 arguments，如 todo 的 create/list）
     """
     history = []
+    tool_actions = tool_actions or {}
     for i, content in enumerate(assistant_msgs):
         msg: dict = {"role": "assistant", "content": content}
         if tools and i == len(assistant_msgs) - 1:
             msg["tool_calls"] = [
                 {"id": f"c{i}", "type": "function",
-                 "function": {"name": t, "arguments": "{}"}}
+                 "function": {"name": t,
+                              "arguments": "{}" if t not in tool_actions
+                              else f'{{"action": "{tool_actions[t]}"}}'}}
                 for t in tools
             ]
         history.append(msg)
@@ -135,6 +140,162 @@ def test_tasks_all_valid() -> None:
         assert t.steps, f"{t.id} 必须至少一步"
         assert t.expected_tools or t.expected_keywords or t.expect_blocked, \
             f"{t.id} 期望为空（无判定依据）"
+
+
+# ── 阶段 C 收尾：任务级配置覆盖 + setup 前置（方案 2026-08-23）───────────
+
+
+def test_evltask_new_fields_default_none() -> None:
+    """新字段默认 None（现有任务构造零改动）。"""
+    t = EvalTask("x", "context", "t", ["s"])
+    assert t.plugin_overrides is None
+    assert t.setup is None
+
+
+def test_evltask_new_fields_custom() -> None:
+    """plugin_overrides + setup 可赋值。"""
+    called = []
+
+    def setup():
+        called.append(1)
+
+    t = EvalTask(
+        "c-long-1", "context", "长对话", ["s"],
+        plugin_overrides={"context_manager": {"compress": {"window": 2000}}},
+        setup=setup,
+    )
+    assert t.plugin_overrides["context_manager"]["compress"]["window"] == 2000
+    t.setup()
+    assert called == [1]
+
+
+def test_runner_passes_overrides_and_setup() -> None:
+    """runner 传 plugin_overrides 给 build_agent + 执行 setup 前置。
+
+    阶段 C 收尾：L3 任务用小窗口覆盖触发压缩 + setup 注入 sticky。
+    """
+    seen: dict = {}
+    setup_ran: list[str] = []
+
+    def setup():
+        setup_ran.append("setup-ran")
+
+    def fake_build_agent(**kwargs):
+        seen.update(kwargs)
+        return FakeAgent(), []
+
+    class FakeAgent:
+        def __init__(self) -> None:
+            self.history = []
+            self._turn = 0
+
+        def chat(self, step: str) -> str:
+            # 模拟：事实在对话中保持（压缩后依然答对）
+            self._turn += 1  # 对齐真实 agent：每句用户话 +1（累计值）
+            reply = "好的，你的猫叫咪咪" if "猫" in step else "好的"
+            self.history.append({"role": "assistant", "content": reply})
+            return reply
+
+    with mock.patch("evaluation.runner.build_agent",
+                    side_effect=fake_build_agent):
+        task = EvalTask(
+            "c-long-1", "context", "事实保持",
+            steps=["聊聊天", "我的猫叫什么"], expected_keywords=["咪咪"],
+            plugin_overrides={"context_manager": {"compress": {"window": 2000}}},
+            setup=setup,
+        )
+        results = run_eval([task])
+    assert setup_ran == ["setup-ran"]  # setup 前置已执行
+    assert seen["plugin_overrides"]["context_manager"]["compress"]["window"] == 2000
+    assert results[0]["passed"] is True
+    # turns 语义：累计轮数（2 句用户话 = 2），不是累加和（1+2=3）
+    # ——2026-08-23 修复：曾把 agent._turn（累计值）逐次累加 → 多 step 任务虚高
+    assert results[0]["turns"] == 2
+
+
+def test_judge_forbidden_tools() -> None:
+    """forbidden_tools：调用过 → 失败（L3：压缩后不重做）。"""
+    task = EvalTask(
+        "c-long-3", "context", "不重做", steps=["x"],
+        expected_keywords=["周报"], forbidden_tools=["todo"],
+    )
+    history = _history(["创建了任务"], tools=["todo"])
+    passed, failures = judge(task, history)
+    assert passed is False
+    assert any("todo" in f for f in failures)
+
+
+def test_judge_forbidden_tools_clean() -> None:
+    """forbidden_tools 未调用 → 通过。"""
+    task = EvalTask(
+        "c-long-3", "context", "不重做", steps=["x"],
+        expected_keywords=["周报"], forbidden_tools=["todo"],
+    )
+    history = _history(["周报任务已完成"])
+    passed, failures = judge(task, history)
+    assert passed is True
+    assert failures == []
+
+
+def test_judge_forbidden_tool_action_create_blocked() -> None:
+    """todo:create 粒度——实际调 create → 失败（压缩后重做已完成工作）。"""
+    task = EvalTask(
+        "c-long-3", "context", "不重做", steps=["x"],
+        expected_keywords=["周报"], forbidden_tools=["todo:create"],
+    )
+    history = _history(["创建任务"], tools=["todo"], tool_actions={"todo": "create"})
+    passed, failures = judge(task, history)
+    assert passed is False
+    assert any("create" in f for f in failures)
+
+
+def test_judge_forbidden_tool_action_query_allowed() -> None:
+    """todo:create 粒度——只查 list → 通过（查询是合理行为）。"""
+    task = EvalTask(
+        "c-long-3", "context", "不重做", steps=["x"],
+        expected_keywords=["周报"], forbidden_tools=["todo:create"],
+    )
+    history = _history(["任务是写周报"], tools=["todo"], tool_actions={"todo": "list"})
+    passed, failures = judge(task, history)
+    assert passed is True
+    assert failures == []
+
+
+def test_judge_forbidden_tool_action_other_tool_allowed() -> None:
+    """todo:create 粒度——其他工具调用不受影响。"""
+    task = EvalTask(
+        "c-long-3", "context", "不重做", steps=["x"],
+        expected_keywords=["周报"], forbidden_tools=["todo:create"],
+    )
+    history = _history(["周报相关，看下时间"], tools=["get_time"])
+    passed, failures = judge(task, history)
+    assert passed is True
+    assert failures == []
+
+
+def test_judge_keyword_min_count() -> None:
+    """expected_keyword_min_count=2：历史里关键词出现 ≥2 次才通过（L4 对比）。"""
+    task = EvalTask(
+        "c-long-4", "context", "一致性对比", steps=["x", "y"],
+        expected_keywords=["咪咪"], expected_keyword_min_count=2,
+    )
+    # 压缩前回答 1 次 + 压缩后回答 1 次 = 2 次 → 通过
+    history = _history(["你的猫叫咪咪", "猫的名字是咪咪"])
+    passed, failures = judge(task, history)
+    assert passed is True
+    assert failures == []
+
+
+def test_judge_keyword_min_count_fail() -> None:
+    """计数不足（仅 1 次）→ 失败。"""
+    task = EvalTask(
+        "c-long-4", "context", "一致性对比", steps=["x"],
+        expected_keywords=["咪咪"], expected_keyword_min_count=2,
+    )
+    history = _history(["猫叫咪咪"])  # 只回答一次
+    passed, failures = judge(task, history)
+    assert passed is False
+    assert any("次数" in f for f in failures)
 
 
 def test_report_format() -> None:
@@ -291,6 +452,7 @@ def test_task_llm_error_fails_gracefully() -> None:
 
         def __init__(self) -> None:
             self.history = []
+            self._turn = 0
 
         def chat(self, step: str) -> str:
             raise TimeoutError("LLM 调用超时（60s）")

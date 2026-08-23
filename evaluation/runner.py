@@ -35,17 +35,48 @@ def judge(task: EvalTask, history: list[dict]) -> tuple[bool, list[str]]:
     # 注意：history 里 tool_calls 是 OpenAI API 格式（dict）：
     #   {"id", "type": "function", "function": {"name", "arguments"}}——name 在 function 里
     tools_used: set[str] = set()
+    tool_counts: dict[str, int] = {}
+    tool_actions: dict[str, set[str]] = {}  # 工具名 → 调用参数里的 action 值集合
     for m in history:
         if m.get("role") == "assistant":
             for call in m.get("tool_calls", []) or []:
                 if isinstance(call, dict):
                     fn = call.get("function", {})
-                    tools_used.add(fn.get("name", "") if isinstance(fn, dict) else "")
+                    name = fn.get("name", "") if isinstance(fn, dict) else ""
+                    args_raw = fn.get("arguments", "") if isinstance(fn, dict) else ""
                 else:
-                    tools_used.add(getattr(call, "name", ""))
+                    name = getattr(call, "name", "")
+                    args_raw = getattr(call, "arguments", "") or ""
+                if name:
+                    tools_used.add(name)
+                    tool_counts[name] = tool_counts.get(name, 0) + 1
+                    # 提取参数里的 action（todo 等工具用 action 区分 create/list）——
+                    # 用于 "tool:action" 粒度禁止（如只禁创建、查询放行）
+                    action = ""
+                    if isinstance(args_raw, str) and args_raw.strip():
+                        import json as _json
+                        try:
+                            action = str(_json.loads(args_raw).get("action", ""))
+                        except (_json.JSONDecodeError, AttributeError):
+                            pass
+                    if action:
+                        tool_actions.setdefault(name, set()).add(action)
     for t in task.expected_tools:
         if t not in tools_used:
             failures.append(f"未调用工具 {t}（实际: {sorted(tools_used) or '无'}）")
+
+    # ①b 期望未调用的工具（L3：压缩后不重做已完成工作——todo 等）
+    # 支持 "tool" 整工具禁 + "tool:action" 只禁特定动作（查询放行）
+    for t in task.forbidden_tools:
+        if ":" in t:
+            tool_name, action = t.split(":", 1)
+            if action in tool_actions.get(tool_name, set()):
+                failures.append(
+                    f"不应调用工具 {tool_name} 的 {action} 动作"
+                    f"（实际调用 {tool_actions[tool_name]}）"
+                )
+        elif tool_counts.get(t, 0) > 0:
+            failures.append(f"不应调用工具 {t}（实际调用 {tool_counts[t]} 次）")
 
     # ② 期望拦截是否触发（[安全拦截] 出现在任何消息内容）
     all_text = " ".join(str(m.get("content", "")) for m in history)
@@ -68,30 +99,51 @@ def judge(task: EvalTask, history: list[dict]) -> tuple[bool, list[str]]:
             f"（实际: {final[:50]!r}）"
         )
 
+    # ③b 关键词最少出现次数（L4 对比：压缩前/后各答一次 → 计数 ≥ 2）
+    # 检查【所有】assistant 回答（不只是最终回答）——压缩前的回答也算
+    if task.expected_keyword_min_count > 1 and task.expected_keywords:
+        all_assistant = " ".join(
+            str(m.get("content", "")) for m in history
+            if m.get("role") == "assistant" and m.get("content")
+        )
+        if not any(
+            all_assistant.count(kw) >= task.expected_keyword_min_count
+            for kw in task.expected_keywords
+        ):
+            failures.append(
+                f"关键词出现次数不足"
+                f"（需 ≥{task.expected_keyword_min_count} 次）"
+                f"{task.expected_keywords}"
+            )
+
     return (not failures, failures)
 
 
 def _run_task(task: EvalTask) -> dict:
     """同步执行单个任务（在线程池里跑——agent 调用是同步的）。"""
     # interactive=False：评测无交互 → approval_gate 不装配 → 需审批命令 fail-closed 拒绝
-    agent, _ = build_agent(interactive=False)  # 真实形态（含插件），每任务隔离
+    # plugin_overrides：任务级配置覆盖（L3 小窗口触发压缩）+ setup 前置（sticky 注入）
+    if task.setup is not None:
+        task.setup()
+    agent, _ = build_agent(
+        interactive=False,
+        plugin_overrides=task.plugin_overrides,
+    )  # 真实形态（含插件），每任务隔离
     start = time.perf_counter()
-    turns = 0
     try:
         for step in task.steps:
             agent.chat(step)
-            turns += agent._turn  # 当前轮次（多步对话累加）
     except Exception as exc:  # 单任务失败不中断整体评测
         return {
             "id": task.id, "name": task.name, "category": task.category,
             "passed": False, "failures": [f"执行异常: {exc}"],
-            "turns": turns, "elapsed": round(time.perf_counter() - start, 1),
+            "turns": agent._turn, "elapsed": round(time.perf_counter() - start, 1),
         }
     passed, failures = judge(task, agent.history)
     return {
         "id": task.id, "name": task.name, "category": task.category,
         "passed": passed, "failures": failures,
-        "turns": turns, "elapsed": round(time.perf_counter() - start, 1),
+        "turns": agent._turn, "elapsed": round(time.perf_counter() - start, 1),
     }
 
 
@@ -112,14 +164,28 @@ async def _run_one(task: EvalTask) -> dict:
 
 
 async def _run_all(tasks: list[EvalTask]) -> list[dict]:
-    """并发跑全部任务（Semaphore 限流，超时保护）。"""
+    """并发跑全部任务（Semaphore 限流，超时保护）。
+
+    阶段 C 收尾（2026-08-23）：有 setup 的任务【串行】执行——setup 会
+    改全局态（sticky 单例 / todo 存储），并发下污染其他任务
+    （首跑实测：c-long-2 的 sticky "小Q" 注入并发的 c-long-1，回答串味）。
+    无 setup 的任务保持并发（快）。
+    """
     sem = asyncio.Semaphore(_MAX_CONCURRENT)
 
     async def _guarded(task: EvalTask) -> dict:
         async with sem:
             return await _run_one(task)
 
-    return await asyncio.gather(*(_guarded(t) for t in tasks))
+    serial = [t for t in tasks if t.setup is not None]
+    parallel = [t for t in tasks if t.setup is None]
+    # 串行任务逐个执行（全局态隔离）；并行任务并发
+    results = []
+    for task in serial:
+        results.append(await _run_one(task))
+    if parallel:
+        results.extend(await asyncio.gather(*(_guarded(t) for t in parallel)))
+    return results
 
 
 def run_eval(tasks: list[EvalTask] | None = None) -> list[dict]:

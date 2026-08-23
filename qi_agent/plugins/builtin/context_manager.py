@@ -16,7 +16,7 @@
 """
 
 from qi_agent.context.async_compressor import AsyncCompressor
-from qi_agent.context.compressor import default_summarizer
+from qi_agent.context.compressor import make_summarizer
 from qi_agent.context.strategies import build_chain
 from qi_agent.context.strategies.base import ContextInfo
 from qi_agent.events import EventBus
@@ -31,15 +31,19 @@ class ContextManagerPlugin:
         config = config or {}
         # 策略链（config.chain 顺序；每策略收各自配置段）
         self._chain = build_chain(config=config)
-        # 摘要器注入（测试 mock；None → 默认惰性 LLMClient 实现——
-        # load_plugins 装配只传 config，真实路径必须兜底，2026-08-23 修复）
-        self._summarizer = summarizer or default_summarizer
+        # 摘要器注入（测试 mock）；None → 默认实现——C3 压缩模型独立配置
+        # （compress.compression_model：None=复用主模型，配置后独立模型）
+        # load_plugins 装配只传 config，真实路径必须兜底（2026-08-23 修复）
+        compress_cfg = config.get("compress", {})
+        self._summarizer = (
+            summarizer
+            or make_summarizer(compress_cfg.get("compression_model"))
+        )
         # 最近一次真实 usage（post-llm 采集）
         self._last_prompt_tokens: int = 0
         # 异步压缩（方案 2026-08-23 二期：默认开启，后台无感压缩）
         self._async_compressor: AsyncCompressor | None = None
         async_enabled = config.get("async_compress", True)
-        compress_cfg = config.get("compress", {})
         if async_enabled and self._summarizer is not None:
             self._async_compressor = AsyncCompressor(
                 summarizer=self._summarizer,
@@ -120,6 +124,40 @@ class ContextManagerPlugin:
                 if consumed:
                     break  # 责任链：处理完就停
         return messages
+
+    # ── C4: 手动压缩（CLI /compact 命令，方案 2026-08-23） ────────────────
+
+    def compact_now(self, messages: list[dict]) -> tuple[list[dict], str]:
+        """手动同步压缩（用户显式触发，不检查阈值）。
+
+        Args:
+            messages: 当前消息历史（agent.history）
+
+        Returns:
+            (新消息列表, 摘要文本)；链中无 compress 策略 → (原样, "")
+
+        触发路径：CLI 在 installed 插件中找本插件 → compact_now()——
+        复用策略链（零侵入 agent 核心），异步开关绕过（同步确定性）。
+        """
+        compress_strategy = next(
+            (s for s in self._chain if s.name == "compress"), None)
+        if compress_strategy is None:
+            return messages, ""
+        # 强制压缩：手动命令不检查 should_apply（用户显式要求）
+        ctx = ContextInfo(
+            prompt_tokens=self._last_prompt_tokens,
+            summarizer=self._summarizer,
+            chain_name="compact-now",
+            step=-1,
+        )
+        new_messages, _ = compress_strategy.apply(messages, ctx)
+        # 提取摘要文本（新消息里的摘要块 content）
+        summary = ""
+        for m in new_messages:
+            if m.get("role") == "user" and "摘要" in str(m.get("content", "")):
+                summary = str(m["content"]).split("摘要]\n", 1)[-1]
+                break
+        return new_messages, summary
 
 
 # 自注册：默认开（默认链 sticky→compress→window；零规则 = 行为不变）

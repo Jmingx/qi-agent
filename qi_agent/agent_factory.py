@@ -29,7 +29,8 @@ def load_api_key() -> str:
 
 
 def build_agent(debug: bool = False, stats: bool = False,
-                interactive: bool = True) -> tuple[Agent, list]:
+                interactive: bool = True,
+                plugin_overrides: dict | None = None) -> tuple[Agent, list]:
     """构建 agent（真实形态）：LLM 客户端 + 插件装配（plugins.toml 配置驱动）。
 
     Args:
@@ -38,6 +39,9 @@ def build_agent(debug: bool = False, stats: bool = False,
         interactive: 是否交互环境（CLI=True）——False（评测/自动化）时不装配
             approval_gate 审批插件 → 需审批命令 fail-closed 拒绝。
             不能靠 isatty 判断（CLI 终端跑评测 stdin 也是 tty，会真弹窗卡住）
+        plugin_overrides: 任务级插件配置覆盖（评测专用，CLI 不传）——
+            深合并进插件配置（如 L3 长对话评测覆盖 context_manager 小窗口
+            触发压缩，方案 2026-08-23）
 
     Returns:
         (agent, installed_plugins)——installed 供 CLI 会话结束打印 report()
@@ -58,5 +62,25 @@ def build_agent(debug: bool = False, stats: bool = False,
         # 拒绝 + 评测输出零污染（资源监控默认打印状态行会污染评测输出）
         plugin_config["approval_gate"] = {"enabled": False}
         plugin_config["resource_monitor"] = {"enabled": False}
+    if plugin_overrides:
+        # 任务级覆盖（评测专用）：深合并——overrides 的值逐层覆盖配置文件
+        # （{**base, **override} 只合并顶层，嵌套 dict 需递归）
+        plugin_config = _deep_merge(plugin_config, plugin_overrides)
     installed = load_plugins(agent.events, plugin_config)
     return agent, installed
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """深合并两个配置 dict（override 的值覆盖 base，嵌套 dict 递归合并）。
+
+    顶层插件名 → 插件配置 dict；插件配置内部可能嵌套（如
+    context_manager.compress = {window, threshold}）——必须递归，
+    否则 override 的 compress 会整体替换掉 base 的其他字段。
+    """
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result

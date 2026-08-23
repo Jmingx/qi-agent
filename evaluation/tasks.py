@@ -2,9 +2,12 @@
 
 方案：docs/plans/2026-08-20-测评系统阶段A方案.md
 四类任务：tool（工具调用）/ error（错误恢复）/ security（安全拦截）/ context（上下文保持）
+阶段 C 收尾（2026-08-23）：plugin_overrides（任务级配置覆盖，L3 小窗口触发压缩）
++ setup（任务前置，如 sticky 注入）
 """
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 
 @dataclass
@@ -29,6 +32,12 @@ class EvalTask:
     expected_keywords: list[str] = field(default_factory=list)
     expect_blocked: bool = False
     timeout: float = 60.0  # 单任务超时（秒）——防卡死拖垮整体评测
+    plugin_overrides: dict | None = None  # 任务级插件配置覆盖（L3 小窗口）
+    setup: Callable | None = None  # 任务前置回调（跑 steps 前执行）
+    forbidden_tools: list[str] = field(default_factory=list)
+    # 期望【未】调用的工具（阶段 C 收尾 L3：压缩后不重做已完成工作）
+    expected_keyword_min_count: int = 1
+    # 关键词最少出现次数（L4 对比：压缩前/后各答一次 → 计数 ≥ 2）
 
 
 # 固定任务集（16 个）：覆盖当前 agent 能力
@@ -98,4 +107,96 @@ TASKS: list[EvalTask] = [
     EvalTask("c3", "context", "工具结果记忆",
              ["看一下 README.md 的第一行", "刚才读的文件叫什么名字？"],
              expected_tools=["read_file"], expected_keywords=["README"]),
+]
+
+# ── 阶段 C 收尾（方案 2026-08-23）：长对话事实保持评测（L3/L4）────────────
+# 独立于 TASKS（每个 ~1-2 分钟，按需跑：run.py --long / --all）
+# 关键设计：任务级小窗口覆盖（window=2000, threshold=0.5 → 1000 token 即
+# 触发压缩）——真实 128K 窗口 30 轮对话达不到；小窗口验证"压缩机制本身"
+
+# 小窗口覆盖（压缩触发）：window 6000 + 阈值 0.6 → 3600 token 触发。
+# 教训（首跑实测）：window 2000 时每 3-4 轮就压缩一次（20 轮触发 10+ 次）——
+# 摘要被反复"再摘要"→ 链式退化丢细节（c-long-1 猫名丢失）。
+# 6000 窗口下 20 轮对话（~4000-5000 token）触发 1-2 次——保真与触发平衡。
+# 同步压缩（async=False）——评测确定性（不依赖后台线程时序）
+_LONG_OVERRIDES = {
+    "context_manager": {
+        "compress": {"window": 6000, "threshold": 0.6},
+        "async_compress": False,
+    },
+}
+
+
+def _setup_sticky() -> None:
+    """c-long-2 前置：清空 + 注入 sticky（sticky 挂 system，压缩不碰）。"""
+    from qi_agent.context.sticky import remember, reset
+
+    reset()
+    remember("用户叫小Q")
+
+
+def _setup_todo() -> None:
+    """c-long-3 前置：直接调 todo 工具建任务（不经过 agent → 不在 history）。"""
+    from qi_agent.tools.builtin.todo import todo
+
+    todo(action="create", title="写周报")
+
+
+LONG_TASKS: list[EvalTask] = [
+    # c-long-1：事实保持（核心）——10 轮穿插事实 → 压缩 → 问猫名
+    # 轮数教训（二次跑实测）：20 轮 × 真实 LLM ≈ 190s/任务，串行 4 个 = 15+ 分钟
+    # 目标只是"触发 1-2 次压缩"——10 轮（~4000 token > 3600 阈值）恰好够，砍半提速
+    EvalTask(
+        "c-long-1", "context", "L3 事实保持（压缩后猫名仍在）",
+        steps=[  # 程序化生成：事实 + 闲聊撑 token + 提问
+            "我养了只猫叫咪咪",
+            *[f"继续聊点日常话题（第{i}轮）" for i in range(10)],
+            "我的猫叫什么名字？",
+        ],
+        expected_keywords=["咪咪"],
+        plugin_overrides=_LONG_OVERRIDES,
+        timeout=240.0,  # 串行执行（sticky 隔离）放宽超时
+    ),
+    # c-long-2：sticky 压缩后仍在——setup 注入 sticky（永不压缩）
+    EvalTask(
+        "c-long-2", "context", "L3 sticky 压缩后仍在",
+        steps=[
+            *[f"随便聊聊天气或生活（第{i}轮）" for i in range(10)],
+            "我叫什么名字？",
+        ],
+        expected_keywords=["小Q"],
+        plugin_overrides=_LONG_OVERRIDES,
+        setup=_setup_sticky,
+        timeout=240.0,
+    ),
+    # c-long-3：压缩后不重做已完成工作——setup 建 todo，全程不再调 todo 工具
+    EvalTask(
+        "c-long-3", "context", "L3 压缩后不重做（todo 联动）",
+        steps=[
+            *[f"继续聊聊（第{i}轮）" for i in range(10)],
+            "我刚才创建的任务是什么？",
+        ],
+        expected_keywords=["周报"],
+        # 只禁"重新创建"（压缩后不重做已完成工作）；查询（list）是合理行为放行
+        # ——首跑实测：模型答"任务是什么"时查 todo 被一刀切误杀
+        forbidden_tools=["todo:create"],
+        plugin_overrides=_LONG_OVERRIDES,
+        setup=_setup_todo,
+        timeout=240.0,
+    ),
+    # c-long-4：L4 一致性对比——压缩前/后各问一次，历史关键词 ≥2 次
+    EvalTask(
+        "c-long-4", "context", "L4 压缩前后一致性对比",
+        steps=[
+            "我养了只猫叫咪咪",
+            *[f"继续聊（第{i}轮）" for i in range(6)],
+            "我的猫叫什么名字？",      # 压缩前问（若此轮已触发压缩则提前压）
+            *[f"接着聊（第{i}轮）" for i in range(6)],
+            "再问一次，我的猫叫什么名字？",  # 压缩后问
+        ],
+        expected_keywords=["咪咪"],
+        expected_keyword_min_count=2,  # 前/后各答一次
+        plugin_overrides=_LONG_OVERRIDES,
+        timeout=240.0,
+    ),
 ]

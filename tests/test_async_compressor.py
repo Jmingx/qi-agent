@@ -159,9 +159,10 @@ def test_no_summarizer_injection_still_works(monkeypatch) -> None:
     from qi_agent.plugins.builtin.context_manager import ContextManagerPlugin as CMP
 
     # patch 插件模块里的名字绑定（from-import 后 monkeypatch 模块属性无效）
+    # C3 后默认实现是 make_summarizer 工厂（None=复用主模型）——patch 工厂
     monkeypatch.setattr(
-        "qi_agent.plugins.builtin.context_manager.default_summarizer",
-        lambda msgs: "默认兜底摘要",
+        "qi_agent.plugins.builtin.context_manager.make_summarizer",
+        lambda model=None: lambda msgs: "默认兜底摘要",
     )
     # 关键：不传 summarizer（模拟 load_plugins 装配）
     plugin = CMP(config={"chain": ["sticky", "compress"],

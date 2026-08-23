@@ -11,13 +11,29 @@ from evaluation.report import (
     save_report,
 )
 from evaluation.runner import run_eval
-from evaluation.tasks import TASKS
+from evaluation.tasks import LONG_TASKS, TASKS
 
 
 def main() -> None:
+    # 任务集选择（阶段 C 收尾，方案 2026-08-23）：默认快速集 TASKS；
+    # --long 跑长对话评测（L3/L4 事实保持，真实 LLM ~5 分钟）；
+    # --all 跑全部（TASKS + LONG_TASKS）
+    import argparse
+
+    parser = argparse.ArgumentParser(description="qi-agent 评测")
+    parser.add_argument("--long", action="store_true",
+                        help="跑长对话事实保持评测（L3/L4，真实 LLM ~5 分钟）")
+    parser.add_argument("--all", action="store_true", help="跑全部任务")
+    args = parser.parse_args()
+    tasks = TASKS
+    if args.long:
+        tasks = LONG_TASKS
+    if args.all:
+        tasks = TASKS + LONG_TASKS
+
     # 提示评测性质：真实 API 调用，需要 DEEPSEEK_API_KEY（.env）
-    print(f"开始评测（真实 LLM API，{len(TASKS)} 个任务，预计 1-3 分钟）...", flush=True)
-    results = run_eval()
+    print(f"开始评测（真实 LLM API，{len(tasks)} 个任务，预计 1-3 分钟）...", flush=True)
+    results = run_eval(tasks)
     # 并发执行后按原顺序打印每任务结果
     for r in results:
         mark = "✅" if r["passed"] else "❌"

@@ -27,6 +27,12 @@ REMEMBER_PREFIX = "/remember"
 # 资源查看命令集合（2026-08-21 交互调整：命令式查看资源消耗，不再每轮输出）
 USAGE_COMMANDS = {"usage", "资源"}
 
+# 上下文构成命令（阶段 C 收尾，方案 2026-08-23）：/context 看占用构成
+CONTEXT_COMMANDS = {"context", "上下文"}
+
+# 手动压缩命令（阶段 C 收尾）：/compact 强制同步压缩
+COMPACT_COMMANDS = {"compact"}
+
 
 def _print_plugin_reports(installed_plugins: list) -> None:
     """打印所有带 report() 的插件汇总（约定：观测类插件提供 report 方法）。
@@ -96,6 +102,48 @@ def main(argv: list[str] | None = None) -> None:
         # 资源消耗命令（2026-08-21：查看当前累计，不消耗 LLM 调用）
         if user_input.lower() in USAGE_COMMANDS:
             _print_plugin_reports(installed_plugins)
+            continue
+
+        # 上下文构成命令（阶段 C 收尾）：/context 显示占用构成（估算分段
+        # + 真实 usage 累计——分工：估算=预测展示，真实=统计/事实窗口）
+        if user_input.lower() in CONTEXT_COMMANDS:
+            from qi_agent.context.breakdown import (
+                compute_breakdown,
+                format_breakdown,
+            )
+            from qi_agent.tools.registry import get_tool_schemas
+
+            print(format_breakdown(compute_breakdown(
+                agent.history, get_tool_schemas())))
+            u = agent.get_usage()
+            print(
+                f"[用量] 累计 {u['total_tokens']} tokens"
+                f"（prompt {u['prompt_tokens']} + completion {u['completion_tokens']}）"
+            )
+            continue
+
+        # 手动压缩命令（阶段 C 收尾）：/compact 强制同步压缩当前消息
+        if user_input.lower() in COMPACT_COMMANDS:
+            from qi_agent.plugins.builtin.context_manager import (
+                ContextManagerPlugin,
+            )
+
+            cm = next(
+                (p for p in installed_plugins
+                 if isinstance(p, ContextManagerPlugin)), None)
+            if cm is None:
+                print("[compact] 上下文管理插件未启用")
+            else:
+                before = len(agent.history)
+                new_msgs, summary = cm.compact_now(agent.history)
+                agent.messages = new_msgs
+                print(
+                    f"[compact] 压缩完成：{before} → {len(new_msgs)} 条消息"
+                )
+                if summary:
+                    print(f"摘要：{summary[:200]}")
+                else:
+                    print("（无可压缩历史）")
             continue
 
         try:
