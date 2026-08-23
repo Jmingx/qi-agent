@@ -63,7 +63,3 @@ uv run python -m pytest        # 全量测试
 uv run python -m pytest -q     # 快速模式
 uv run python -m ruff check qi_agent tests   # 代码风格检查
 ```
-
-## 开发
-
-开发规范见 [AGENTS.md](AGENTS.md)。
