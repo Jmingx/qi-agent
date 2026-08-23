@@ -23,14 +23,14 @@ else
 fi
 
 # 2. 找出 main 上新增的提交（相对 release worktree）
-NEW_COMMITS=$(git log main --not "$WT" --oneline | awk '{print $1}')
+NEW_COMMITS=$(git log --oneline main --not "$WT" | awk '{print $1}')
 if [ -z "$NEW_COMMITS" ]; then
     echo "✅ main 没有新提交，无需推送"
     exit 0
 fi
 
 echo "=== main 领先发布分支的提交 ==="
-git log main --not "$WT" --oneline
+git log --oneline main --not "$WT"
 echo
 
 # 3. 筛选可推送提交（跳过 docs: 前缀 + 含 docs 文件变更）
