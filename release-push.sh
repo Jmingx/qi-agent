@@ -10,7 +10,9 @@
 set -e
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-WT="$REPO/.release-wt"   # worktree（gitignore，本地-only）
+# git 是原生 Windows 程序，不接受 MSYS 路径（/c/...）——统一转 C:/ 风格
+REPO_WIN="$(cygpath -m "$REPO")"
+WT="$REPO_WIN/.release-wt"   # worktree（gitignore，本地-only）
 
 cd "$REPO"
 git fetch origin
@@ -22,15 +24,16 @@ else
     git worktree add "$WT" -b release origin/main
 fi
 
-# 2. 找出 main 上新增的提交（相对 release worktree）
-NEW_COMMITS=$(git log --oneline main --not "$WT" | awk '{print $1}')
+# 2. 找出 main 上新增的提交（相对 origin/main——release 基线）
+# 注意：--not 排除的是分支引用（worktree 路径不行）
+NEW_COMMITS=$(git log --oneline main --not origin/main | awk '{print $1}')
 if [ -z "$NEW_COMMITS" ]; then
     echo "✅ main 没有新提交，无需推送"
     exit 0
 fi
 
 echo "=== main 领先发布分支的提交 ==="
-git log --oneline main --not "$WT"
+git log --oneline main --not origin/main
 echo
 
 # 3. 筛选可推送提交（跳过 docs: 前缀 + 含 docs 文件变更）
@@ -41,8 +44,8 @@ for c in $NEW_COMMITS; do
         echo "⏭ 跳过（docs 提交）: $c $MSG"
         continue
     fi
-    if git show --name-only --format= "$c" | grep -qE "^(docs/|AGENTS\.md$|\.hermes/)"; then
-        echo "⏭ 跳过（含 docs 文件变更）: $c $MSG"
+    if git show --name-only --format= "$c" | grep -qE "^(docs/|AGENTS\.md$|\.hermes/|release-push\.sh$)"; then
+        echo "⏭ 跳过（含本地-only 文件变更）: $c $MSG"
         continue
     fi
     PICKS+=("$c")
