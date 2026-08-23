@@ -17,6 +17,18 @@ WT="$REPO_WIN/.release-wt"   # worktree（gitignore，本地-only）
 cd "$REPO"
 git fetch origin
 
+# 0. 分叉检测（2026-08-23 踩坑）：main 与 origin/main 必须同根
+# （origin/main 是 main 的祖先）——本地 main 含完整旧历史（docs 系），
+# 与远程干净历史不同根时，"main --not origin/main" 会列出全量旧提交
+# 而非增量（误 pick 旧提交）。分叉时要求手动 cherry-pick。
+if ! git merge-base --is-ancestor origin/main main 2>/dev/null; then
+    echo "⚠ 本地 main 与远程 origin/main 不同根（历史分叉）——"
+    echo "  增量推送不可用（AGENTS.md P0-8）。请手动处理："
+    echo "  git worktree add .release-wt -b release origin/main"
+    echo "  git -C .release-wt cherry-pick <新代码提交...> && git -C .release-wt push origin HEAD:main"
+    exit 1
+fi
+
 # 1. 建立/同步发布 worktree（基线 = origin/main）
 if [ -d "$WT" ]; then
     git -C "$WT" fetch origin
