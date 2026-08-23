@@ -238,7 +238,9 @@ def test_parallel_actually_concurrent() -> None:
         both_in.set()  # 第二个进入：通知第一个
         return f"{name}-ok"
 
-    with mock.patch("qi_agent.agent.execute_tool", side_effect=fake_execute):
+    # execute_tool 已随执行闭环下沉到 executor（方案 2026-08-23）——
+    # patch 位置从 qi_agent.agent 移到 qi_agent.tools.executor
+    with mock.patch("qi_agent.tools.executor.execute_tool", side_effect=fake_execute):
         client = ScriptedClient([
             make_result(None, tool_calls=[
                 ToolCall(id="c1", name="shell", arguments={"command": "pwd"}),
