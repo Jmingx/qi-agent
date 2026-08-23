@@ -1,0 +1,39 @@
+# qi-agent 插件配置示例（复制为 plugins.toml 后按需修改）
+#
+# 规则：
+# - 显式声明的插件按此配置启用/禁用
+# - 未声明的插件回落各自默认开关（default_enabled）
+# - 不创建本文件 = 全部用默认开关（零配置可跑）
+#
+# 用法示例：
+# [tool_stats]
+# enabled = true
+
+[tool_stats]
+enabled = false
+
+[security_guard]
+enabled = true
+
+# 安全审核黑名单（按工具名分组，子串匹配，大小写不敏感）
+# shell 内置已拦截 rm/del/format 等危险操作；这里加用户自定义限制
+# 注意：关键词尽量带空格/上下文，避免误伤（如 "dd " 而非 "dd"）
+[security_guard.blacklist]
+shell = ["git push", "mkfs", "dd "]
+
+# 环境信息：向模型注入运行环境（OS/shell/可用命令），默认开
+[env_info]
+enabled = true
+
+# 审批交互：危险命令（rm/shutdown/git push 等）弹窗确认（y/n/a=总是允许）
+# 默认开（CLI 主场景）；评测/无交互环境自动拒绝（fail-closed，无需改动）
+# 注意：红线（读 .env 等）永远硬拒，不走审批
+[approval_gate]
+enabled = true
+
+# 资源监控：token 消耗 + 上下文窗口占用（交互调整 2026-08-21：不打印每轮状态行，
+# 用 usage/资源 命令查看汇总；上下文 ≥80% 时条件警告提醒 clear）
+# 默认开（CLI）；评测/自动化自动静默（interactive=False 不装配）
+# 上下文上限：QI_CONTEXT_LIMIT 环境变量（默认 64000；模型化映射表见 TODO cli-ui.md）
+[resource_monitor]
+enabled = true
