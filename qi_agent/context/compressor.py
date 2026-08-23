@@ -12,6 +12,20 @@
 
 from qi_agent.context.window import _group_messages
 
+
+def default_summarizer(messages: list[dict]) -> str:
+    """默认摘要实现：独立 LLM 调用（惰性建 client，压缩才发生）。
+
+    真实装配路径（load_plugins 只传 config 不传实例）用它兜底；
+    测试注入 mock 替代。压缩才创建 client——零压缩零开销。
+    """
+    from qi_agent.agent_factory import load_api_key
+    from qi_agent.llm import LLMClient
+
+    client = LLMClient(load_api_key())
+    result = client.chat([{"role": "user", "content": build_summary_prompt(messages)}])
+    return result.content or "[摘要失败]"
+
 # 摘要提示中的结构化分区（对齐 Hermes 结构化压缩）
 _SUMMARY_SECTIONS = ["关键事实", "用户要求", "决策", "未完成的任务", "工具结果结论"]
 
