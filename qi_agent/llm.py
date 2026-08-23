@@ -172,16 +172,18 @@ class LLMClient:
         usage: dict | None = None
 
         for chunk in stream:
-            # 最后 chunk（choices 为空）：纯 usage 携带者（stream_options 请求后返回）
-            # ——必须先判断 choices 非空，否则 chunk.choices[0] IndexError
-            if not chunk.choices:
-                if getattr(chunk, "usage", None) is not None:
-                    usage = {
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                        "total_tokens": chunk.usage.total_tokens,
-                    }
-                continue
+            # usage 提取（修复 v0.4.22 遗留，2026-08-22 真实 API 验证）：
+            # DeepSeek 的 usage 末 chunk 带 choices=1（与 OpenAI 的空 choices
+            # 不同）——不能依赖 choices 空判断，chunk 带 usage 就提取
+            if getattr(chunk, "usage", None) is not None:
+                usage = {
+                    "prompt_tokens": chunk.usage.prompt_tokens,
+                    "completion_tokens": chunk.usage.completion_tokens,
+                    "total_tokens": chunk.usage.total_tokens,
+                }
+                # 纯 usage chunk（choices 空）→ 跳过（无 delta）
+                if not chunk.choices:
+                    continue
             delta = chunk.choices[0].delta
             # 1. 文本增量：回调 + 累积
             if delta.content:
