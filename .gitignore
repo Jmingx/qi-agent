@@ -31,7 +31,5 @@ Thumbs.db
 # 临时脚本（用户测试用，不进版本库）
 tmp/
 
-# 内部文档与本地规划（双仓策略 P0-8：本地保留，不进版本库/远程仓）
-docs/
-.hermes/
-AGENTS.md
+# 发布 worktree（release-push 脚本用，本地-only）
+.release-wt/
