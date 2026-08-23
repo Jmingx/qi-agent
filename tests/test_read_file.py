@@ -5,7 +5,7 @@
 
 import pytest
 
-from qi_agent.tools.read_file import read_file
+from qi_agent.tools.builtin.read_file import read_file
 
 
 @pytest.fixture()

@@ -10,7 +10,9 @@ import argparse
 from qi_agent.agent_factory import build_agent
 from qi_agent.context.sticky import remember
 from qi_agent.interaction import TerminalInteraction, set_interaction_provider
-from qi_agent.tools import get_time, read_file, run_python, shell  # noqa: F401  导入即注册内置工具
+from qi_agent.tools.builtin import (  # noqa: F401  导入即注册内置工具
+    get_time, read_file, run_python, shell,
+)
 
 # 退出命令集合
 EXIT_COMMANDS = {"exit", "quit", "退出", "q"}

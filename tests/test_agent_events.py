@@ -8,7 +8,7 @@ import re
 from qi_agent.agent import Agent
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult, ToolCall
-from qi_agent.plugins.tool_stats import ToolStatsPlugin
+from qi_agent.plugins.builtin.tool_stats import ToolStatsPlugin
 
 
 class FakeClient:

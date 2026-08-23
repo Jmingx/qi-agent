@@ -7,7 +7,7 @@ id 自增不重用；返回操作后全量列表。
 
 import pytest
 
-from qi_agent.tools.todo import TodoStore, _reset_store, todo
+from qi_agent.tools.builtin.todo import TodoStore, _reset_store, todo
 
 
 @pytest.fixture(autouse=True)

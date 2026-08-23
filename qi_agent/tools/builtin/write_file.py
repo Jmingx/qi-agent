@@ -17,7 +17,9 @@ from qi_agent.security.path_security import is_sensitive_path
 from qi_agent.tools.registry import register
 
 # 项目根（写文件限定的默认范围；测试可 monkeypatch）
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# 注意：本文件在 tools/builtin/ 下（分层方案 2026-08-23），比原 tools/
+# 多一级目录——parent×4 才到项目根（builtin → tools → qi_agent → 项目根）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
 def _is_inside_project(path: str) -> bool:

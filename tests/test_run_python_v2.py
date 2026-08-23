@@ -3,7 +3,7 @@
 方案：docs/plans/2026-08-19-软沙箱v2方案.md（决策点 1-7 已批准）
 """
 
-from qi_agent.tools.run_python import run_python
+from qi_agent.tools.builtin.run_python import run_python
 
 
 def test_v2_blocks_concatenated_import() -> None:

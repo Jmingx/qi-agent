@@ -10,7 +10,7 @@ import importlib
 
 import pytest
 
-import qi_agent.tools.run_python as rp
+import qi_agent.tools.builtin.run_python as rp
 from qi_agent.tools.registry import _TOOL_REGISTRY
 
 

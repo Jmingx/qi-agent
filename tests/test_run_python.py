@@ -5,7 +5,7 @@ import os
 import pytest
 
 from qi_agent.tools.registry import _TOOL_REGISTRY
-from qi_agent.tools.run_python import run_python
+from qi_agent.tools.builtin.run_python import run_python
 
 
 def test_execute_simple_code() -> None:
@@ -62,7 +62,7 @@ def test_safe_env_no_api_key() -> None:
     """安全锁：白名单环境变量不应包含 DEEPSEEK_API_KEY。"""
     # 直接验证白名单构建函数（比通过沙箱执行更干净——
     # 沙箱内 import os 会被权限锁拦截，无法用代码读环境变量）
-    from qi_agent.tools.run_python import _build_safe_env
+    from qi_agent.tools.builtin.run_python import _build_safe_env
 
     env = _build_safe_env()
     assert "DEEPSEEK_API_KEY" not in env
@@ -96,7 +96,7 @@ def test_registered_in_registry() -> None:
 
 def _build_env_with(monkeypatch, **vars) -> dict:
     """构造含指定变量的环境并构建沙箱 env。"""
-    from qi_agent.tools.run_python import _build_safe_env
+    from qi_agent.tools.builtin.run_python import _build_safe_env
 
     for k, v in vars.items():
         monkeypatch.setenv(k, v)
@@ -154,7 +154,7 @@ def test_pass_not_in_substrings() -> None:
     注意：BYPASS_CACHE 虽含 PASS 但会被白名单丢弃（不在 _SAFE_ENV_KEYS）——
     无法用"保留"验证；直接断言常量不含 PASS 才是设计意图的准确验证。
     """
-    from qi_agent.tools.run_python import _SENSITIVE_KEY_SUBSTRINGS
+    from qi_agent.tools.builtin.run_python import _SENSITIVE_KEY_SUBSTRINGS
 
     assert "PASS" not in _SENSITIVE_KEY_SUBSTRINGS
     assert "PASSWD" in _SENSITIVE_KEY_SUBSTRINGS  # PASSWD（密码缩写）该拦
@@ -176,7 +176,7 @@ def test_env_defense_in_depth(monkeypatch) -> None:
 
     这是本方案（v0.4.12）与单层白名单的本质区别——模拟"将来名单失误"。
     """
-    import qi_agent.tools.run_python as rp
+    import qi_agent.tools.builtin.run_python as rp
 
     # 模拟未来白名单失误：把 DEEPSEEK_API_KEY 加进白名单
     monkeypatch.setattr(
@@ -195,7 +195,7 @@ def _reload_rp(monkeypatch, **env) -> None:
     """清理注册表 + 设置环境变量 + 重载 run_python 模块。"""
     import importlib
 
-    import qi_agent.tools.run_python as rp
+    import qi_agent.tools.builtin.run_python as rp
 
     _TOOL_REGISTRY.pop("run_python", None)
     for k, v in env.items():
@@ -212,7 +212,7 @@ def _restore_rp_default(monkeypatch):
     monkeypatch.delenv("QI_SANDBOX_MODE", raising=False)
     import importlib
 
-    import qi_agent.tools.run_python as rp
+    import qi_agent.tools.builtin.run_python as rp
 
     importlib.reload(rp)
 
@@ -224,7 +224,7 @@ def test_cwd_isolated_legacy_write() -> None:
     legacy 完整 Python 会真执行 open——但 cwd 已是临时目录，
     文件写在临时目录而非项目根。
     """
-    from qi_agent.tools.run_python import run_python
+    from qi_agent.tools.builtin.run_python import run_python
 
     probe = "probe_iso_write.txt"
     code = (
@@ -246,7 +246,7 @@ def test_cwd_isolated_legacy_read() -> None:
     用 pyproject.toml（项目根真实存在）——未隔离时能读到内容，
     隔离后临时目录没有它 → FileNotFoundError。
     """
-    from qi_agent.tools.run_python import run_python
+    from qi_agent.tools.builtin.run_python import run_python
 
     code = (
         "f = getattr(__builtins__, 'op' + 'en')('pyproject.toml'); "
@@ -306,7 +306,7 @@ def test_kill_process_tree() -> None:
     import subprocess
     import sys
 
-    from qi_agent.tools.run_python import _kill_process_tree
+    from qi_agent.tools.builtin.run_python import _kill_process_tree
 
     proc = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"]

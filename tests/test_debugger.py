@@ -7,7 +7,7 @@
 from qi_agent.agent import Agent
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult, ToolCall
-from qi_agent.plugins.debug_logger import DebugLoggerPlugin
+from qi_agent.plugins.builtin.debug_logger import DebugLoggerPlugin
 
 
 class FakeClient:

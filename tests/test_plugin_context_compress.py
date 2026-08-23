@@ -7,7 +7,7 @@
 from qi_agent.agent import Agent
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult
-from qi_agent.plugins.context_manager import ContextManagerPlugin
+from qi_agent.plugins.builtin.context_manager import ContextManagerPlugin
 
 
 def _result(prompt_tokens: int) -> ChatResult:

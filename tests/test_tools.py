@@ -77,7 +77,7 @@ def test_tool_name_is_function_name() -> None:
 
 def test_shell_blocks_dangerous_commands() -> None:
     """shell 工具应拒绝危险命令（read-only 白名单）。"""
-    from qi_agent.tools.shell import shell
+    from qi_agent.tools.builtin.shell import shell
 
     assert "拒绝" in shell("rm -rf /")
     assert "拒绝" in shell("del C:\\Windows")
@@ -87,7 +87,7 @@ def test_shell_blocks_dangerous_commands() -> None:
 
 def test_shell_allows_readonly_commands() -> None:
     """shell 工具应允许只读命令。"""
-    from qi_agent.tools.shell import shell
+    from qi_agent.tools.builtin.shell import shell
 
     result = shell("pwd")
     assert isinstance(result, str) and len(result) > 0
@@ -95,7 +95,7 @@ def test_shell_allows_readonly_commands() -> None:
 
 def test_read_file_content() -> None:
     """read_file 应返回文件内容。"""
-    from qi_agent.tools.read_file import read_file
+    from qi_agent.tools.builtin.read_file import read_file
 
     content = read_file("docs/python-basics/README.md")
     assert "Python" in content
@@ -103,7 +103,7 @@ def test_read_file_content() -> None:
 
 def test_read_file_missing() -> None:
     """read_file 读取不存在的文件应返回错误提示。"""
-    from qi_agent.tools.read_file import read_file
+    from qi_agent.tools.builtin.read_file import read_file
 
     result = read_file("no_such_file_xyz.txt")
     assert "不存在" in result
@@ -111,7 +111,7 @@ def test_read_file_missing() -> None:
 
 def test_get_time_format() -> None:
     """get_time 应返回 YYYY-MM-DD HH:MM:SS 格式。"""
-    from qi_agent.tools.get_time import get_time
+    from qi_agent.tools.builtin.get_time import get_time
 
     result = get_time()
     assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", result)
@@ -124,7 +124,7 @@ def test_shell_utf8_output(tmp_path) -> None:
     首字节 → 触发 UnicodeDecodeError（子进程 reader 线程炸 → 输出变空）。
     修复：encoding="utf-8" + errors="replace"。
     """
-    from qi_agent.tools.shell import shell
+    from qi_agent.tools.builtin.shell import shell
 
     f = tmp_path / "utf8.txt"
     f.write_bytes(b"a\x80b")  # 0x80 必然触发 GBK 解码失败
@@ -141,7 +141,7 @@ def test_run_python_unicode_output() -> None:
     子进程默认按系统 locale（GBK）编码 stdout，emoji 无法编码 →
     子进程内部报错。修复：-X utf8 强制子进程 UTF-8 模式 + 父进程 utf-8 解码。
     """
-    from qi_agent.tools.run_python import run_python
+    from qi_agent.tools.builtin.run_python import run_python
 
     result = run_python("print('ok-emoji-\\U0001F600')")
     assert "ok-emoji" in result
@@ -157,7 +157,7 @@ def test_shell_long_running_timeout_not_hang(monkeypatch) -> None:
     """
     import time
 
-    import qi_agent.tools.shell as sh
+    import qi_agent.tools.builtin.shell as sh
 
     monkeypatch.setattr(sh, "_COMMAND_TIMEOUT", 2)  # 缩短超时加速测试
     t0 = time.time()
@@ -186,7 +186,7 @@ def test_shell_background_returns_fast() -> None:
     import re
     import time
 
-    from qi_agent.tools.shell import shell
+    from qi_agent.tools.builtin.shell import shell
 
     t0 = time.time()
     result = shell("ping -t 127.0.0.1", approved=True, background=True)
@@ -205,7 +205,7 @@ def test_shell_background_process_alive() -> None:
 
     import psutil
 
-    from qi_agent.tools.shell import shell
+    from qi_agent.tools.builtin.shell import shell
 
     result = shell("ping -t 127.0.0.1", approved=True, background=True)
     pid = int(re.search(r"PID (\d+)", result).group(1))

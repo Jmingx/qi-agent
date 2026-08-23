@@ -59,7 +59,7 @@ def test_sensitive_env_example_allowed() -> None:
 
 def test_read_file_blocks_env() -> None:
     """集成：read_file 读 .env 应返回安全拦截。"""
-    from qi_agent.tools.read_file import read_file
+    from qi_agent.tools.builtin.read_file import read_file
 
     result = read_file(".env")
     assert "安全拦截" in result
@@ -67,7 +67,7 @@ def test_read_file_blocks_env() -> None:
 
 def test_read_file_allows_normal() -> None:
     """集成：read_file 读普通文件应正常。"""
-    from qi_agent.tools.read_file import read_file
+    from qi_agent.tools.builtin.read_file import read_file
 
     result = read_file("README.md")
     assert "安全拦截" not in result

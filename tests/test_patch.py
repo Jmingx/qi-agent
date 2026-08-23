@@ -5,7 +5,7 @@
 编辑已有文件 → 审批档（声明式 approval）；敏感路径红线 approved 也拒。
 """
 
-from qi_agent.tools.patch import patch
+from qi_agent.tools.builtin.patch import patch
 from qi_agent.tools.registry import execute_tool, get_tool
 
 

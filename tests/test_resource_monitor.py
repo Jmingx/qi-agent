@@ -6,7 +6,7 @@
 from unittest import mock
 
 from qi_agent.llm import ChatResult, LLMClient
-from qi_agent.plugins.resource_monitor import ResourceMonitorPlugin
+from qi_agent.plugins.builtin.resource_monitor import ResourceMonitorPlugin
 
 
 # ── 数据层：usage 提取 ─────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ def test_monitor_report() -> None:
 
 def test_estimate_messages_basic() -> None:
     """估算：ceil(长度/4) + 每条 overhead。"""
-    from qi_agent.plugins.resource_monitor import estimate_messages
+    from qi_agent.plugins.builtin.resource_monitor import estimate_messages
     assert estimate_messages([]) == 0
     assert estimate_messages([{"role": "user", "content": "hi"}]) == 5  # 4 + ceil(2/4)
     assert estimate_messages([{"role": "user", "content": "你好"}]) == 5  # 2 字符
@@ -164,7 +164,7 @@ def test_estimate_messages_basic() -> None:
 
 def test_estimate_messages_tool_calls() -> None:
     """估算：tool_calls 消息额外计价（name + arguments）。"""
-    from qi_agent.plugins.resource_monitor import estimate_messages
+    from qi_agent.plugins.builtin.resource_monitor import estimate_messages
     msg = {
         "role": "assistant", "content": None,
         "tool_calls": [{"id": "1", "type": "function",

@@ -9,7 +9,7 @@ from qi_agent.interaction import (
     InteractionUnavailableError,
     set_interaction_provider,
 )
-from qi_agent.tools.clarify import clarify
+from qi_agent.tools.builtin.clarify import clarify
 from qi_agent.tools.registry import execute_tool, get_tool
 
 import pytest

@@ -12,7 +12,7 @@ from qi_agent.agent import Agent
 from qi_agent.context.async_compressor import AsyncCompressor
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult
-from qi_agent.plugins.context_manager import ContextManagerPlugin
+from qi_agent.plugins.builtin.context_manager import ContextManagerPlugin
 
 
 def _messages(n: int = 6) -> list[dict]:
@@ -156,11 +156,11 @@ def test_plugin_async_inflight_skips_compress(capsys) -> None:
 def test_no_summarizer_injection_still_works(monkeypatch) -> None:
     """回归（2026-08-23 修复）：真实装配路径（load_plugins 只传 config，
     不注入 summarizer）→ 默认惰性实现兜底 → 压缩仍触发。"""
-    from qi_agent.plugins.context_manager import ContextManagerPlugin as CMP
+    from qi_agent.plugins.builtin.context_manager import ContextManagerPlugin as CMP
 
     # patch 插件模块里的名字绑定（from-import 后 monkeypatch 模块属性无效）
     monkeypatch.setattr(
-        "qi_agent.plugins.context_manager.default_summarizer",
+        "qi_agent.plugins.builtin.context_manager.default_summarizer",
         lambda msgs: "默认兜底摘要",
     )
     # 关键：不传 summarizer（模拟 load_plugins 装配）

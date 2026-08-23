@@ -18,7 +18,7 @@ from qi_agent.context.estimator import estimate_tokens
 from qi_agent.context.sticky import remember, reset
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult
-from qi_agent.plugins.context_manager import ContextManagerPlugin
+from qi_agent.plugins.builtin.context_manager import ContextManagerPlugin
 
 
 @pytest.fixture(autouse=True)

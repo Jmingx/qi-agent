@@ -6,7 +6,7 @@ SSRF：拒绝内网/本地地址（agent 被诱导探测内网 = 数据泄露通
 
 from unittest import mock
 
-import qi_agent.tools.web_extract as we
+import qi_agent.tools.builtin.web_extract as we
 
 
 # ── SSRF 防护 ─────────────────────────────────────────────────────────────

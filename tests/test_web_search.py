@@ -7,7 +7,7 @@
 import json
 from unittest import mock
 
-import qi_agent.tools.web_search as ws
+import qi_agent.tools.builtin.web_search as ws
 
 # ── DeepSeek 后端解析 ─────────────────────────────────────────────────────
 

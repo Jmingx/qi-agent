@@ -5,7 +5,7 @@
 
 import platform
 
-from qi_agent.plugins.env_info import EnvInfoPlugin
+from qi_agent.plugins.builtin.env_info import EnvInfoPlugin
 
 
 def _make_plugin() -> EnvInfoPlugin:

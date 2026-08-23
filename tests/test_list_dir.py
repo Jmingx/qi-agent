@@ -2,7 +2,7 @@
 
 import os
 
-from qi_agent.tools.list_dir import list_dir
+from qi_agent.tools.builtin.list_dir import list_dir
 
 
 def test_list_dir_shows_files_and_dirs(tmp_path) -> None:

@@ -4,7 +4,7 @@
 零新依赖哲学）。返回 文件+行号+匹配行（截断）。
 """
 
-from qi_agent.tools.search_files import search_files
+from qi_agent.tools.builtin.search_files import search_files
 
 
 def test_search_finds_matches(tmp_path) -> None:

@@ -6,7 +6,7 @@ approved 也拒——对齐 write_file 四档）；审批链路由 security_guar
 
 import os
 
-from qi_agent.tools.file_delete import file_delete
+from qi_agent.tools.builtin.file_delete import file_delete
 from qi_agent.tools.registry import execute_tool
 
 
