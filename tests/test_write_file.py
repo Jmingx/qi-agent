@@ -7,8 +7,8 @@
 
 import pytest
 
-import qi_agent.tools.write_file as wf
-from qi_agent.tools.write_file import write_file
+import qi_agent.tools.builtin.write_file as wf
+from qi_agent.tools.builtin.write_file import write_file
 
 
 @pytest.fixture()
@@ -81,12 +81,13 @@ def test_write_missing_dir_created(project) -> None:
 
 def test_security_guard_write_classify(project) -> None:
     """write_file 四档判定：红线/覆盖审批/越界审批/新增放行。"""
-    from qi_agent.plugins.security_guard import SecurityGuardPlugin
+    from qi_agent.plugins.builtin.security_guard import SecurityGuardPlugin
+    from qi_agent.tools.decision import ToolAction
 
     plugin = SecurityGuardPlugin()
-    # 红线：敏感路径 → [安全拦截]
+    # 红线：敏感路径 → BLOCK
     r = plugin._on_tool_call("write_file", {"path": str(project / ".env")})
-    assert r.startswith("[安全拦截]")
+    assert r.action == ToolAction.BLOCK
     # 新增（不存在）→ None 放行
     r = plugin._on_tool_call(
         "write_file", {"path": str(project / "new.txt")})
@@ -95,11 +96,11 @@ def test_security_guard_write_classify(project) -> None:
     (project / "exists.txt").write_text("x", encoding="utf-8")
     r = plugin._on_tool_call(
         "write_file", {"path": str(project / "exists.txt")})
-    assert r.startswith("NEED_APPROVAL:")
+    assert r.action == ToolAction.NEED_APPROVAL
     # 越界 → NEED_APPROVAL
     r = plugin._on_tool_call(
         "write_file", {"path": str(project.parent / "outside.txt")})
-    assert r.startswith("NEED_APPROVAL:")
+    assert r.action == ToolAction.NEED_APPROVAL
 
 
 # ── 审批集成 ──────────────────────────────────────────────────────────────
@@ -110,8 +111,8 @@ def test_write_approval_flow(project) -> None:
     from qi_agent.agent import Agent
     from qi_agent.events import EventBus
     from qi_agent.llm import ChatResult, ToolCall
-    from qi_agent.plugins.approval_gate import ApprovalGatePlugin
-    from qi_agent.plugins.security_guard import SecurityGuardPlugin
+    from qi_agent.plugins.builtin.approval_gate import ApprovalGatePlugin
+    from qi_agent.plugins.builtin.security_guard import SecurityGuardPlugin
 
     target = project / "exists.txt"
     target.write_text("old", encoding="utf-8")

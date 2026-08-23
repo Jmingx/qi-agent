@@ -13,7 +13,11 @@ from qi_agent.interaction import (
     set_interaction_provider,
 )
 from qi_agent.llm import ChatResult, ToolCall
-from qi_agent.plugins.approval_gate import ApprovalGatePlugin
+from qi_agent.plugins.builtin.approval_gate import ApprovalGatePlugin
+from qi_agent.tools.decision import (
+    SEC_APPROVAL_ESCALATION,
+    SEC_APPROVAL_SANDBOX,
+)
 
 
 class FakeProvider:
@@ -72,7 +76,7 @@ class FakeShellClient:
 def _make_agent(command: str, plugin: ApprovalGatePlugin | None) -> object:
     """构造 agent：判档插件（security_guard）+ 审批插件（或 None = fail-closed）。"""
     from qi_agent.agent import Agent
-    from qi_agent.plugins.security_guard import SecurityGuardPlugin
+    from qi_agent.plugins.builtin.security_guard import SecurityGuardPlugin
 
     bus = EventBus()
     SecurityGuardPlugin().install(bus)
@@ -141,7 +145,7 @@ def test_approval_session_memory(fake_provider) -> None:
 
 def test_shell_approved_param() -> None:
     """approved=True → 非白名单命令可执行（审批同意路径）。"""
-    from qi_agent.tools.shell import shell
+    from qi_agent.tools.builtin.shell import shell
 
     result = shell("echo approved-exec", approved=True)
     assert "[安全拦截]" not in result
@@ -149,7 +153,7 @@ def test_shell_approved_param() -> None:
 
 def test_shell_unapproved_still_blocked() -> None:
     """无 approved → 非白名单命令拒绝（工具层兜底保持）。"""
-    from qi_agent.tools.shell import shell
+    from qi_agent.tools.builtin.shell import shell
 
     result = shell("shutdown /s")
     assert "[安全拦截]" in result
@@ -173,8 +177,8 @@ def test_run_python_downgrade_prompt(fake_provider) -> None:
     _set_answers(fake_provider, ["y"])
     plugin = ApprovalGatePlugin()
     assert plugin._on_tool_approval(
-        "代码需要 import 'requests'（受限环境白名单外），需降级审批",
-        name="run_python",
+        "import 'requests'（沙箱降级）",
+        code=SEC_APPROVAL_SANDBOX,
     ) is True
     prompt = fake_provider.questions[-1]
     assert "降级沙箱" in prompt
@@ -186,7 +190,9 @@ def test_run_python_downgrade_no_always_allow(fake_provider) -> None:
     """run_python 降级：输入 a 视为拒绝且不记忆（a=总是允许 禁用）。"""
     _set_answers(fake_provider, ["a"])
     plugin = ApprovalGatePlugin()
-    assert plugin._on_tool_approval("代码需要降级", name="run_python") is False
+    assert plugin._on_tool_approval(
+        "import 'x'（沙箱降级）", code=SEC_APPROVAL_SANDBOX,
+    ) is False
     assert plugin._approved_prefixes == []  # 未记忆
 
 
@@ -194,7 +200,9 @@ def test_run_python_downgrade_fail_closed() -> None:
     """run_python 降级交互不可用（评测/管道）→ 自动拒绝。"""
     set_interaction_provider(None)
     plugin = ApprovalGatePlugin()
-    assert plugin._on_tool_approval("代码需要降级", name="run_python") is False
+    assert plugin._on_tool_approval(
+        "import 'x'（沙箱降级）", code=SEC_APPROVAL_SANDBOX,
+    ) is False
 
 
 # ── shell 代码执行命令 = 沙箱升级审批（v0.4.23，弹窗透明） ───────────────
@@ -205,7 +213,7 @@ def test_sandbox_escalation_prompt(fake_provider) -> None:
     _set_answers(fake_provider, ["y"])
     plugin = ApprovalGatePlugin()
     assert plugin._on_tool_approval(
-        "沙箱升级:python -c 'print(1)'", name="shell"
+        "python -c 'print(1)'", code=SEC_APPROVAL_ESCALATION,
     ) is True
     prompt = fake_provider.questions[-1]
     assert "完整权限" in prompt
@@ -218,7 +226,9 @@ def test_sandbox_escalation_no_always_allow(fake_provider) -> None:
     """沙箱升级输入 a → 拒绝且不记忆（防总允许=变相全局放行代码执行）。"""
     _set_answers(fake_provider, ["a"])
     plugin = ApprovalGatePlugin()
-    assert plugin._on_tool_approval("沙箱升级:python -c 'x'", name="shell") is False
+    assert plugin._on_tool_approval(
+        "python -c 'x'", code=SEC_APPROVAL_ESCALATION,
+    ) is False
     assert plugin._approved_prefixes == []
 
 
@@ -226,4 +236,6 @@ def test_sandbox_escalation_fail_closed() -> None:
     """沙箱升级交互不可用（评测）→ 自动拒绝。"""
     set_interaction_provider(None)
     plugin = ApprovalGatePlugin()
-    assert plugin._on_tool_approval("沙箱升级:python -c 'x'", name="shell") is False
+    assert plugin._on_tool_approval(
+        "python -c 'x'", code=SEC_APPROVAL_ESCALATION,
+    ) is False

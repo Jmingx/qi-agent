@@ -6,7 +6,12 @@
 from qi_agent.agent import Agent
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult, ToolCall
-from qi_agent.plugins.security_guard import SecurityGuardPlugin
+from qi_agent.plugins.builtin.security_guard import SecurityGuardPlugin
+from qi_agent.tools.decision import (
+    SEC_APPROVAL_ESCALATION,
+    SEC_APPROVAL_SANDBOX,
+    ToolAction,
+)
 
 # 触发全量工具注册（v0.4.26 声明式判档）：security_guard 的工具级审批
 # 查 registry（ToolEntry.approval）——工具必须先注册，判档才拿到声明。
@@ -27,8 +32,8 @@ def test_hit_blocks_shell() -> None:
         "shell", {"command": "git push --force origin main"}
     )
     assert result is not None
-    assert "[安全拦截]" in result
-    assert "git push" in result
+    assert result.action == ToolAction.BLOCK
+    assert "git push" in result.reason
 
 
 def test_miss_allows() -> None:
@@ -48,7 +53,7 @@ def test_case_insensitive() -> None:
     plugin = _make_plugin({"shell": ["git push"]})
     result = plugin._on_tool_call("shell", {"command": "GIT PUSH --force"})
     assert result is not None
-    assert "[安全拦截]" in result
+    assert result.action == ToolAction.BLOCK
 
 
 def test_arguments_missing_allows() -> None:
@@ -122,13 +127,14 @@ def test_approval_prefix_classified() -> None:
     """可审批命令（git push/rm/curl 等）→ NEED_APPROVAL 标记（新档）。"""
     plugin = SecurityGuardPlugin()
     result = plugin._on_tool_call("shell", {"command": "git push origin main"})
-    assert result == "NEED_APPROVAL:git push origin main"
+    assert result.action == ToolAction.NEED_APPROVAL
+    assert result.command == "git push origin main"
     result = plugin._on_tool_call("shell", {"command": "rm -rf /tmp/x"})
-    assert result.startswith("NEED_APPROVAL:")
+    assert result.action == ToolAction.NEED_APPROVAL
     result = plugin._on_tool_call("shell", {"command": "curl http://x"})
-    assert result.startswith("NEED_APPROVAL:")
+    assert result.action == ToolAction.NEED_APPROVAL
     result = plugin._on_tool_call("shell", {"command": "del C:\\x.txt"})
-    assert result.startswith("NEED_APPROVAL:")
+    assert result.action == ToolAction.NEED_APPROVAL
 
 
 def test_hardline_not_approvable() -> None:
@@ -136,8 +142,8 @@ def test_hardline_not_approvable() -> None:
     plugin = SecurityGuardPlugin()
     for cmd in ("format C:", "shutdown /s", "reboot", "mkfs /dev/sda"):
         result = plugin._on_tool_call("shell", {"command": cmd})
-        assert result.startswith("[安全拦截]"), cmd
-        assert not result.startswith("NEED_APPROVAL"), cmd
+        assert result.action == ToolAction.BLOCK, cmd
+        assert result.action != ToolAction.NEED_APPROVAL, cmd
 
 
 def test_readonly_still_auto() -> None:
@@ -153,8 +159,8 @@ def test_redline_not_approvable() -> None:
     plugin = SecurityGuardPlugin()
     # .env 读取（敏感路径规则）→ 硬拒（不是审批档）
     result = plugin._on_tool_call("shell", {"command": "type .env"})
-    assert result.startswith("[安全拦截]")
-    assert not result.startswith("NEED_APPROVAL")
+    assert result.action == ToolAction.BLOCK
+    assert result.action != ToolAction.NEED_APPROVAL
     # 管道/重定向 → security_guard 放行（None）——那是 shell 工具层
     # 危险关键词的职责（test_shell_unapproved_still_blocked 覆盖），
     # 审批档判定只负责"危险但可审"的命令
@@ -170,8 +176,8 @@ def test_sensitive_path_git_blocked() -> None:
     plugin = _make_plugin()
     result = plugin._on_tool_call("shell", {"command": "type .git\\config"})
     assert result is not None
-    assert "[安全拦截]" in result
-    assert "敏感路径" in result
+    assert result.action == ToolAction.BLOCK
+    assert "敏感路径" in result.reason
 
 
 def test_sensitive_path_env_blocked() -> None:
@@ -179,7 +185,7 @@ def test_sensitive_path_env_blocked() -> None:
     plugin = _make_plugin()
     result = plugin._on_tool_call("shell", {"command": "type .env"})
     assert result is not None
-    assert "[安全拦截]" in result
+    assert result.action == ToolAction.BLOCK
 
 
 def test_normal_path_allowed() -> None:
@@ -201,7 +207,7 @@ def test_quoted_path_blocked() -> None:
         "shell", {"command": 'type "C:\\repo\\.git\\config"'}
     )
     assert result is not None
-    assert "[安全拦截]" in result
+    assert result.action == ToolAction.BLOCK
 
 
 def test_blacklist_and_path_both_work() -> None:
@@ -210,11 +216,11 @@ def test_blacklist_and_path_both_work() -> None:
     # 黑名单命中（不依赖路径规则）
     blacklist_hit = plugin._on_tool_call("shell", {"command": "git push origin"})
     assert blacklist_hit is not None
-    assert "危险关键词" in blacklist_hit
+    assert "危险关键词" in blacklist_hit.reason
     # 路径规则命中（不依赖黑名单）
     path_hit = plugin._on_tool_call("shell", {"command": "type .env"})
     assert path_hit is not None
-    assert "敏感路径" in path_hit
+    assert "敏感路径" in path_hit.reason
 
 
 # ── run_python 沙箱降级判据（v0.4.23，方案 2026-08-21） ───────────────────
@@ -224,9 +230,9 @@ def test_run_python_downgrade_needs_approval() -> None:
     """run_python 代码 import 受限白名单外模块 → NEED_APPROVAL 降级档。"""
     plugin = _make_plugin()
     result = plugin._on_tool_call("run_python", {"code": "import requests\nprint(1)"})
-    assert isinstance(result, str)
-    assert result.startswith("NEED_APPROVAL:")
-    assert "requests" in result
+    assert result.action == ToolAction.NEED_APPROVAL
+    assert result.code == SEC_APPROVAL_SANDBOX
+    assert "requests" in result.reason
 
 
 # ── 工具级审批声明（v0.4.26 声明式判档：ToolEntry.approval）───────────────
@@ -236,14 +242,16 @@ def test_tool_approval_declared_file_delete() -> None:
     """file_delete 工具注册带审批模板 → 判档命中：NEED_APPROVAL:删除文件 <path>。"""
     plugin = _make_plugin()
     result = plugin._on_tool_call("file_delete", {"path": r"C:\tmp\x.txt"})
-    assert result == r"NEED_APPROVAL:删除文件 C:\tmp\x.txt"
+    assert result.action == ToolAction.NEED_APPROVAL
+    assert result.command == "删除文件 C:\\tmp\\x.txt"
 
 
 def test_tool_approval_template_missing_param() -> None:
     """模板命中但参数缺失 → 回退模板本身（不崩、仍判审批）。"""
     plugin = _make_plugin()
     result = plugin._on_tool_call("file_delete", {})
-    assert result == "NEED_APPROVAL:删除文件 {path}"
+    assert result.action == ToolAction.NEED_APPROVAL
+    assert "删除文件 {path}" in result.command
 
 
 def test_tool_approval_not_declared_allows() -> None:
@@ -266,7 +274,8 @@ def test_tool_approval_declared_contract(monkeypatch) -> None:
     try:
         plugin = _make_plugin()
         result = plugin._on_tool_call("hypo_tool", {"target": "abc"})
-        assert result == "NEED_APPROVAL:假想操作 abc"
+        assert result.action == ToolAction.NEED_APPROVAL
+        assert result.command == "假想操作 abc"
     finally:
         _TOOL_REGISTRY.pop("hypo_tool", None)
 
@@ -282,7 +291,8 @@ def test_tool_approval_callable_condition() -> None:
         open(existing, "w").write("data")
         # 覆盖已存在文件 → 审批
         r1 = plugin._on_tool_call("write_file", {"path": existing, "content": "x"})
-        assert r1 == f"NEED_APPROVAL:覆盖写入 {existing}"
+        assert r1.action == ToolAction.NEED_APPROVAL
+        assert f"覆盖写入 {existing}" in r1.command
         # 新文件（项目内？tmp 在项目外）→ 越界审批；用项目内路径测放行
         r2 = plugin._on_tool_call("write_file", {"path": "new_file.txt", "content": "x"})
         assert r2 is None
@@ -299,29 +309,31 @@ def test_run_python_downgrade_from_import() -> None:
     """from X import Y 同样触发降级判据。"""
     plugin = _make_plugin()
     result = plugin._on_tool_call("run_python", {"code": "from pandas import read_csv"})
-    assert isinstance(result, str)
-    assert result.startswith("NEED_APPROVAL:")
-    assert "pandas" in result
+    assert result.action == ToolAction.NEED_APPROVAL
+    assert result.code == SEC_APPROVAL_SANDBOX
+    assert "pandas" in result.reason
 
 
-# ── shell 代码执行类命令 = 沙箱升级档（v0.4.23，弹窗透明） ───────────────
+# ── shell 代码执行类命令 = 沙箱升级档（v0.4.23 弹窗透明；2026-08-23 决策码）──
 
 
 def test_code_exec_command_sandbox_escalation() -> None:
-    """python/py/node 等代码执行类命令 → 沙箱升级档（NEED_APPROVAL:沙箱升级:）。"""
+    """python/py/node 等代码执行类命令 → ESCALATION 档（独立 action）。"""
     plugin = _make_plugin()
     for cmd in ("python -c 'print(1)'", "py -c 'print(1)'", "node -e 'x'",
                 "pip install requests", "npm install"):
         result = plugin._on_tool_call("shell", {"command": cmd})
-        assert isinstance(result, str), f"{cmd} 应判档"
-        assert result.startswith("NEED_APPROVAL:沙箱升级:"), f"{cmd} → {result}"
+        assert result.action == ToolAction.ESCALATION, f"{cmd} 应判 ESCALATION"
+        assert result.code == SEC_APPROVAL_ESCALATION, f"{cmd} → {result.code}"
+        assert result.command == cmd
 
 
 def test_code_exec_prefix_unaffected() -> None:
-    """非代码执行命令保持普通审批档（沙箱升级判据不误伤）。"""
+    """非代码执行命令保持普通审批档（ESCALATION 判据不误伤）。"""
     plugin = _make_plugin()
     result = plugin._on_tool_call("shell", {"command": "rm /tmp/x"})
-    assert result == "NEED_APPROVAL:rm /tmp/x"  # 普通档（无沙箱升级前缀）
+    assert result.action == ToolAction.NEED_APPROVAL  # 普通档（非 ESCALATION）
+    assert result.code != SEC_APPROVAL_ESCALATION
 
 
 def test_code_exec_whitelist_unchanged() -> None:
