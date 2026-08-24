@@ -11,7 +11,7 @@ from evaluation.report import (
     save_report,
 )
 from evaluation.runner import run_eval
-from evaluation.tasks import LONG_TASKS, TASKS
+from evaluation.tasks import LONG_TASKS, SUBAGENT_TASKS, TASKS
 
 
 def main() -> None:
@@ -23,13 +23,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="qi-agent 评测")
     parser.add_argument("--long", action="store_true",
                         help="跑长对话事实保持评测（L3/L4，真实 LLM ~5 分钟）")
+    parser.add_argument("--subagent", action="store_true",
+                        help="跑 subagent 委派评测（主 agent 主动用 delegate_task）")
     parser.add_argument("--all", action="store_true", help="跑全部任务")
     args = parser.parse_args()
     tasks = TASKS
     if args.long:
         tasks = LONG_TASKS
+    if args.subagent:
+        tasks = SUBAGENT_TASKS
     if args.all:
-        tasks = TASKS + LONG_TASKS
+        tasks = TASKS + LONG_TASKS + SUBAGENT_TASKS
 
     # 提示评测性质：真实 API 调用，需要 DEEPSEEK_API_KEY（.env）
     print(f"开始评测（真实 LLM API，{len(tasks)} 个任务，预计 1-3 分钟）...", flush=True)

@@ -33,6 +33,9 @@ CONTEXT_COMMANDS = {"context", "上下文"}
 # 手动压缩命令（阶段 C 收尾）：/compact 强制同步压缩
 COMPACT_COMMANDS = {"compact"}
 
+# 子任务命令（subagent 方案 2026-08-23）：/delegate <目标> 手动拉起子任务
+DELEGATE_PREFIX = "/delegate"
+
 
 def _print_plugin_reports(installed_plugins: list) -> None:
     """打印所有带 report() 的插件汇总（约定：观测类插件提供 report 方法）。
@@ -144,6 +147,44 @@ def main(argv: list[str] | None = None) -> None:
                     print(f"摘要：{summary[:200]}")
                 else:
                     print("（无可压缩历史）")
+            continue
+
+        # 子任务命令（subagent 方案 2026-08-23）：/delegate <目标>
+        # 手动拉起子任务（用户主导，不走主 agent 工具循环——编排双入口之一）
+        if user_input.startswith(DELEGATE_PREFIX):
+            goal = user_input[len(DELEGATE_PREFIX):].strip()
+            if not goal:
+                print(
+                    "用法：/delegate <子任务目标>\n"
+                    "示例：/delegate 调研 docs/ 目录下所有方案文档的核心决策"
+                )
+            else:
+                from qi_agent.tools.builtin.delegate_task import delegate_task
+
+                print(f"[delegate] 子任务启动：{goal[:80]}")
+                output = delegate_task(
+                    goal=goal,
+                    context=(
+                        "主对话上下文：当前项目 qi-agent（Python agent 框架）。"
+                        f"最近用户输入：{agent.history[-1].get('content', '')[:200]}"
+                        if agent.history else "主对话上下文：当前项目 qi-agent。"
+                    ),
+                )
+                try:
+                    import json
+
+                    data = json.loads(output)
+                    print(f"[delegate] 状态：{data.get('status')}")
+                    if data.get("summary"):
+                        print(f"总结：{data['summary']}")
+                    if data.get("artifacts"):
+                        print(f"产出：{', '.join(data['artifacts'])}")
+                    if data.get("error"):
+                        print(f"错误：{data['error']}")
+                    if data.get("question"):
+                        print(f"询问：{data['question']}")
+                except (json.JSONDecodeError, ValueError):
+                    print(output)
             continue
 
         try:

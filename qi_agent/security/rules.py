@@ -17,6 +17,12 @@ security_guard 插件判档）import 引用。
   判档时代码执行档先于普通审批档，重复条目是永远不命中的死代码
 """
 
+from typing import Any, Callable
+
+# 注意：本模块【不】import qi_agent.tools.decision——tools 包初始化会触发
+# security.rules（shell 工具 import 本模块），若 rules 反向依赖 tools.decision
+# 则循环导入。规则函数返回值用 Any（ToolDecision 由调用方判别，见 security_guard）。
+
 # 红线前缀（不可审批、不可执行——删库跑路 + 重启关机）：
 # 工具层硬拒 + 插件层直接 [安全拦截]（不产生 NEED_APPROVAL → 永远无
 # approved 可注入）。v0.4.21 教训：只放工具层不够，审批同意路径会跳过工具层
@@ -48,3 +54,46 @@ APPROVAL_PREFIXES = (
 CODE_EXEC_PREFIXES = (
     "python", "py ", "node", "npm", "pip", "npx",
 )
+
+# ────────────────────────────────────────────────────────────
+# 工具级审批规则表（v0.4.27 声明式判档的规则化——单一数据源）
+#
+# 背景：delegate_task 的审批条件曾硬编码在工具文件（lambda），
+# 与"规则统一来源"（本模块定位）矛盾——条件逻辑散落工具层。
+# 收敛：工具注册时只声明规则名（approval="subagent"），
+# security_guard 查本表拿判档函数，条件逻辑全部集中在此。
+#
+# 语义：键 = 规则名（工具 approval 字段引用），值 = 判档函数
+#   (arguments: dict) -> str | ToolDecision | None
+#   - 返回 None         → 放行（不弹窗）
+#   - 返回 str          → 普通审批档（SEC_APPROVAL_GENERAL，弹窗）
+#   - 返回 ToolDecision → 结构化决策（原样透传，可携带 code/action）
+# 与命令前缀规则（上方）正交：那是 shell 命令，这是工具参数。
+# 类型注解用 Any（ToolDecision 在 tools 包，本模块不 import 避免循环导入）
+TOOL_APPROVAL_RULES: dict[str, Callable[[dict], Any]] = {}
+
+
+def tool_approval_rule(name: str):
+    """注册一个工具级审批规则（装饰器）。"""
+
+    def decorator(fn: Callable[[dict], Any]) -> Callable:
+        if name in TOOL_APPROVAL_RULES:
+            raise ValueError(f"工具审批规则 '{name}' 重复注册")
+        TOOL_APPROVAL_RULES[name] = fn
+        return fn
+
+    return decorator
+
+
+# subagent 规则（方案 2026-08-23-subagent）：
+# - 纯只读委派（无 write_paths）→ 子 agent 无写权限+无危险工具 → 放行
+# - 带写权限委派（write_paths 非空）→ 用户背书（弹框审批，先问再给）
+@tool_approval_rule("subagent")
+def _rule_subagent(arguments: dict) -> str | None:
+    write_paths = arguments.get("write_paths")
+    if not write_paths:
+        return None  # 纯只读委派 → 放行
+    return (
+        f"委派子任务给 subagent（goal={str(arguments.get('goal', ''))[:50]}）"
+        f"——子 agent 将获得写权限: {write_paths}"
+    )

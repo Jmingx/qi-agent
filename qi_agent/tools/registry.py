@@ -206,9 +206,24 @@ def get_tool(name: str) -> "ToolEntry | None":
     return _TOOL_REGISTRY.get(name)
 
 
-def get_tool_schemas() -> list[dict]:
-    """返回所有已注册工具的定义（作为给 LLM 的 tools 参数）。"""
-    return [entry.schema for entry in _TOOL_REGISTRY.values()]
+def get_tool_schemas(allowlist: list[str] | None = None) -> list[dict]:
+    """返回工具定义（作为给 LLM 的 tools 参数）。
+
+    Args:
+        allowlist: 工具白名单（subagent 受限子集，方案 2026-08-23）——
+            None = 全部工具（默认，向后兼容）；非空列表 = 只返回白名单内
+            工具——LLM 只知道这些工具存在，其他工具【看都看不到】
+            （层 1 模型可见过滤；执行端硬校验见 executor）
+
+    Returns:
+        schema 列表（过滤后）
+    """
+    if allowlist is None:
+        return [entry.schema for entry in _TOOL_REGISTRY.values()]
+    return [
+        entry.schema for entry in _TOOL_REGISTRY.values()
+        if entry.name in allowlist
+    ]
 
 
 def get_tools_by_toolset(toolset: str) -> list[str]:

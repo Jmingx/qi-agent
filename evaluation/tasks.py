@@ -200,3 +200,26 @@ LONG_TASKS: list[EvalTask] = [
         timeout=240.0,
     ),
 ]
+
+# ── subagent 任务（方案 2026-08-23）：真实 LLM 验证主 agent 会使用 delegate_task
+# 注意：这些任务是"主 agent 行为"评测——验证主 agent 遇到可外包任务时
+# 主动调 delegate_task 工具并消费结构化结果。确定性机制（授权边界/递归
+# 禁止/超时）由 tests/test_subagent_phase*.py 单测覆盖，不走真实 LLM。
+SUBAGENT_TASKS: list[EvalTask] = [
+    EvalTask(
+        "d1", "tool", "委派独立调研（subagent）",
+        # 提示词里给出明确信号：这是可外包的独立任务
+        ["把 docs/ 目录下所有方案文档的文件名和一句话主题整理成清单——"
+         "这个任务适合委派给 subagent 独立完成"],
+        expected_tools=["delegate_task"],
+        expected_keywords=["清单", "整理", "方案"],
+        timeout=300.0,
+    ),
+    EvalTask(
+        "d2", "tool", "委派并行分析（subagent 结构化结果）",
+        ["用 subagent 帮我分析 README.md 的主要内容，然后告诉我它是什么项目"],
+        expected_tools=["delegate_task"],
+        expected_keywords=["qi-agent", "agent", "项目"],
+        timeout=300.0,
+    ),
+]

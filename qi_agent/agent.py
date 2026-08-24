@@ -35,11 +35,16 @@ class Agent:
         max_turns: int = 8,
         events: EventBus | None = None,
         tool_executor: ToolExecutor | None = None,
+        tools: list[str] | None = None,
     ) -> None:
         self.client = client
         self.max_turns = max_turns
         self.system_prompt = system_prompt  # 初始化系统提示词
         self.events = events or EventBus()  # 事件总线（默认空总线：零侵入）
+        # 工具白名单（subagent 受限子集，方案 2026-08-23）：
+        # None = 全部工具（默认）；非空列表 = 受限子集——LLM 只见白名单
+        # schema（层 1），executor 执行前硬校验（层 2，防绕过）
+        self.tools: list[str] | None = tools
         # 工具执行闭环（方案 2026-08-23）：审批分发/并发执行/结果封装
         # 全在 ToolExecutor——agent 只保留事件点与消息回填（编排层瘦身）
         self.tool_executor = tool_executor or ToolExecutor(self.events)
@@ -99,17 +104,18 @@ class Agent:
             # 未来压缩预检等插件也在此挂）
             self.events.emit(
                 "agent/pre-llm", messages=self.messages,
-                tools=get_tool_schemas(), turn=self._turn, step=step,
+                tools=get_tool_schemas(self.tools), turn=self._turn, step=step,
             )
             if stream_callback is not None:
                 # 流式模式：一次调用（on_delta 打字机 + 累积完整结果）
                 # 修复双调用 bug：日志 [RESP] 与输出来自同一个 result
                 result = self.client.chat_stream(
-                    self.messages, tools=get_tool_schemas(), on_delta=stream_callback
+                    self.messages, tools=get_tool_schemas(self.tools),
+                    on_delta=stream_callback,
                 )
             else:
                 # 普通模式：chat()（向后兼容）
-                result = self.client.chat(self.messages, tools=get_tool_schemas())
+                result = self.client.chat(self.messages, tools=get_tool_schemas(self.tools))
             # 事件点：post-llm（广播，如 usage/成本追踪/debug_logger [RESP]）
             # messages 一并传出（2026-08-21 数据源修正）：resource_monitor
             # 在流式 usage 缺失时用消息列表估算（DSH 式混合兜底）
@@ -142,11 +148,14 @@ class Agent:
                     decisions[call.id] = decision
                 # 3. 执行闭环：审批 → 并发执行 → 结果封装 → tool-result 事件
                 #    （ToolExecutor 内部完成，agent 不碰执行策略）
+                #    allowlist：受限子集硬校验（层 2，subagent 方案）——
+                #    白名单外工具即使模型幻觉请求，执行层直接拒绝
                 outcomes = self.tool_executor.execute(
                     result.tool_calls,
                     decisions,
                     turn=self._turn,
                     step=step,
+                    allowlist=self.tools,
                 )
                 # 4. 回填（消息历史归 agent 管理）
                 for call in result.tool_calls:

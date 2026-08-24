@@ -10,7 +10,7 @@
 from qi_agent.events import EventBus
 from qi_agent.plugins.registry import register_plugin
 from qi_agent.security.path_security import is_sensitive_path
-from qi_agent.security.rules import HARDLINE_PREFIXES
+from qi_agent.security.rules import HARDLINE_PREFIXES, TOOL_APPROVAL_RULES
 from qi_agent.tools.decision import (
     SEC_APPROVAL_GENERAL,
     SEC_BLOCK_BLACKLIST,
@@ -81,15 +81,17 @@ class SecurityGuardPlugin:
                     code=SEC_BLOCK_REDLINE,
                     command=command,
                 )
-        # ④ 工具级审批声明（v0.4.26 声明式判档）：查 registry 的
-        # ToolEntry.approval——工具注册时自声明权限策略（无条件模板 /
-        # 条件函数），插件查表执行，零工具名分支。新增需审批工具只改
-        # 工具文件（register(approval=...)），本插件无需改动。
+        # ④ 工具级审批声明（v0.4.26 声明式判档 + v0.4.27 规则化）：查
+        # registry 的 ToolEntry.approval——工具注册时自声明权限策略。
+        # 字符串优先查规则表（TOOL_APPROVAL_RULES，条件逻辑单一数据源），
+        # 未命中再当模板（无条件审批）。插件查表执行，零工具名分支。
         # 边界：系统级底线（黑名单/敏感路径/红线）永远优先于工具声明
         rule = get_tool(name).approval if get_tool(name) else None
         if rule is not None:
             if callable(rule):
                 desc = rule(arguments)
+            elif rule in TOOL_APPROVAL_RULES:
+                desc = TOOL_APPROVAL_RULES[rule](arguments)
             else:
                 try:
                     desc = rule.format(**arguments)

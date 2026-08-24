@@ -58,6 +58,7 @@ class ToolExecutor:
         decisions: dict[str, ToolDecision | None],
         turn: int,
         step: int,
+        allowlist: list[str] | None = None,
     ) -> dict[str, tuple[str, float]]:
         """执行一批工具调用（三阶段闭环），返回 call.id → (output, duration)。
 
@@ -66,6 +67,10 @@ class ToolExecutor:
             decisions: agent/tool-call 事件点的判档结果（call.id → 决策）：
                 None = 放行；ToolDecision = 按 action 分发
             turn / step: 事件 payload 用（对齐 agent 循环上下文）
+            allowlist: 工具白名单（subagent 受限子集，方案 2026-08-23）——
+                None = 全部工具（默认，向后兼容）；非空列表 = 白名单外
+                工具【执行前直接拒绝】（层 2 硬校验，防模型幻觉绕过——
+                即使 schema 层 1 过滤漏了，执行层仍拦截）
 
         三阶段（方案 2026-08-22 并行工具调用）：
             阶段1 审批分发（主线程，弹窗一次一个）
@@ -73,8 +78,18 @@ class ToolExecutor:
             阶段3 主线程按 call 原顺序发 tool-result + 组装回填文本
         """
         # 阶段 1：审批分发（NEED_APPROVAL/ESCALATION → bail agent/tool-approval）
+        # 层 2 硬校验（subagent 受限子集）：白名单外工具执行前直接拒绝——
+        # 不弹窗、不执行（防模型幻觉请求白名单外工具；LLM 可见层已过滤，
+        # 这里是执行端最后一道闸）
         pending: dict[str, tuple[ToolCall, ToolDecision | None]] = {}
         for call in calls:
+            if allowlist is not None and call.name not in allowlist:
+                pending[call.id] = (call, ToolDecision(
+                    ToolAction.BLOCK,
+                    reason=f"工具不在受限子集内: {call.name}",
+                    code="SEC_BLOCK_NOT_ALLOWED",
+                ))
+                continue
             decision = decisions.get(call.id)
             if (
                 isinstance(decision, ToolDecision)

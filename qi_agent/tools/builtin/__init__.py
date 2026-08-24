@@ -10,6 +10,7 @@
 
 from qi_agent.tools.builtin import (  # noqa: F401  导入即注册
     clarify,
+    delegate_task,
     file_delete,
     get_time,
     list_dir,
