@@ -93,13 +93,14 @@ class _ContextAdapter:
     """把 delegate_task 同步调用适配成 SubagentContext 接口（steer/stop 空实现）。
 
     manager 后台模式传真 SubagentContext（有 steer/stop）；同步工具调用
-    传本适配器（无控制面，行为等价）。
+    传本适配器（无控制面，行为等价）。字段对齐 SubagentContext
+    （goal / context_text / max_turns / write_paths）。
     """
 
     def __init__(self, goal: str, context: str, max_turns: int,
                  write_paths: list[str] | None) -> None:
         self.goal = goal
-        self.context = context
+        self.context_text = context
         self.max_turns = max_turns
         self.write_paths = write_paths or []
         self.status = "running"
@@ -154,7 +155,7 @@ def _run_subagent(
     subagent = Agent(
         client,
         system_prompt=_SUBAGENT_PROMPT.format(goal=session.goal,
-                                              context=session.context),
+                                              context=session.context_text),
         max_turns=session.max_turns,
         events=events,
         tool_executor=executor,

@@ -5,10 +5,18 @@
   每次重新发送给 API。
 - 阶段 2 升级：agent 循环 = 调 LLM → 模型要调工具就执行 → 结果以
   role="tool" 回填 → 继续调 LLM → 直到模型直接给出最终答案。
+
+AgentContext 统一合并（方案 2026-08-24，用户拍板 D2/D3）：
+  Agent = 【无状态执行者】——消费/回填 Context 的消息，只跑循环。
+  Context = 【数据载体】——消息历史 + 会话轮数 + 用量累计 + 状态机
+    + 控制面 + 事件总线（可持久化/可恢复/可归档——session 系统接入点）。
+  薄委托：messages/_turn/get_usage/history 保留方法名（外部读取方
+  cli/runner/delegate_task 零改动）。
 """
 
 from typing import Protocol
 
+from qi_agent.context.context import AgentContext
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult
 from qi_agent.tools.decision import ToolDecision
@@ -26,7 +34,11 @@ class ChatClient(Protocol):
 
 
 class Agent:
-    """对话 Agent：持有消息历史，提供多轮对话与工具调用能力。"""
+    """对话 Agent：无状态执行者——消费/回填 AgentContext，提供多轮对话。
+
+    数据（消息/轮数/用量）全部在 context 上（数据载体）；Agent 只负责
+    循环逻辑。同一 context 可被新 Agent 实例接管继续跑（会话恢复基础）。
+    """
 
     def __init__(
         self,
@@ -36,11 +48,19 @@ class Agent:
         events: EventBus | None = None,
         tool_executor: ToolExecutor | None = None,
         tools: list[str] | None = None,
+        context: AgentContext | None = None,
     ) -> None:
         self.client = client
-        self.max_turns = max_turns
         self.system_prompt = system_prompt  # 初始化系统提示词
-        self.events = events or EventBus()  # 事件总线（默认空总线：零侵入）
+        # 统一运行环境（数据载体）：默认创建主 agent context（persist=True）。
+        # 兼容：显式传入 events 时，context 复用该总线（外部监听者必须收到
+        # 事件——向后兼容）；未传 events 时 context 自建总线。
+        if context is None:
+            context = AgentContext(persist=True, max_turns=max_turns,
+                                   events=events)
+        self.context = context
+        self.events = self.context.events  # 事件总线从 context 取（同一来源）
+        self.max_turns = max_turns
         # 工具白名单（subagent 受限子集，方案 2026-08-23）：
         # None = 全部工具（默认）；非空列表 = 受限子集——LLM 只见白名单
         # schema（层 1），executor 执行前硬校验（层 2，防绕过）
@@ -50,25 +70,52 @@ class Agent:
         self.tool_executor = tool_executor or ToolExecutor(self.events)
         # 注：日志/上下文管理等横切关注点全部插件化（监听 agent/* 事件），
         # agent 核心保持零侵入——2026-08-22 用户架构修正
-        # API usage 累计（阶段 A2，方案 2026-08-22）：每轮 result.usage
-        # 累加 prompt/completion/total——会话结束 /stats 汇总打印。
-        # 这是纯观测（不改发送内容）；改写逻辑走插件（context_manager）
-        self._usage: dict[str, int] = {
-            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-        }
-        self._reset_messages()
+        if not self.context.messages:
+            self._init_messages()
+
+    # ── 薄委托（外部读取方零改动：cli/runner/delegate_task）────────────
+    @property
+    def messages(self) -> list[dict]:
+        """消息历史（委托 context——数据载体）。"""
+        return self.context.messages
+
+    @messages.setter
+    def messages(self, value: list[dict]) -> None:
+        self.context.messages = value
+
+    @property
+    def _turn(self) -> int:
+        """会话轮数（委托 context，兼容 runner._turn 读取）。"""
+        return self.context.turn
+
+    @_turn.setter
+    def _turn(self, value: int) -> None:
+        self.context.turn = value
+
+    @property
+    def history(self) -> list[dict]:
+        """只读访问消息历史（测试与调试用）。"""
+        return self.context.messages
 
     def get_usage(self) -> dict[str, int]:
         """累计 API usage（阶段 A2：prompt/completion/total tokens）。"""
-        return dict(self._usage)
+        return dict(self.context.usage)
 
     def usage_report(self) -> str:
         """人类可读汇总（/stats 或会话退出打印）。"""
-        u = self._usage
+        u = self.context.usage
         return (
             f"[用量] 累计 {u['total_tokens']} tokens"
             f"（prompt {u['prompt_tokens']} + completion {u['completion_tokens']}）"
         )
+
+    def _init_messages(self) -> None:
+        # 注意：sticky 挂载由 context_manager 插件在 pre-step 幂等注入
+        # （agent 保持零侵入——system 组装不在此处做上下文管理逻辑）
+        self.context.messages = [
+            {"role": "system", "content": self.system_prompt},
+        ]
+        self.context.turn = 0  # 会话轮数计数（clear 后重新开始）
 
     def chat(
         self,
@@ -126,8 +173,8 @@ class Agent:
             # usage 累计（阶段 A2）：流式/非流式 result.usage 都可能为
             # None（旧 API/流式缺 usage）——容错跳过
             if result.usage:
-                for key in self._usage:
-                    self._usage[key] += int(result.usage.get(key, 0) or 0)
+                for key in self.context.usage:
+                    self.context.usage[key] += int(result.usage.get(key, 0) or 0)
 
             if result.tool_calls:
                 # 1. assistant 的 tool_calls 消息必须原样进历史（协议要求）
@@ -185,14 +232,11 @@ class Agent:
         self._reset_messages()
 
     def _reset_messages(self) -> None:
+        # 清空会话数据载体（消息/轮数/状态复位），重新初始化 system 消息。
         # 注意：sticky 挂载由 context_manager 插件在 pre-step 幂等注入
         # （agent 保持零侵入——system 组装不在此处做上下文管理逻辑）
-        self.messages: list[dict] = [
+        self.context.reset()
+        self.context.messages = [
             {"role": "system", "content": self.system_prompt},
         ]
-        self._turn = 0  # 会话轮数计数（clear 后重新开始）
-
-    @property
-    def history(self) -> list[dict]:
-        """只读访问消息历史（测试与调试用）。"""
-        return self.messages
+        self.context.turn = 0  # 会话轮数计数（clear 后重新开始）
