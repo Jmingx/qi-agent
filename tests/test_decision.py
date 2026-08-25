@@ -7,7 +7,7 @@
 - agent 集成：WARN 档 = 执行 + 结果附警告后缀；ESCALATION 走审批
 """
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult, ToolCall
 from qi_agent.tools.decision import (

@@ -20,7 +20,7 @@ from qi_agent.events import EventBus
 from qi_agent.llm import LLMClient
 from qi_agent.tools.registry import register
 
-# 注意：不能模块级 import qi_agent.agent.Agent——tools/builtin/__init__ 在
+# 注意：不能模块级 import qi_agent.agents.agent.Agent——tools/builtin/__init__ 在
 # qi_agent.tools 包初始化时导入本模块，而 agent.py 又 import tools/__init__
 # （registry），循环导入。Agent 在 _run_subagent 内延迟 import（见下）。
 
@@ -143,7 +143,7 @@ def _run_subagent(
 
     # 2. 子 agent 装配：独立 client + 独立事件总线 + 授权清单
     # （延迟 import Agent——避免模块级循环导入，见文件头注释）
-    from qi_agent.agent import Agent
+    from qi_agent.agents.agent import Agent
 
     client = client_factory() if client_factory else _build_client()
     events = EventBus()
@@ -213,7 +213,7 @@ class _StopRequested(Exception):
 
 def _build_client() -> LLMClient:
     """生产用 client：从 .env 加载 API key。"""
-    from qi_agent.agent_factory import load_api_key
+    from qi_agent.agents.factory import load_api_key
 
     return LLMClient(load_api_key())
 

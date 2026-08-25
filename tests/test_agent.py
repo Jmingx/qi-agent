@@ -3,7 +3,7 @@
 使用 FakeClient 代替真实 LLM 客户端，不发起网络请求。
 """
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.llm import ChatResult
 
 

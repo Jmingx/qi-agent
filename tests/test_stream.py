@@ -1,6 +1,6 @@
 """流式输出测试：chat_stream 生成器、agent 流式回调、历史完整性、回归保护。"""
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.llm import ChatResult, ToolCall
 
 

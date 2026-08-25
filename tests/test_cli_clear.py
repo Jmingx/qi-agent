@@ -6,7 +6,7 @@
 
 from unittest import mock
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.cli import main
 from qi_agent.llm import ChatResult
 from qi_agent.tools.builtin import get_time, read_file, shell  # noqa: F401  导入即注册内置工具
@@ -58,7 +58,10 @@ def run_cli_with_inputs(inputs: list[str]) -> tuple[Agent, FakeClient]:
     with mock.patch("builtins.input", side_effect=lambda prompt="": next(inputs_iter)):
         # v0.4.14：装配收敛到 agent_factory——patch 使用点（from X import Y 绑定）
         with mock.patch(
-            "qi_agent.cli.build_agent", return_value=(agent, [])
+            "qi_agent.cli.build_agent", return_value=type("B", (), {"agent": agent,
+                                      "manager": type("M", (), {"get_context":
+                                      lambda self, cid: agent.context})(),
+                                      "context_id": "ctx1", "agent_id": "main", "installed": []})()
         ):
             main(argv=[])  # 注入空 argv，避免误读 pytest 的参数
 

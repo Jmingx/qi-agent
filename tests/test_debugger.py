@@ -4,7 +4,7 @@
 集成测试验证 Agent + 插件装配后的完整链路打印。
 """
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult, ToolCall
 from qi_agent.plugins.builtin.debug_logger import DebugLoggerPlugin

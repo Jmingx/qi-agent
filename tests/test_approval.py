@@ -75,7 +75,7 @@ class FakeShellClient:
 
 def _make_agent(command: str, plugin: ApprovalGatePlugin | None) -> object:
     """构造 agent：判档插件（security_guard）+ 审批插件（或 None = fail-closed）。"""
-    from qi_agent.agent import Agent
+    from qi_agent.agents.agent import Agent
     from qi_agent.plugins.builtin.security_guard import SecurityGuardPlugin
 
     bus = EventBus()

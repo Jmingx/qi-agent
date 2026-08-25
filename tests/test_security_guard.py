@@ -3,7 +3,7 @@
 方案：docs/plans/2026-08-19-安全审核插件方案.md（决策点 1-7 已批准）
 """
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult, ToolCall
 from qi_agent.plugins.builtin.security_guard import SecurityGuardPlugin

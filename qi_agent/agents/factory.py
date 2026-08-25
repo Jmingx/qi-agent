@@ -7,13 +7,36 @@
 """
 
 import os
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
+from qi_agent.agents.agent_manager import AgentManager
+from qi_agent.context.context import AgentContext
+from qi_agent.events import EventBus
 from qi_agent.llm import LLMClient
 from qi_agent.plugins import load_plugins
 from qi_agent.plugins.config import load_plugin_config
+
+
+@dataclass
+class AgentBundle:
+    """build_agent 返回形态（方案 2026-08-24 D4）——命名访问，避免元组位置错。
+
+    agent: 主 agent（执行者——只做行为：chat）
+    manager: 统一控制台（CLI/父 agent 控制 + 数据访问的唯一入口）
+    context_id: 主 agent 数据载体在控制台的 id（CLI 用
+        manager.get_context(context_id) 访问数据——不直接持有 context 对象）
+    agent_id: 主 agent 在控制台的 id（/stop /status 寻址）
+    installed: 已装配插件列表（会话结束打印 report）
+    """
+
+    agent: Agent
+    manager: AgentManager
+    context_id: str
+    agent_id: str
+    installed: list = field(default_factory=list)
 
 # 生产装配的系统提示词（subagent 方案 2026-08-23）：
 # 默认 Agent 提示词保持简单（"你是一个有用的助手"），但真实装配（CLI/评测）
@@ -63,7 +86,15 @@ def build_agent(debug: bool = False, stats: bool = False,
         (agent, installed_plugins)——installed 供 CLI 会话结束打印 report()
     """
     api_key = load_api_key()
-    agent = Agent(LLMClient(api_key), system_prompt=PROD_SYSTEM_PROMPT)
+    # AgentManager 统一控制台（方案 2026-08-24）：context 由 factory 创建
+    # （恢复点——"无状态 Agent 可被新实例接管"的落点），主 agent 注册进
+    # manager（CLI 通过 manager 控制，eval/prod parity 同一装配）
+    events = EventBus()
+    context = AgentContext(persist=True, events=events)
+    agent = Agent(LLMClient(api_key), system_prompt=PROD_SYSTEM_PROMPT,
+                  context=context)
+    manager = AgentManager()
+    agent_id = manager.register(context, role="main")
 
     # 插件装配（v0.4.9）：注册表 + 配置文件，加插件不再改这里
     plugin_config = load_plugin_config()
@@ -83,7 +114,9 @@ def build_agent(debug: bool = False, stats: bool = False,
         # （{**base, **override} 只合并顶层，嵌套 dict 需递归）
         plugin_config = _deep_merge(plugin_config, plugin_overrides)
     installed = load_plugins(agent.events, plugin_config)
-    return agent, installed
+    return AgentBundle(agent=agent, manager=manager,
+                       context_id=context.id, agent_id=agent_id,
+                       installed=installed)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

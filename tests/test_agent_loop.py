@@ -4,7 +4,7 @@
 验证 agent 能正确执行工具、回填结果、直到给出最终答案。
 """
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.llm import ChatResult, ToolCall
 
 

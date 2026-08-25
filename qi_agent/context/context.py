@@ -31,12 +31,34 @@ from qi_agent.events import EventBus
 
 
 class ContextStatus(str, Enum):
-    """agent 运行状态（主/子统一）。"""
+    """agent 运行状态（主/子统一，会话级——整个生命周期）。
 
+    状态转移（方案 2026-08-24-AgentManager统一控制台 §4.5）：
+      IDLE → RUNNING → COMPLETED / FAILED / STOPPED
+      （reset 后任意终态回到 IDLE，可复用）
+    """
+
+    IDLE = "idle"              # 新建未开始（2026-08-24 新增）
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     STOPPED = "stopped"
+
+
+class ChatPhase(str, Enum):
+    """chat 内部阶段（循环级——单次 chat 调用进行到哪）。
+
+    状态转移（方案 2026-08-24-AgentManager统一控制台 §4.5）：
+      IDLE → TURN_START → LLM_CALL →（TOOL_EXEC → LLM_CALL 循环）→ ANSWERING → DONE
+      任何阶段 stop → DONE（下轮生效本阶段；后台线程/信号下阶段实时中断）
+    """
+
+    IDLE = "idle"
+    TURN_START = "turn_start"   # 用户输入已接收
+    LLM_CALL = "llm_call"       # LLM 调用中
+    TOOL_EXEC = "tool_exec"     # 工具执行中
+    ANSWERING = "answering"     # 最终回答
+    DONE = "done"               # 本次 chat 结束
 
 
 class AgentContext:
@@ -57,6 +79,9 @@ class AgentContext:
         self.persist = persist
         self.max_turns = max_turns
         self.events = events or EventBus()
+        # system_prompt（数据载体的一部分——system 消息初始化属于数据初始化，
+        # 2026-08-24 用户拍板：clear/reset 挪到 context，重建 system 需要它）
+        self.system_prompt = ""
 
         # 数据载体（session/记忆系统的接入点）
         self.messages: list[dict] = []
@@ -65,8 +90,9 @@ class AgentContext:
             "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
         }
 
-        # 状态机
-        self.status = ContextStatus.RUNNING
+        # 状态机（两级，方案 2026-08-24 §4.5）
+        self.status = ContextStatus.IDLE  # 会话级：新建未开始
+        self.phase = ChatPhase.IDLE       # 循环级：当前 chat 内部阶段
         self.result: dict | None = None
         self.error: str | None = None
 
@@ -88,6 +114,7 @@ class AgentContext:
         if self.status == ContextStatus.RUNNING:
             self.status = ContextStatus.STOPPED
             self.error = "父代理强制终止"
+        self.phase = ChatPhase.DONE
         self._done.set()  # 释放等待者（wait 立即返回）
 
     def poll(self) -> ContextStatus:
@@ -119,21 +146,72 @@ class AgentContext:
         """正常完成（状态 COMPLETED，结果带回）。"""
         self.result = result
         self.status = ContextStatus.COMPLETED
+        self.phase = ChatPhase.DONE
         self._done.set()
 
     def fail(self, error: str) -> None:
         """失败（异常/超时，状态 FAILED）。"""
         self.error = error
         self.status = ContextStatus.FAILED
+        self.phase = ChatPhase.DONE
+        self._done.set()
+
+    # ── chat 生命周期状态转移（方案 2026-08-24 §4.5，主 agent 用）────────
+    def begin_chat(self) -> None:
+        """chat() 入口：IDLE → RUNNING + TURN_START。"""
+        self.status = ContextStatus.RUNNING
+        self.phase = ChatPhase.TURN_START
+
+    def enter_llm_call(self) -> None:
+        """循环每步调 LLM：→ LLM_CALL。"""
+        self.phase = ChatPhase.LLM_CALL
+
+    def enter_tool_exec(self) -> None:
+        """模型要调工具：→ TOOL_EXEC。"""
+        self.phase = ChatPhase.TOOL_EXEC
+
+    def enter_answering(self) -> None:
+        """模型直接回答：→ ANSWERING。"""
+        self.phase = ChatPhase.ANSWERING
+
+    def complete_chat(self, result: dict | None = None) -> None:
+        """chat 正常结束：RUNNING → COMPLETED + DONE。"""
+        if result is not None:
+            self.result = result
+        self.status = ContextStatus.COMPLETED
+        self.phase = ChatPhase.DONE
+        self._done.set()
+
+    def fail_chat(self, error: str) -> None:
+        """chat 异常：RUNNING → FAILED + DONE。"""
+        self.error = error
+        self.status = ContextStatus.FAILED
+        self.phase = ChatPhase.DONE
         self._done.set()
 
     def reset(self) -> None:
-        """清空会话（clear_context 语义：消息/轮数重置，控制面复位）。"""
+        """清空会话（clear_context 语义：消息/轮数重置，控制面复位）。
+
+        状态机：任意终态 → IDLE + phase IDLE（可复用）。
+        """
         self.messages.clear()
         self.turn = 0
-        self.status = ContextStatus.RUNNING
+        self.status = ContextStatus.IDLE
+        self.phase = ChatPhase.IDLE
         self.result = None
         self.error = None
         self.steer_queue.clear()
         self._stop_flag.clear()
         self._done.clear()
+
+    def reset_session(self) -> None:
+        """重置会话并重建 system 消息（原 agent.clear_context 语义）。
+
+        2026-08-24 用户拍板：clear 是"数据载体重置"不是"执行者行为"，
+        挪到 context。system_prompt 由 Agent 装配时写入（数据初始化）。
+        """
+        self.reset()
+        self.messages = [
+            {"role": "system", "content": self.system_prompt},
+        ]
+        self.turn = 0

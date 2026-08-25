@@ -13,7 +13,7 @@
 
 import pytest
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.context.estimator import estimate_tokens
 from qi_agent.context.sticky import remember, reset
 from qi_agent.events import EventBus
@@ -68,7 +68,7 @@ def test_sticky_survives_clear() -> None:
     remember("关键信息A")
     agent = _make_agent()
     agent.chat("你好")
-    agent.clear_context()
+    agent.context.reset_session()
     assert "关键信息A" not in agent.messages[0]["content"]  # 重建后没有
     agent.chat("再来")
     assert "关键信息A" in agent.messages[0]["content"]  # 插件补挂

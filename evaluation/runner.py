@@ -11,7 +11,7 @@
 import asyncio
 import time
 
-from qi_agent.agent_factory import build_agent
+from qi_agent.agents.factory import build_agent
 
 from evaluation.tasks import EvalTask, TASKS
 
@@ -125,10 +125,11 @@ def _run_task(task: EvalTask) -> dict:
     # plugin_overrides：任务级配置覆盖（L3 小窗口触发压缩）+ setup 前置（sticky 注入）
     if task.setup is not None:
         task.setup()
-    agent, _ = build_agent(
+    bundle = build_agent(
         interactive=False,
         plugin_overrides=task.plugin_overrides,
-    )  # 真实形态（含插件），每任务隔离
+    )  # 真实形态（含插件），每任务隔离；AgentBundle 解包（方案 2026-08-24）
+    agent = bundle.agent
     start = time.perf_counter()
     try:
         for step in task.steps:

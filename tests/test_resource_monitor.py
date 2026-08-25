@@ -257,7 +257,7 @@ def test_report_empty_unchanged() -> None:
 
 def test_post_llm_payload_messages() -> None:
     """agent.py：post-llm 事件携带 messages（估算数据源）。"""
-    from qi_agent.agent import Agent
+    from qi_agent.agents.agent import Agent
     client = mock.MagicMock()
     client.chat_stream.return_value = ChatResult(content="ok", tool_calls=None)
     agent = Agent(client=client, system_prompt="sys")

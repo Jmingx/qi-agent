@@ -182,12 +182,16 @@ def test_runner_passes_overrides_and_setup() -> None:
 
     def fake_build_agent(**kwargs):
         seen.update(kwargs)
-        return FakeAgent(), []
+        return type("B", (), {"agent": FakeAgent(), "manager": None,
+                              "agent_id": "fake", "installed": []})()
 
     class FakeAgent:
         def __init__(self) -> None:
             self.history = []
             self._turn = 0
+            self.context = type("C", (), {"phase": type("P", (), {"value": "idle"})(),
+                                          "turn": 0, "usage": {},
+                                          "messages": []})()
 
         def chat(self, step: str) -> str:
             # 模拟：事实在对话中保持（压缩后依然答对）
@@ -328,7 +332,9 @@ def test_task_timeout_failure(monkeypatch) -> None:
 
     # patch 使用点（evaluation.runner 里 from ... import build_agent 绑定）
     with mock.patch(
-        "evaluation.runner.build_agent", return_value=(SlowAgent(), [])
+        "evaluation.runner.build_agent",
+        return_value=type("B", (), {"agent": SlowAgent(), "manager": None,
+                                    "agent_id": "fake", "installed": []})(),
     ):
         task = EvalTask(
             id="t9", category="tool", name="卡死任务",
@@ -458,7 +464,9 @@ def test_task_llm_error_fails_gracefully() -> None:
             raise TimeoutError("LLM 调用超时（60s）")
 
     with mock.patch(
-        "evaluation.runner.build_agent", return_value=(ErrorAgent(), [])
+        "evaluation.runner.build_agent",
+        return_value=type("B", (), {"agent": ErrorAgent(), "manager": None,
+                                    "agent_id": "fake", "installed": []})(),
     ):
         task = EvalTask(
             id="t10", category="tool", name="LLM异常任务", steps=["x"],

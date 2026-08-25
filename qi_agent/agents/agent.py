@@ -59,6 +59,8 @@ class Agent:
             context = AgentContext(persist=True, max_turns=max_turns,
                                    events=events)
         self.context = context
+        # system_prompt 写入数据载体（reset/clear 由 context 负责重建 system）
+        self.context.system_prompt = system_prompt
         self.events = self.context.events  # 事件总线从 context 取（同一来源）
         self.max_turns = max_turns
         # 工具白名单（subagent 受限子集，方案 2026-08-23）：
@@ -136,12 +138,35 @@ class Agent:
         3. 模型直接回答 → 这就是最终答案（可流式）
         4. 超过 max_turns 轮仍未结束 → 停止并提示
         """
+        # 状态机（方案 2026-08-24 §4.5）：会话级 RUNNING + 循环级 TURN_START
+        self.context.begin_chat()
         self.messages.append({"role": "user", "content": user_input})
         self._turn += 1  # 会话内轮数计数（事件 payload 用）
         # 事件点：turn-start（广播，通知类监听者——debug_logger 打印 [USER]）
         self.events.emit("agent/turn-start", user_input=user_input)
 
+        try:
+            result = self._run_tool_loop(user_input, stream_callback)
+        except Exception as exc:
+            # 状态机：RUNNING → FAILED（异常）
+            self.context.fail_chat(f"chat 异常: {exc}")
+            raise
+        # 状态机出口：中断（stop）已由 _run_tool_loop 置 STOPPED——不再覆盖；
+        # 只有未中断的正常路径才 COMPLETED
+        if not self.context.should_stop():
+            self.context.complete_chat()
+        return result
+
+    def _run_tool_loop(self, user_input: str, stream_callback=None) -> str:
+        """工具循环（chat 内部——状态机在循环内更新 LLM_CALL/TOOL_EXEC）。"""
         for step in range(self.max_turns):
+            # 中断检查（方案 2026-08-24 §4.5）：下轮生效（本阶段）；
+            # 后台线程/信号实时中断是下阶段（D3 升级，已记 TODO）
+            if self.context.should_stop():
+                self.events.emit("agent/turn-end", reason="stopped")
+                return "已按指令中断当前任务。"
+            # 状态机：循环级 LLM_CALL（调 LLM 前）
+            self.context.enter_llm_call()
             # 事件点：pre-step（瀑布改写：插件可注入/修改消息历史——
             # context_manager 插件在此做滑动裁剪，agent 零侵入）
             self.messages = self.events.waterfall(
@@ -179,6 +204,8 @@ class Agent:
             if result.tool_calls:
                 # 1. assistant 的 tool_calls 消息必须原样进历史（协议要求）
                 self.messages.append(result.assistant_message)
+                # 状态机：循环级 TOOL_EXEC（工具执行前）
+                self.context.enter_tool_exec()
                 # 2. 事件点：tool-call（短路决策：返回非 None 则拦截，
                 #    值作为结果回填）——编排层只负责"要不要做"的决策；
                 #    审批分发/并发执行/结果封装全在 ToolExecutor
@@ -218,6 +245,8 @@ class Agent:
                 # 3. 没有工具调用 → 这就是最终答案
                 # （流式/普通模式的 result 都是标准 ChatResult，统一处理）
                 content = result.content or ""
+                # 状态机：循环级 ANSWERING（最终回答前）
+                self.context.enter_answering()
                 # 事件点：final-answer（广播，观察/存储/debug_logger [ANSWER]）
                 self.events.emit("agent/final-answer", content=content)
                 self.messages.append(result.assistant_message)
@@ -227,16 +256,3 @@ class Agent:
         # 事件点：turn-end（广播，含结束原因）
         self.events.emit("agent/turn-end", reason="max_turns")
         return "已达最大轮数，任务可能未完成。"
-
-    def clear_context(self) -> None:
-        self._reset_messages()
-
-    def _reset_messages(self) -> None:
-        # 清空会话数据载体（消息/轮数/状态复位），重新初始化 system 消息。
-        # 注意：sticky 挂载由 context_manager 插件在 pre-step 幂等注入
-        # （agent 保持零侵入——system 组装不在此处做上下文管理逻辑）
-        self.context.reset()
-        self.context.messages = [
-            {"role": "system", "content": self.system_prompt},
-        ]
-        self.context.turn = 0  # 会话轮数计数（clear 后重新开始）

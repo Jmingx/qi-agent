@@ -4,7 +4,7 @@
 agent 零 logger 依赖（Agent 构造无 logger 参数）。
 """
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult
 from qi_agent.plugins.builtin.debug_logger import DebugLoggerPlugin

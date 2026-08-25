@@ -8,7 +8,7 @@
 
 import threading
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.context.async_compressor import AsyncCompressor
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult

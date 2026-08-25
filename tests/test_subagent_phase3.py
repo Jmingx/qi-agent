@@ -10,7 +10,7 @@
 import time
 
 from qi_agent.context.context import ContextStatus as SubagentContextStatus
-from qi_agent.subagent import SubagentManager
+from qi_agent.agents.subagent import SubagentManager
 
 
 class _SlowClient:

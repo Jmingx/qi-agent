@@ -9,16 +9,17 @@ import pytest
 @pytest.fixture()
 def fake_key(monkeypatch):
     """mock API key（测试不读真实 .env）。"""
-    import qi_agent.agent_factory as factory
+    import qi_agent.agents.factory as factory
 
     monkeypatch.setattr(factory, "load_api_key", lambda: "sk-test")
 
 
 def test_build_agent_plugins_mounted(fake_key) -> None:
     """build_agent 应装配插件（env_info/security_guard 默认开）——真实形态。"""
-    from qi_agent.agent_factory import build_agent
+    from qi_agent.agents.factory import build_agent
 
-    agent, installed = build_agent()
+    bundle = build_agent()
+    agent, installed = bundle.agent, bundle.installed
     # 默认装配：env_info + security_guard（默认启用），tool_stats（配置 false）
     names = [type(p).__name__ for p in installed]
     assert "EnvInfoPlugin" in names
@@ -29,18 +30,20 @@ def test_build_agent_plugins_mounted(fake_key) -> None:
 
 def test_build_agent_stats_shortcut(fake_key) -> None:
     """stats=True 应快捷装配 tool_stats（不改配置文件）。"""
-    from qi_agent.agent_factory import build_agent
+    from qi_agent.agents.factory import build_agent
 
-    _, installed = build_agent(stats=True)
+    bundle = build_agent(stats=True)
+    installed = bundle.installed
     names = [type(p).__name__ for p in installed]
     assert "ToolStatsPlugin" in names
 
 
 def test_build_agent_debug_logger(fake_key) -> None:
     """debug=True 应装配 debug_logger 插件（2026-08-22 插件化）。"""
-    from qi_agent.agent_factory import build_agent
+    from qi_agent.agents.factory import build_agent
 
-    agent, installed = build_agent(debug=True)
+    bundle = build_agent(debug=True)
+    installed = bundle.installed
     names = [type(p).__name__ for p in installed]
     assert "DebugLoggerPlugin" in names
 
@@ -49,7 +52,7 @@ def test_build_agent_smoke_run(fake_key) -> None:
     """真实装配冒烟（2026-08-23 排查补充）：装配后跑一轮 chat——
     全部插件事件链不炸 + 内部依赖自足（防"装配成功但功能挂"类回归，
      如 context_manager 的 summarizer 未接线）。"""
-    from qi_agent.agent_factory import build_agent
+    from qi_agent.agents.factory import build_agent
     from qi_agent.llm import ChatResult
 
     class Fake:
@@ -64,7 +67,8 @@ def test_build_agent_smoke_run(fake_key) -> None:
         def chat_stream(self, messages, tools=None, on_delta=None) -> ChatResult:
             return self.chat(messages, tools)
 
-    agent, installed = build_agent(interactive=False)  # 评测形态（无审批弹窗）
+    bundle = build_agent(interactive=False)  # 评测形态（无审批弹窗）
+    agent, installed = bundle.agent, bundle.installed
     agent.client = Fake()  # 替换真实 client（冒烟不走网络）
     reply = agent.chat("冒烟测试")
     assert reply == "ok"

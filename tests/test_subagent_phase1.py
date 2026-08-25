@@ -6,7 +6,7 @@
 """
 
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.tools.registry import get_tool_schemas
 from qi_agent.tools.executor import ToolExecutor
 from qi_agent.llm import ToolCall

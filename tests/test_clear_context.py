@@ -1,6 +1,6 @@
 """Agent clear_context 回归测试：验证清理上下文的行为。"""
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.llm import ChatResult
 
 
@@ -24,7 +24,7 @@ def test_clear_context_resets_history() -> None:
     agent.chat("你好")
     assert len(agent.history) == 3  # system + user + assistant
 
-    agent.clear_context()
+    agent.context.reset_session()
 
     assert len(agent.history) == 1
     assert agent.history[0]["role"] == "system"
@@ -35,7 +35,7 @@ def test_clear_context_preserves_custom_prompt() -> None:
     agent = Agent(FakeClient(), system_prompt="你是专业的编程助手。")
     agent.chat("你好")
 
-    agent.clear_context()
+    agent.context.reset_session()
 
     assert agent.history[0]["content"] == "你是专业的编程助手。"
 
@@ -44,7 +44,7 @@ def test_clear_context_then_continue_chat() -> None:
     """clear 之后应能继续正常对话。"""
     agent = Agent(FakeClient())
     agent.chat("第一轮")
-    agent.clear_context()
+    agent.context.reset_session()
 
     reply = agent.chat("第二轮")
 

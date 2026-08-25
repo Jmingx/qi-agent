@@ -7,7 +7,7 @@
 
 import argparse
 
-from qi_agent.agent_factory import build_agent
+from qi_agent.agents.factory import build_agent
 from qi_agent.context.sticky import remember
 from qi_agent.interaction import TerminalInteraction, set_interaction_provider
 from qi_agent.tools.builtin import (  # noqa: F401  导入即注册内置工具
@@ -35,6 +35,12 @@ COMPACT_COMMANDS = {"compact"}
 
 # 子任务命令（subagent 方案 2026-08-23）：/delegate <目标> 手动拉起子任务
 DELEGATE_PREFIX = "/delegate"
+
+# 状态命令（方案 2026-08-24-AgentManager统一控制台）：/status 看两级状态
+STATUS_COMMANDS = {"status", "状态"}
+
+# 终止命令（方案 2026-08-24-AgentManager统一控制台）：/stop 中断长任务
+STOP_COMMANDS = {"stop", "停止"}
 
 
 def _print_plugin_reports(installed_plugins: list) -> None:
@@ -66,7 +72,17 @@ def main(argv: list[str] | None = None) -> None:
 
     # 构建 agent（真实形态）：LLM 客户端 + 插件装配收敛在 agent_factory
     # （cli 与 evaluation 共用同一装配路径，保证评测测的是真实形态）
-    agent, installed_plugins = build_agent(debug=args.debug, stats=args.stats)
+    # AgentBundle（方案 2026-08-24）：agent + manager + context_id
+    # 数据访问唯一入口 = manager.get_context(context_id)（不直接持有 context）
+    bundle = build_agent(debug=args.debug, stats=args.stats)
+    agent = bundle.agent
+    manager = bundle.manager
+    agent_id = bundle.agent_id
+    installed_plugins = bundle.installed
+
+    def get_context():
+        """数据载体（CLI 数据访问唯一入口——经 manager 寻址）。"""
+        return manager.get_context(bundle.context_id)
 
     print("欢迎使用 qi-agent！（输入 exit / quit / 退出 结束对话，clear 清理上下文。）")
     while True:
@@ -86,10 +102,11 @@ def main(argv: list[str] | None = None) -> None:
             print("再见！")
             break
 
-        # 清理上下文命令
+        # 清理上下文命令（2026-08-24 用户拍板：clear 是数据载体重置，
+        # 挪到 context——agent 无状态，没有"清自己"的概念）
         if user_input.lower() in CLEAR_COMMANDS:
             print("已为您清理上下文！")
-            agent.clear_context()
+            get_context().reset_session()
             continue
 
         # 重要信息命令（阶段 B3）：/remember <内容> → sticky（永不裁剪）
@@ -109,6 +126,7 @@ def main(argv: list[str] | None = None) -> None:
 
         # 上下文构成命令（阶段 C 收尾）：/context 显示占用构成（估算分段
         # + 真实 usage 累计——分工：估算=预测展示，真实=统计/事实窗口）
+        # 数据走 context（数据载体），不直连 agent（换执行者不受影响）
         if user_input.lower() in CONTEXT_COMMANDS:
             from qi_agent.context.breakdown import (
                 compute_breakdown,
@@ -116,9 +134,10 @@ def main(argv: list[str] | None = None) -> None:
             )
             from qi_agent.tools.registry import get_tool_schemas
 
+            ctx = get_context()
             print(format_breakdown(compute_breakdown(
-                agent.history, get_tool_schemas())))
-            u = agent.get_usage()
+                ctx.messages, get_tool_schemas())))
+            u = ctx.usage
             print(
                 f"[用量] 累计 {u['total_tokens']} tokens"
                 f"（prompt {u['prompt_tokens']} + completion {u['completion_tokens']}）"
@@ -137,9 +156,10 @@ def main(argv: list[str] | None = None) -> None:
             if cm is None:
                 print("[compact] 上下文管理插件未启用")
             else:
-                before = len(agent.history)
-                new_msgs, summary = cm.compact_now(agent.history)
-                agent.messages = new_msgs
+                ctx = get_context()
+                before = len(ctx.messages)
+                new_msgs, summary = cm.compact_now(ctx.messages)
+                ctx.messages = new_msgs
                 print(
                     f"[compact] 压缩完成：{before} → {len(new_msgs)} 条消息"
                 )
@@ -162,12 +182,13 @@ def main(argv: list[str] | None = None) -> None:
                 from qi_agent.tools.builtin.delegate_task import delegate_task
 
                 print(f"[delegate] 子任务启动：{goal[:80]}")
+                ctx = get_context()
                 output = delegate_task(
                     goal=goal,
                     context=(
                         "主对话上下文：当前项目 qi-agent（Python agent 框架）。"
-                        f"最近用户输入：{agent.history[-1].get('content', '')[:200]}"
-                        if agent.history else "主对话上下文：当前项目 qi-agent。"
+                        f"最近用户输入：{ctx.messages[-1].get('content', '')[:200]}"
+                        if ctx.messages else "主对话上下文：当前项目 qi-agent。"
                     ),
                 )
                 try:
@@ -185,6 +206,29 @@ def main(argv: list[str] | None = None) -> None:
                         print(f"询问：{data['question']}")
                 except (json.JSONDecodeError, ValueError):
                     print(output)
+            continue
+
+        # 状态命令（方案 2026-08-24-AgentManager统一控制台）：/status
+        # 显示两级状态机（会话级 status + 循环级 phase）+ usage/turn/消息数
+        if user_input.lower() in STATUS_COMMANDS:
+            status = manager.poll(agent_id)
+            ctx = get_context()
+            phase = ctx.phase.value
+            u = ctx.usage
+            print(
+                f"[状态] 会话级: {status.value} | 循环级: {phase}\n"
+                f"[状态] 轮数: {ctx.turn} | 消息: {len(ctx.messages)}\n"
+                f"[用量] 累计 {u['total_tokens']} tokens"
+                f"（prompt {u['prompt_tokens']} + completion {u['completion_tokens']}）"
+            )
+            continue
+
+        # 终止命令（方案 2026-08-24-AgentManager统一控制台）：/stop
+        # 中断当前长任务（下轮生效——chat 阻塞在 LLM 调用时 v2 升级实时中断）
+        if user_input.lower() in STOP_COMMANDS:
+            stopped = manager.stop(agent_id)
+            print("[stop] 已请求中断当前任务（下轮生效）" if stopped
+                  else "[stop] 主 agent 不在控制台")
             continue
 
         try:

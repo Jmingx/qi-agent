@@ -6,13 +6,18 @@
 import threading
 import time
 
-from qi_agent.context.context import AgentContext, ContextStatus
+from qi_agent.context.context import (
+    AgentContext,
+    ChatPhase,
+    ContextStatus,
+)
 
 
 def test_initial_state() -> None:
-    """初始状态：RUNNING + 空消息 + 空用量 + 0 轮。"""
+    """初始状态：IDLE + 空消息 + 空用量 + 0 轮。"""
     ctx = AgentContext(persist=True)
-    assert ctx.status == ContextStatus.RUNNING
+    assert ctx.status == ContextStatus.IDLE
+    assert ctx.phase == ChatPhase.IDLE
     assert ctx.messages == []
     assert ctx.usage == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     assert ctx.turn == 0
@@ -45,6 +50,7 @@ def test_steer_drain_once() -> None:
 def test_stop_flag_and_wait() -> None:
     """stop 举旗 → should_stop True + wait 立即返回。"""
     ctx = AgentContext()
+    ctx.begin_chat()  # IDLE → RUNNING（stop 只作用于 RUNNING）
     assert not ctx.should_stop()
     ctx.stop()
     assert ctx.should_stop()
@@ -68,6 +74,7 @@ def test_complete_fail_state_transitions() -> None:
 def test_wait_timeout_marks_failed() -> None:
     """wait 超时 → RUNNING 标记 FAILED（超时兜底）。"""
     ctx = AgentContext()
+    ctx.begin_chat()  # IDLE → RUNNING（wait 超时兜底只作用于 RUNNING）
     assert ctx.wait(timeout=0.1) is None
     assert ctx.status == ContextStatus.FAILED
     assert "超时" in (ctx.error or "")

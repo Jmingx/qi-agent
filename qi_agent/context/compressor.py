@@ -25,7 +25,7 @@ def make_summarizer(model: str | None = None) -> callable:
     惰性：client 在首次调用时才创建（零压缩零开销）。
     """
     def summarizer(messages: list[dict]) -> str:
-        from qi_agent.agent_factory import load_api_key
+        from qi_agent.agents.factory import load_api_key
         from qi_agent.llm import LLMClient
 
         client = LLMClient(load_api_key(), model=model or "deepseek-v4-flash")

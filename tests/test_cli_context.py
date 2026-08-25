@@ -9,7 +9,7 @@
 
 from unittest import mock
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.cli import main
 from qi_agent.llm import ChatResult
 from qi_agent.plugins.builtin.context_manager import ContextManagerPlugin
@@ -47,7 +47,12 @@ def run_cli_with_inputs(inputs: list[str], plugins=None,
     with mock.patch("builtins.input",
                     side_effect=lambda prompt="": next(inputs_iter)):
         with mock.patch(
-            "qi_agent.cli.build_agent", return_value=(agent, plugins or [])
+            "qi_agent.cli.build_agent", return_value=type("B", (), {"agent": agent,
+                                      "manager": type("M", (), {"get_context":
+                                      lambda self, cid: agent.context})(),
+                                      "context_id": "ctx1",
+                                      "agent_id": "main",
+                                      "installed": plugins or []})()
         ):
             main(argv=[])
     return agent

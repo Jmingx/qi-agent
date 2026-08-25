@@ -4,7 +4,7 @@
 资源监控），本阶段补 agent 层累计（self._usage）+ 会话结束汇总打印。
 """
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.llm import ChatResult
 
 

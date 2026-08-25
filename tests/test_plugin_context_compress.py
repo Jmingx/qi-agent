@@ -4,7 +4,7 @@
 每次 pre-step 由 compress 策略 should_apply（真实 usage 超阈值）判断。
 """
 
-from qi_agent.agent import Agent
+from qi_agent.agents.agent import Agent
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult
 from qi_agent.plugins.builtin.context_manager import ContextManagerPlugin

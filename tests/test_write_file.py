@@ -108,7 +108,7 @@ def test_security_guard_write_classify(project) -> None:
 
 def test_write_approval_flow(project) -> None:
     """集成：覆盖 → 审批事件 → 同意 → 写入（FakeClient）。"""
-    from qi_agent.agent import Agent
+    from qi_agent.agents.agent import Agent
     from qi_agent.events import EventBus
     from qi_agent.llm import ChatResult, ToolCall
     from qi_agent.plugins.builtin.approval_gate import ApprovalGatePlugin
