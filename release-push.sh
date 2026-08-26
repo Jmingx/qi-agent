@@ -6,6 +6,13 @@
 #   - 跳过含 docs/、AGENTS.md、.hermes/ 文件变更的提交
 # 远程历史 = 纯代码提交序列（提交信息/顺序保留）
 #
+# 改进（2026-08-24）：用 git cherry 替代分叉检测 + git log --not
+#   - 双仓策略下 main 永远与远程不同根（本地含 docs 历史），
+#     git log origin/main..main 会误列全量旧提交
+#   - git cherry 按【补丁等价】判断"远程缺哪些补丁"（不看父链），
+#     对不同根历史天然正确——这才是双仓的增量语义
+#   - cherry-pick 冲突 = 内容已在远程 → 跳过（不再需要手动分叉处理）
+#
 # 用法：bash release-push.sh   （推送前打印提交清单供确认）
 set -e
 
@@ -17,38 +24,30 @@ WT="$REPO_WIN/.release-wt"   # worktree（gitignore，本地-only）
 cd "$REPO"
 git fetch origin
 
-# 0. 分叉检测（2026-08-23 踩坑）：main 与 origin/main 必须同根
-# （origin/main 是 main 的祖先）——本地 main 含完整旧历史（docs 系），
-# 与远程干净历史不同根时，"main --not origin/main" 会列出全量旧提交
-# 而非增量（误 pick 旧提交）。分叉时要求手动 cherry-pick。
-if ! git merge-base --is-ancestor origin/main main 2>/dev/null; then
-    echo "⚠ 本地 main 与远程 origin/main 不同根（历史分叉）——"
-    echo "  增量推送不可用（AGENTS.md P0-8）。请手动处理："
-    echo "  git worktree add .release-wt -b release origin/main"
-    echo "  git -C .release-wt cherry-pick <新代码提交...> && git -C .release-wt push origin HEAD:main"
-    exit 1
-fi
-
 # 1. 建立/同步发布 worktree（基线 = origin/main）
 if [ -d "$WT" ]; then
     git -C "$WT" fetch origin
+    # release 分支 = origin/main 的发布拷贝（本地-only），安全 reset
+    git -C "$WT" checkout -B release origin/main
 else
     git worktree add "$WT" -b release origin/main
 fi
 
-# 2. 找出 main 上新增的提交（相对 origin/main——release 基线）
-# 注意：--not 排除的是分支引用（worktree 路径不行）
-NEW_COMMITS=$(git log --oneline main --not origin/main | awk '{print $1}')
+# 2. git cherry：找出 main 上远程缺的提交（补丁等价，对不同根历史正确）
+#    + = 远程缺；- = 远程已有等价补丁
+NEW_COMMITS=$(git cherry origin/main main | grep '^+' | awk '{print $2}')
 if [ -z "$NEW_COMMITS" ]; then
-    echo "✅ main 没有新提交，无需推送"
+    echo "✅ main 没有远程缺的提交，无需推送"
     exit 0
 fi
 
-echo "=== main 领先发布分支的提交 ==="
-git log --oneline main --not origin/main
+echo "=== main 上远程缺的提交（git cherry）==="
+for c in $NEW_COMMITS; do
+    echo "  $c $(git log -1 --format=%s "$c" | head -c 70)"
+done
 echo
 
-# 3. 筛选可推送提交（跳过 docs: 前缀 + 含 docs 文件变更）
+# 3. 筛选可推送提交（跳过 docs: 前缀 + 含本地-only 文件变更）
 PICKS=()
 for c in $NEW_COMMITS; do
     MSG=$(git log -1 --format=%s "$c")
@@ -80,11 +79,25 @@ if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
     exit 1
 fi
 
-# 4. cherry-pick（保持提交顺序）——按 main 上的原始顺序逐个应用
-for c in $(echo "${PICKS[@]}" | tr ' ' '\n' | tac); do
-    git -C "$WT" cherry-pick "$c"
+# 4. cherry-pick（逐个应用，保持提交顺序）——失败（冲突）说明内容已在远程，跳过
+#    注意：逐个 pick（非序列），失败 abort 只回滚当前这一个
+PICKED=0
+SKIPPED=0
+for c in "${PICKS[@]}"; do
+    if git -C "$WT" cherry-pick "$c" 2>/dev/null; then
+        PICKED=$((PICKED+1))
+    else
+        git -C "$WT" cherry-pick --abort 2>/dev/null
+        echo "⏭ 跳过（冲突——内容已在远程）: $c"
+        SKIPPED=$((SKIPPED+1))
+    fi
 done
+
+if [ "$PICKED" -eq 0 ]; then
+    echo "⚠ 全部跳过（远程已含所有代码变更）"
+    exit 0
+fi
 
 # 5. 推送
 git -C "$WT" push origin HEAD:main
-echo "✅ 已推送。远程 main 更新。"
+echo "✅ 已推送 $PICKED 个提交（跳过 $SKIPPED）。远程 main 更新。"
