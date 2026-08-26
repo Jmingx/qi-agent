@@ -9,8 +9,6 @@
 
 **A lightweight, plugin-based Python agent framework.** Event-driven architecture with a complete tool system, security approval, context management, and task-level evaluation.
 
-Built as a learning project — architecture guided by [Hermes Agent](https://github.com/NousResearch/hermes-agent) patterns (stateless executors, data-carrier contexts, unified control plane).
-
 ## Features
 
 | Capability | Description |
@@ -47,7 +45,7 @@ uv run python -m qi_agent.cli --debug
 | `/clear` | Clear context (start a new conversation) |
 | `/remember <content>` | Remember important info (never dropped by context trimming) |
 | `/usage` | View resource usage (token accumulation) |
-| `/status` | View agent status (state machine: session status + loop phase) |
+| `/status` | View agent status (two-level state machine: session status + loop phase) |
 | `/delegate <goal>` | Delegate a task to a subagent |
 | `/exit` | Exit |
 

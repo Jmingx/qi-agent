@@ -9,8 +9,6 @@
 
 **一个轻量级、插件化的 Python Agent 框架。** 基于事件驱动架构，提供完整的工具系统、安全审批、上下文管理与任务级评测能力。
 
-作为学习项目构建——架构参考 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的模式（无状态执行者、数据载体 context、统一控制面）。
-
 ## 特性
 
 | 能力 | 说明 |

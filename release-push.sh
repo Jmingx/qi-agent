@@ -48,14 +48,17 @@ done
 echo
 
 # 3. 筛选可推送提交（跳过 docs: 前缀 + 含本地-only 文件变更）
+#    README.md / README.zh-CN.md 是可推送文件（公开仓门面，不在本地-only
+#    清单）——docs 前缀提交若只含 README 变更则放行
 PICKS=()
 for c in $NEW_COMMITS; do
     MSG=$(git log -1 --format=%s "$c")
-    if [[ "$MSG" == docs:* ]]; then
+    FILES=$(git show --name-only --format= "$c")
+    if [[ "$MSG" == docs:* ]] && ! echo "$FILES" | grep -qE "^(README\.md|README\.zh-CN\.md)$"; then
         echo "⏭ 跳过（docs 提交）: $c $MSG"
         continue
     fi
-    if git show --name-only --format= "$c" | grep -qE "^(docs/|AGENTS\.md$|\.hermes/|release-push\.sh$)"; then
+    if echo "$FILES" | grep -qE "^(docs/|AGENTS\.md$|\.hermes/|release-push\.sh$)"; then
         echo "⏭ 跳过（含本地-only 文件变更）: $c $MSG"
         continue
     fi
