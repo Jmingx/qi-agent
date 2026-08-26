@@ -139,7 +139,7 @@ class AgentPool:
 
 | # | 决策 | 选项 | 倾向 |
 |---|---|---|---|
-| D1 | build_agent 保留兼容 | A. 保留（= build_runtime + make_agent 快捷组合） B. 删除（调用点全改） | **A**——评测/旧测试零改动，新形态渐进接入 |
+| D1 | build_agent 保留兼容 | A. 保留（= build_runtime + make_agent 快捷组合） B. 删除（调用点全改） | **B（用户拍板）**——彻底拆分不留兼容：cli.py + runner.py 全改走 build_runtime + make_agent；测试 mock 同步适配 |
 | D2 | AgentPool 是否复用 | A. 不复用（轻壳：工厂+上限） B. 复用（归还池） | **A（用户拍板）**——make_agent 轻，复用无收益 |
 | D3 | pool.acquire 并发超限 | A. 等待（阻塞） B. 拒绝（抛异常） | **A**——等待更友好（任务会完成），拒绝要调用方重试 |
 | D4 | SubagentManager 演进 | A. 内部走 pool B. 并存 | **A（用户拍板）**——统一派活，max_concurrent 真正生效 |
