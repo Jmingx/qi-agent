@@ -49,7 +49,7 @@ class SubagentContext(AgentContext):
         write_paths: list[str] | None = None,
     ) -> None:
         super().__init__(
-            agent_id=session_id, goal=goal, parent=parent,
+            context_id=session_id, goal=goal, parent=parent,
             persist=False,  # 子 agent 默认瞬态（审计可显式开）
             max_turns=max_turns, events=events,
         )

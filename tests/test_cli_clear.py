@@ -57,12 +57,19 @@ def run_cli_with_inputs(inputs: list[str]) -> tuple[Agent, FakeClient]:
 
     with mock.patch("builtins.input", side_effect=lambda prompt="": next(inputs_iter)):
         # v0.4.14：装配收敛到 agent_factory——patch 使用点（from X import Y 绑定）
-        with mock.patch(
-            "qi_agent.cli.build_agent", return_value=type("B", (), {"agent": agent,
-                                      "manager": type("M", (), {"get_context":
-                                      lambda self, cid: agent.context})(),
-                                      "context_id": "ctx1", "agent_id": "main", "installed": []})()
-        ):
+        # 执行权归还 Manager：CLI 只调 manager.run，不持有 agent
+        runtime = type("B", (), {
+            "manager": type("M", (), {
+                "get_context": lambda self, cid: agent.context,
+                "run": lambda self, cid, text, stream_callback=None:
+                    agent.chat(text),
+                "poll": lambda self, cid: None,
+                "stop": lambda self, cid: True,
+            })(),
+            "context_id": "ctx1", "installed": [],
+            "get_context": lambda self: agent.context,
+        })()
+        with mock.patch("qi_agent.cli.build_runtime", return_value=runtime):
             main(argv=[])  # 注入空 argv，避免误读 pytest 的参数
 
     return agent, agent.client

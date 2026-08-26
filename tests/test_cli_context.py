@@ -47,12 +47,18 @@ def run_cli_with_inputs(inputs: list[str], plugins=None,
     with mock.patch("builtins.input",
                     side_effect=lambda prompt="": next(inputs_iter)):
         with mock.patch(
-            "qi_agent.cli.build_agent", return_value=type("B", (), {"agent": agent,
-                                      "manager": type("M", (), {"get_context":
-                                      lambda self, cid: agent.context})(),
-                                      "context_id": "ctx1",
-                                      "agent_id": "main",
-                                      "installed": plugins or []})()
+            "qi_agent.cli.build_runtime", return_value=type("B", (), {
+                "manager": type("M", (), {
+                    "get_context": lambda self, cid: agent.context,
+                    "run": lambda self, cid, text, stream_callback=None:
+                        agent.chat(text),
+                    "poll": lambda self, cid: None,
+                    "stop": lambda self, cid: True,
+                })(),
+                "context_id": "ctx1",
+                "installed": plugins or [],
+                "get_context": lambda self: agent.context,
+            })()
         ):
             main(argv=[])
     return agent

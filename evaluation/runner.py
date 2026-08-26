@@ -11,7 +11,7 @@
 import asyncio
 import time
 
-from qi_agent.agents.factory import build_agent
+from qi_agent.agents.factory import build_runtime
 
 from evaluation.tasks import EvalTask, TASKS
 
@@ -125,26 +125,28 @@ def _run_task(task: EvalTask) -> dict:
     # plugin_overrides：任务级配置覆盖（L3 小窗口触发压缩）+ setup 前置（sticky 注入）
     if task.setup is not None:
         task.setup()
-    bundle = build_agent(
+    runtime = build_runtime(
         interactive=False,
         plugin_overrides=task.plugin_overrides,
-    )  # 真实形态（含插件），每任务隔离；AgentBundle 解包（方案 2026-08-24）
-    agent = bundle.agent
+    )  # 真实形态（含插件），每任务隔离；执行权归还 Manager（方案 2026-08-24）
+    ctx = runtime.get_context()
+    manager = runtime.manager
+    context_id = runtime.context_id
     start = time.perf_counter()
     try:
         for step in task.steps:
-            agent.chat(step)
+            manager.run(context_id, step)  # 执行权在 manager（pool 即用即弃）
     except Exception as exc:  # 单任务失败不中断整体评测
         return {
             "id": task.id, "name": task.name, "category": task.category,
             "passed": False, "failures": [f"执行异常: {exc}"],
-            "turns": agent._turn, "elapsed": round(time.perf_counter() - start, 1),
+            "turns": ctx.turn, "elapsed": round(time.perf_counter() - start, 1),
         }
-    passed, failures = judge(task, agent.history)
+    passed, failures = judge(task, ctx.messages)
     return {
         "id": task.id, "name": task.name, "category": task.category,
         "passed": passed, "failures": failures,
-        "turns": agent._turn, "elapsed": round(time.perf_counter() - start, 1),
+        "turns": ctx.turn, "elapsed": round(time.perf_counter() - start, 1),
     }
 
 

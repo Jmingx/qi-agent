@@ -87,6 +87,33 @@ def test_get_context() -> None:
     assert mgr.get_context("nope") is None
 
 
+def test_run_executes_via_pool() -> None:
+    """manager.run：执行权归还 Manager——pool 取执行者 → chat → release。
+
+    CLI 不持有 agent（执行者在 pool 内即用即弃）。
+    """
+    from qi_agent.llm import ChatResult
+
+    class Fake:
+        def chat(self, messages, tools=None):
+            return ChatResult(content="ok", tool_calls=[],
+                              assistant_message={"role": "assistant",
+                                                 "content": "ok"},
+                              usage=None)
+
+    import unittest.mock as mock
+    import qi_agent.agents.factory as factory
+
+    factory.load_api_key = lambda: "sk-test"
+    mgr = AgentManager()
+    ctx = AgentContext()
+    mgr.register(ctx, role="main")
+    with mock.patch.object(factory, "LLMClient", lambda key: Fake()):
+        reply = mgr.run(ctx.id, "你好")
+    assert reply == "ok"
+    assert mgr.pool.active_count == 0  # 执行后额度回收（即用即弃）
+
+
 class _SlowClient:
     """慢客户端：spawn 后台任务用（等待完成）。"""
 

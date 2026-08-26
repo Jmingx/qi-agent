@@ -1,9 +1,13 @@
-"""Agent 工厂：统一构建"真实形态"的 agent（cli 与 eval 共用）。
+"""Agent 工厂：运行时（manager/context）与执行者（agent）分离。
 
-设计（方案 docs/plans/2026-08-20-测评系统阶段A方案.md）：
+设计（方案 2026-08-24-AgentPool）：
 - eval/prod parity：评测必须测真实运行形态（含插件装配），否则测的是
   "不存在的 agent"（裸 Agent 无 env_info/security_guard）
-- cli.py 的装配逻辑收敛于此——单一真实路径，将来加插件 eval 自动跟随
+- 运行时与执行者分离（用户拍板 D1=B 彻底拆分）：
+  build_runtime() → 运行时（manager + context + 插件，长期存活，不建 agent）
+  make_agent()    → 执行者工厂（按需创建 Agent，可插拔——换实现=换 type）
+  延迟创建 agent：CLI/评测先建运行时，需要执行时再 make_agent
+  ——"同一 context 可被新 Agent 实例接管"的完整落地
 """
 
 import os
@@ -21,22 +25,26 @@ from qi_agent.plugins.config import load_plugin_config
 
 
 @dataclass
-class AgentBundle:
-    """build_agent 返回形态（方案 2026-08-24 D4）——命名访问，避免元组位置错。
+class RuntimeBundle:
+    """build_runtime 返回形态（方案 2026-08-24-AgentPool + ID规范化修正）。
 
-    agent: 主 agent（执行者——只做行为：chat）
-    manager: 统一控制台（CLI/父 agent 控制 + 数据访问的唯一入口）
-    context_id: 主 agent 数据载体在控制台的 id（CLI 用
-        manager.get_context(context_id) 访问数据——不直接持有 context 对象）
-    agent_id: 主 agent 在控制台的 id（/stop /status 寻址）
+    manager: 统一控制台（控制 + 执行 + 数据访问唯一入口）
+    context_id: 主 context 在控制台的 id（ctx_ 前缀——会话身份）
     installed: 已装配插件列表（会话结束打印 report）
+    注意：不含 agent（执行者由 manager.run 内部经 pool 管理——CLI 不感知）；
+    不含 agent_id（执行者是瞬态的，没有"会话级 agent id"概念）
     """
 
-    agent: Agent
     manager: AgentManager
     context_id: str
-    agent_id: str
     installed: list = field(default_factory=list)
+
+    def get_context(self) -> AgentContext:
+        """数据载体（CLI/调用方数据访问入口——经 manager 寻址）。"""
+        ctx = self.manager.get_context(self.context_id)
+        if ctx is None:
+            raise RuntimeError(f"context 不存在: {self.context_id}")
+        return ctx
 
 # 生产装配的系统提示词（subagent 方案 2026-08-23）：
 # 默认 Agent 提示词保持简单（"你是一个有用的助手"），但真实装配（CLI/评测）
@@ -67,10 +75,10 @@ def load_api_key() -> str:
     return api_key
 
 
-def build_agent(debug: bool = False, stats: bool = False,
-                interactive: bool = True,
-                plugin_overrides: dict | None = None) -> tuple[Agent, list]:
-    """构建 agent（真实形态）：LLM 客户端 + 插件装配（plugins.toml 配置驱动）。
+def build_runtime(debug: bool = False, stats: bool = False,
+                  interactive: bool = True,
+                  plugin_overrides: dict | None = None) -> RuntimeBundle:
+    """构建运行时（真实形态）：manager + context + 插件装配——不建 agent。
 
     Args:
         debug: 装配 debug_logger 插件（CLI --debug，事件驱动日志）
@@ -83,18 +91,17 @@ def build_agent(debug: bool = False, stats: bool = False,
             触发压缩，方案 2026-08-23）
 
     Returns:
-        (agent, installed_plugins)——installed 供 CLI 会话结束打印 report()
+        RuntimeBundle（manager/context_id/agent_id/installed）——不含执行者，
+        执行者由 make_agent 按需创建（延迟注入，方案 2026-08-24-AgentPool）
     """
-    api_key = load_api_key()
-    # AgentManager 统一控制台（方案 2026-08-24）：context 由 factory 创建
-    # （恢复点——"无状态 Agent 可被新实例接管"的落点），主 agent 注册进
-    # manager（CLI 通过 manager 控制，eval/prod parity 同一装配）
+    # 运行时（方案 2026-08-24）：context 由 factory 创建（恢复点——
+    # "无状态 Agent 可被新实例接管"的落点），主 agent 注册进 manager。
+    # 插件挂 context.events（数据载体的总线），与执行者无关——延迟注入不影响。
+    load_api_key()  # 校验 key 存在（运行时就要确认，make_agent 才真正用）
     events = EventBus()
     context = AgentContext(persist=True, events=events)
-    agent = Agent(LLMClient(api_key), system_prompt=PROD_SYSTEM_PROMPT,
-                  context=context)
     manager = AgentManager()
-    agent_id = manager.register(context, role="main")
+    manager.register(context, role="main")  # 返回 context_id（ID 规范化）
 
     # 插件装配（v0.4.9）：注册表 + 配置文件，加插件不再改这里
     plugin_config = load_plugin_config()
@@ -113,10 +120,29 @@ def build_agent(debug: bool = False, stats: bool = False,
         # 任务级覆盖（评测专用）：深合并——overrides 的值逐层覆盖配置文件
         # （{**base, **override} 只合并顶层，嵌套 dict 需递归）
         plugin_config = _deep_merge(plugin_config, plugin_overrides)
-    installed = load_plugins(agent.events, plugin_config)
-    return AgentBundle(agent=agent, manager=manager,
-                       context_id=context.id, agent_id=agent_id,
-                       installed=installed)
+    installed = load_plugins(context.events, plugin_config)
+    return RuntimeBundle(manager=manager,
+                         context_id=context.id,
+                         installed=installed)
+
+
+def make_agent(context: AgentContext, type: str = "standard") -> Agent:
+    """执行者工厂（可插拔）：按需创建 Agent，绑定 context 数据载体。
+
+    Args:
+        context: 数据载体（运行时提供——manager.get_context 获取）
+        type: 执行者类型（v1 仅 "standard"——换实现=换 type，注册表 v2 扩）
+
+    Returns:
+        Agent 执行者（无状态——数据全在 context，完成即弃可重建）
+    """
+    if type != "standard":
+        raise ValueError(f"未知执行者类型: {type}")
+    return Agent(
+        LLMClient(load_api_key()),
+        system_prompt=PROD_SYSTEM_PROMPT,
+        context=context,
+    )
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

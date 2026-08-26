@@ -20,6 +20,29 @@ from evaluation.report import (
 from evaluation.tasks import EvalTask, TASKS
 
 
+def _fake_runtime(agent) -> object:
+    """构造假 RuntimeBundle（build_runtime mock 返回值）。
+
+    manager.get_context 返回 agent 的 context（数据载体；无 context 的
+    测试替身回退空对象）；manager.run 执行 agent.chat（执行权在 manager）；
+    RuntimeBundle.get_context 返回数据载体。长行集中于此。
+    """
+    ctx = getattr(agent, "context", type("C", (), {
+        "phase": type("P", (), {"value": "idle"})(),
+        "turn": 0, "usage": {}, "messages": [], "events": None,
+    })())
+    return type("B", (), {
+        "manager": type("M", (), {
+            "get_context": lambda self, cid: ctx,
+            "run": lambda self, cid, text, stream_callback=None:
+                agent.chat(text),
+        })(),
+        "context_id": "ctx1",
+        "installed": [],
+        "get_context": lambda self: ctx,
+    })()
+
+
 def _history(assistant_msgs: list[str], tools: list[str] | None = None,
              blocked: bool = False,
              tool_actions: dict[str, str] | None = None) -> list[dict]:
@@ -180,10 +203,18 @@ def test_runner_passes_overrides_and_setup() -> None:
     def setup():
         setup_ran.append("setup-ran")
 
-    def fake_build_agent(**kwargs):
+    def fake_build_runtime(**kwargs):
         seen.update(kwargs)
-        return type("B", (), {"agent": FakeAgent(), "manager": None,
-                              "agent_id": "fake", "installed": []})()
+        fake_agent = FakeAgent()
+        fake_mgr = type("M", (), {
+            "get_context": lambda self, cid: fake_agent.context,
+            "run": lambda self, cid, text, stream_callback=None:
+                fake_agent.chat(text),
+        })()
+        return type("B", (), {"manager": fake_mgr,
+                              "context_id": "ctx1",
+                              "installed": [],
+                              "get_context": lambda self: fake_agent.context})()
 
     class FakeAgent:
         def __init__(self) -> None:
@@ -195,13 +226,16 @@ def test_runner_passes_overrides_and_setup() -> None:
 
         def chat(self, step: str) -> str:
             # 模拟：事实在对话中保持（压缩后依然答对）
+            # 数据写 context（数据载体——runner 读 ctx.messages 判定）
             self._turn += 1  # 对齐真实 agent：每句用户话 +1（累计值）
+            self.context.turn = self._turn
             reply = "好的，你的猫叫咪咪" if "猫" in step else "好的"
             self.history.append({"role": "assistant", "content": reply})
+            self.context.messages.append({"role": "assistant", "content": reply})
             return reply
 
-    with mock.patch("evaluation.runner.build_agent",
-                    side_effect=fake_build_agent):
+    with mock.patch("evaluation.runner.build_runtime",
+                    side_effect=fake_build_runtime):
         task = EvalTask(
             "c-long-1", "context", "事实保持",
             steps=["聊聊天", "我的猫叫什么"], expected_keywords=["咪咪"],
@@ -332,9 +366,8 @@ def test_task_timeout_failure(monkeypatch) -> None:
 
     # patch 使用点（evaluation.runner 里 from ... import build_agent 绑定）
     with mock.patch(
-        "evaluation.runner.build_agent",
-        return_value=type("B", (), {"agent": SlowAgent(), "manager": None,
-                                    "agent_id": "fake", "installed": []})(),
+        "evaluation.runner.build_runtime",
+        return_value=_fake_runtime(SlowAgent()),
     ):
         task = EvalTask(
             id="t9", category="tool", name="卡死任务",
@@ -464,9 +497,8 @@ def test_task_llm_error_fails_gracefully() -> None:
             raise TimeoutError("LLM 调用超时（60s）")
 
     with mock.patch(
-        "evaluation.runner.build_agent",
-        return_value=type("B", (), {"agent": ErrorAgent(), "manager": None,
-                                    "agent_id": "fake", "installed": []})(),
+        "evaluation.runner.build_runtime",
+        return_value=_fake_runtime(ErrorAgent()),
     ):
         task = EvalTask(
             id="t10", category="tool", name="LLM异常任务", steps=["x"],

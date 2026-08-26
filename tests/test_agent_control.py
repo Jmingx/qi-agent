@@ -65,3 +65,21 @@ def test_chat_completes_state() -> None:
     r = agent.chat("hi")
     assert r == "你好！"
     assert agent.context.status == ContextStatus.COMPLETED
+
+
+def test_agent_has_id() -> None:
+    """执行者身份：agt_ 前缀（ID 规范化——区别于 context 的 ctx_）。"""
+
+    class _DoneClient:
+        def chat(self, messages, tools=None):
+            return ChatResult(content="ok", tool_calls=[],
+                              assistant_message={"role": "assistant",
+                                                 "content": "ok"},
+                              usage=None)
+
+    agent = Agent(_DoneClient())
+    assert agent.id.startswith("agt_")
+    assert len(agent.id) == 16  # "agt_" + 12 hex
+    # 两个执行者 id 不同（瞬态身份）
+    agent2 = Agent(_DoneClient())
+    assert agent.id != agent2.id

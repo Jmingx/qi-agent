@@ -21,6 +21,7 @@ import uuid
 
 from typing import Any, Callable
 
+from qi_agent.agents.pool import AgentPool
 from qi_agent.context.context import AgentContext, ContextStatus
 # 注意：不模块级 import SubagentContext——subagent.py 又 import 本模块
 # （SubagentManager 继承 AgentManager）→ 循环导入。SubagentContext 在
@@ -34,33 +35,39 @@ class AgentManager:
         self.contexts: dict[str, AgentContext] = {}
         self.max_concurrent = max_concurrent
         self._lock = threading.Lock()
+        # AgentPool（方案 2026-08-24）：spawn 用池治理并发（max_concurrent
+        # 真正生效——此前只是存着没用）。subagent 执行者仍由 _run_subagent
+        # 特殊装配（工具子集/授权清单），pool 只提供并发额度。
+        self.pool = AgentPool(max_workers=max_concurrent)
 
     # ── 注册（主/子 agent 通用）──────────────────────────────────────────
     def register(self, context: AgentContext, role: str = "subagent") -> str:
-        """注册任何 agent（主/子）到控制台，返回 agent id。
+        """注册任何 agent（主/子）到控制台，返回 context_id。
 
         受信控制：只允许受信调用方注册（防任意 agent 混入控制台——
-        build_agent 内部调用；外部模块需显式持 manager 引用）。
+        build_runtime 内部调用；外部模块需显式持 manager 引用）。
+        ID 规范化（方案 2026-08-24）：注册的是 context（数据载体），
+        返回 id = context.id（ctx_ 前缀）——不是 agent_id。
         """
         with self._lock:
             self.contexts[context.id] = context
         context.events.emit("agent-manager/register",
-                            agent_id=context.id, role=role)
+                            context_id=context.id, role=role)
         return context.id
 
-    def unregister(self, agent_id: str) -> None:
-        """注销 agent（任务结束清理）。"""
+    def unregister(self, context_id: str) -> None:
+        """注销（任务结束清理）。"""
         with self._lock:
-            self.contexts.pop(agent_id, None)
+            self.contexts.pop(context_id, None)
 
-    def get_context(self, agent_id: str) -> AgentContext | None:
+    def get_context(self, context_id: str) -> AgentContext | None:
         """按 id 取数据载体（CLI/调用方数据访问的唯一入口）。
 
         设计（用户拍板 2026-08-24）：context 的所有权在 manager——
         CLI 不直接持有 context 对象，通过 manager 寻址获取。
         换 agent 执行者时，数据访问路径不变（都走 manager.get_context）。
         """
-        return self.contexts.get(agent_id)
+        return self.contexts.get(context_id)
 
     # ── 子任务（原 SubagentManager.spawn，接口不变）─────────────────────
     def spawn(
@@ -110,9 +117,15 @@ class AgentManager:
         return ctx
 
     def _run(self, context: Any, **kwargs) -> None:
-        """worker 线程：装配子 agent 并运行（结果写回 context）。"""
+        """worker 线程：装配子 agent 并运行（结果写回 context）。
+
+        并发治理（方案 2026-08-24）：acquire 额度（超限等待）→ 跑任务
+        → release（try/finally 保证不泄漏）。subagent 执行者由
+        _run_subagent 特殊装配（工具子集/授权清单），pool 只限并发。
+        """
         from qi_agent.tools.builtin.delegate_task import _run_subagent
 
+        self.pool.acquire(None)  # 并发额度（等待直到有位置）
         try:
             result = _run_subagent(context, kwargs.get("client_factory"),
                                    kwargs.get("tool_executor_factory"),
@@ -123,29 +136,57 @@ class AgentManager:
         except Exception as exc:
             if context.status == ContextStatus.RUNNING:
                 context.fail(f"子任务执行异常: {exc}")
+        finally:
+            self.pool.release(None)  # 回收额度（异常也不泄漏）
 
     # ── 控制面（任何控制者：父 agent / 用户 / CLI）───────────────────────
-    def steer(self, agent_id: str, message: str) -> bool:
+    def steer(self, context_id: str, message: str) -> bool:
         """注入补充指令（agent 下轮生效）。返回是否找到运行环境。
 
         不要求 RUNNING——IDLE 也能排队（用户先说"改方向"，agent 启动后
         下轮生效）。指令只是入队，运行中才消费。
         """
-        context = self.contexts.get(agent_id)
+        context = self.contexts.get(context_id)
         if context is None:
             return False
         context.steer(message)  # 统一 Context 控制面
         return True
 
-    def stop(self, agent_id: str) -> bool:
+    def stop(self, context_id: str) -> bool:
         """强制终止（agent 下轮检查标志退出）。返回是否找到运行环境。"""
-        context = self.contexts.get(agent_id)
+        context = self.contexts.get(context_id)
         if context is None:
             return False
         context.stop()  # 统一 Context 控制面
         return True
 
-    def poll(self, agent_id: str) -> ContextStatus | None:
+    def poll(self, context_id: str) -> ContextStatus | None:
         """查询状态（探活）。"""
-        context = self.contexts.get(agent_id)
+        context = self.contexts.get(context_id)
         return context.poll() if context else None
+
+    # ── 执行入口（方案 2026-08-24-执行权归还Manager）────────────────────
+    def run(self, context_id: str, user_input: str,
+            stream_callback=None) -> str:
+        """执行一次对话（执行权归还 Manager——CLI 不持有 agent）。
+
+        用户拍板：agent 生命周期比 manager 短得多，CLI 不该持有执行者。
+        agent 在 pool 内即用即弃（acquire → chat → release），
+        manager 不感知具体 agent 类型（可插拔）。
+
+        Args:
+            context_id: 数据载体 id（ctx_ 前缀——会话身份）
+            user_input: 用户输入
+            stream_callback: 流式回调（透传 agent.chat）
+
+        Returns:
+            最终回复（agent.chat 结果）
+        """
+        context = self.contexts.get(context_id)
+        if context is None:
+            raise KeyError(f"context 不存在: {context_id}")
+        agent = self.pool.acquire(context)  # 从 pool 取执行者（绑定 context）
+        try:
+            return agent.chat(user_input, stream_callback=stream_callback)
+        finally:
+            self.pool.release(agent)  # 即用即弃（生命周期在 pool）

@@ -7,7 +7,7 @@
 
 import argparse
 
-from qi_agent.agents.factory import build_agent
+from qi_agent.agents.factory import build_runtime
 from qi_agent.context.sticky import remember
 from qi_agent.interaction import TerminalInteraction, set_interaction_provider
 from qi_agent.tools.builtin import (  # noqa: F401  导入即注册内置工具
@@ -70,19 +70,14 @@ def main(argv: list[str] | None = None) -> None:
     # 换 InteractionProvider 实现即可，工具零改动（交互与工具分离架构）
     set_interaction_provider(TerminalInteraction())
 
-    # 构建 agent（真实形态）：LLM 客户端 + 插件装配收敛在 agent_factory
-    # （cli 与 evaluation 共用同一装配路径，保证评测测的是真实形态）
-    # AgentBundle（方案 2026-08-24）：agent + manager + context_id
-    # 数据访问唯一入口 = manager.get_context(context_id)（不直接持有 context）
-    bundle = build_agent(debug=args.debug, stats=args.stats)
-    agent = bundle.agent
-    manager = bundle.manager
-    agent_id = bundle.agent_id
-    installed_plugins = bundle.installed
-
-    def get_context():
-        """数据载体（CLI 数据访问唯一入口——经 manager 寻址）。"""
-        return manager.get_context(bundle.context_id)
+    # 构建运行时（真实形态）：manager + context + 插件装配收敛在 agent_factory
+    # RuntimeBundle（方案 2026-08-24）：manager + context_id（ctx_ 前缀）
+    # 执行权归还 Manager（用户拍板）：CLI 不持有 agent，只调 manager.run——
+    # agent 生命周期在 pool（即用即弃），manager 不感知具体执行者
+    runtime = build_runtime(debug=args.debug, stats=args.stats)
+    manager = runtime.manager
+    context_id = runtime.context_id
+    installed_plugins = runtime.installed
 
     print("欢迎使用 qi-agent！（输入 exit / quit / 退出 结束对话，clear 清理上下文。）")
     while True:
@@ -106,7 +101,7 @@ def main(argv: list[str] | None = None) -> None:
         # 挪到 context——agent 无状态，没有"清自己"的概念）
         if user_input.lower() in CLEAR_COMMANDS:
             print("已为您清理上下文！")
-            get_context().reset_session()
+            runtime.get_context().reset_session()
             continue
 
         # 重要信息命令（阶段 B3）：/remember <内容> → sticky（永不裁剪）
@@ -134,7 +129,7 @@ def main(argv: list[str] | None = None) -> None:
             )
             from qi_agent.tools.registry import get_tool_schemas
 
-            ctx = get_context()
+            ctx = runtime.get_context()
             print(format_breakdown(compute_breakdown(
                 ctx.messages, get_tool_schemas())))
             u = ctx.usage
@@ -156,7 +151,7 @@ def main(argv: list[str] | None = None) -> None:
             if cm is None:
                 print("[compact] 上下文管理插件未启用")
             else:
-                ctx = get_context()
+                ctx = runtime.get_context()
                 before = len(ctx.messages)
                 new_msgs, summary = cm.compact_now(ctx.messages)
                 ctx.messages = new_msgs
@@ -182,7 +177,7 @@ def main(argv: list[str] | None = None) -> None:
                 from qi_agent.tools.builtin.delegate_task import delegate_task
 
                 print(f"[delegate] 子任务启动：{goal[:80]}")
-                ctx = get_context()
+                ctx = runtime.get_context()
                 output = delegate_task(
                     goal=goal,
                     context=(
@@ -211,8 +206,8 @@ def main(argv: list[str] | None = None) -> None:
         # 状态命令（方案 2026-08-24-AgentManager统一控制台）：/status
         # 显示两级状态机（会话级 status + 循环级 phase）+ usage/turn/消息数
         if user_input.lower() in STATUS_COMMANDS:
-            status = manager.poll(agent_id)
-            ctx = get_context()
+            status = manager.poll(context_id)
+            ctx = runtime.get_context()
             phase = ctx.phase.value
             u = ctx.usage
             print(
@@ -226,7 +221,7 @@ def main(argv: list[str] | None = None) -> None:
         # 终止命令（方案 2026-08-24-AgentManager统一控制台）：/stop
         # 中断当前长任务（下轮生效——chat 阻塞在 LLM 调用时 v2 升级实时中断）
         if user_input.lower() in STOP_COMMANDS:
-            stopped = manager.stop(agent_id)
+            stopped = manager.stop(context_id)
             print("[stop] 已请求中断当前任务（下轮生效）" if stopped
                   else "[stop] 主 agent 不在控制台")
             continue
@@ -238,7 +233,10 @@ def main(argv: list[str] | None = None) -> None:
             #   （[USER]→[RESP]），流式文本单独一行输出，避免前缀粘连
             if not args.debug:
                 print("agent> ", end="", flush=True)
-            reply = agent.chat(
+            # 执行权归还 Manager（方案 2026-08-24）：CLI 只调 manager.run，
+            # 不持有 agent——执行者由 manager 内部经 pool 即用即弃
+            reply = manager.run(
+                context_id,
                 user_input,
                 # 流式回调：逐块打印（flush=True 强制立即输出，否则被缓冲）
                 stream_callback=lambda delta: print(delta, end="", flush=True),

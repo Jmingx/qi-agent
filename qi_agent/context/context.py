@@ -66,14 +66,17 @@ class AgentContext:
 
     def __init__(
         self,
-        agent_id: str | None = None,
         goal: str = "",
         parent: "AgentContext | None" = None,
         persist: bool = False,
         max_turns: int = 8,
         events: EventBus | None = None,
+        context_id: str | None = None,
     ) -> None:
-        self.id = agent_id or uuid.uuid4().hex[:12]
+        self.id = context_id or f"ctx_{uuid.uuid4().hex[:12]}"
+        # id 前缀（方案 2026-08-24-执行权归还Manager与ID规范化）：
+        # ctx_ = 数据载体（会话身份，持久化键——恢复会话时传原 id）；
+        # agent 用 agt_（执行者身份，在 Agent 上，不在 context）
         self.goal = goal
         self.parent = parent
         self.persist = persist

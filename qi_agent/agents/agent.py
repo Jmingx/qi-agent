@@ -14,6 +14,8 @@ AgentContext 统一合并（方案 2026-08-24，用户拍板 D2/D3）：
   cli/runner/delegate_task 零改动）。
 """
 
+import uuid
+
 from typing import Protocol
 
 from qi_agent.context.context import AgentContext
@@ -51,6 +53,10 @@ class Agent:
         context: AgentContext | None = None,
     ) -> None:
         self.client = client
+        self.id = f"agt_{uuid.uuid4().hex[:12]}"
+        # 执行者身份（方案 2026-08-24-ID规范化）：agt_ 前缀区别于
+        # context（ctx_）——agent 是瞬态执行者（可观测/审计），context 是
+        # 会话身份（持久化键）。无状态：数据全在 context，agent 即用即弃。
         self.system_prompt = system_prompt  # 初始化系统提示词
         # 统一运行环境（数据载体）：默认创建主 agent context（persist=True）。
         # 兼容：显式传入 events 时，context 复用该总线（外部监听者必须收到

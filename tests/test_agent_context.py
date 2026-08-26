@@ -24,11 +24,12 @@ def test_initial_state() -> None:
 
 
 def test_auto_id() -> None:
-    """自动生成 id（12 位 hex）。"""
+    """自动生成 id（ctx_ 前缀 + 12 位 hex——ID 规范化）。"""
     ctx1 = AgentContext()
     ctx2 = AgentContext()
     assert ctx1.id != ctx2.id
-    assert len(ctx1.id) == 12
+    assert ctx1.id.startswith("ctx_")
+    assert len(ctx1.id) == 16  # "ctx_" + 12 hex
 
 
 def test_messages_data_carrier() -> None:

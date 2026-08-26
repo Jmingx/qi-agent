@@ -18,14 +18,17 @@ context/events/llm 零改动——插拔边界清晰。
 
 from qi_agent.agents.agent import Agent
 from qi_agent.agents.agent_manager import AgentManager
-from qi_agent.agents.factory import AgentBundle, build_agent
+from qi_agent.agents.factory import RuntimeBundle, build_runtime, make_agent
+from qi_agent.agents.pool import AgentPool
 from qi_agent.agents.subagent import SubagentContext, SubagentManager
 
 __all__ = [
     "Agent",
-    "AgentBundle",
     "AgentManager",
+    "AgentPool",
+    "RuntimeBundle",
     "SubagentContext",
     "SubagentManager",
-    "build_agent",
+    "build_runtime",
+    "make_agent",
 ]
