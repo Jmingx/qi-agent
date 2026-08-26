@@ -166,8 +166,10 @@ class Agent:
     def _run_tool_loop(self, user_input: str, stream_callback=None) -> str:
         """工具循环（chat 内部——状态机在循环内更新 LLM_CALL/TOOL_EXEC）。"""
         for step in range(self.max_turns):
-            # 中断检查（方案 2026-08-24 §4.5）：下轮生效（本阶段）；
-            # 后台线程/信号实时中断是下阶段（D3 升级，已记 TODO）
+            # 中断检查（方案 2026-08-24 §4.5 + stop实时中断 Phase A）：
+            # 协作式 checkpoint（Pi 模式）——工具批次间检查（工具内不掐断，
+            # 由 executor 保证）；实时中断由 manager.run 主线程 wait_stop_or_done
+            # 负责（stop 触发立即返回，不等本循环）
             if self.context.should_stop():
                 self.events.emit("agent/turn-end", reason="stopped")
                 return "已按指令中断当前任务。"
@@ -207,6 +209,13 @@ class Agent:
                 for key in self.context.usage:
                     self.context.usage[key] += int(result.usage.get(key, 0) or 0)
 
+            # 竞态防护（方案 2026-08-24-stop实时中断）：LLM 返回后、回填前
+            # 检查 stop——被中断的旧线程不得回填 assistant/tool 消息
+            # （否则污染后续对话——旧线程完成时 run#2 可能已开始）
+            if self.context.should_stop():
+                self.events.emit("agent/turn-end", reason="stopped")
+                return "已按指令中断当前任务。"
+
             if result.tool_calls:
                 # 1. assistant 的 tool_calls 消息必须原样进历史（协议要求）
                 self.messages.append(result.assistant_message)
@@ -238,6 +247,10 @@ class Agent:
                     allowlist=self.tools,
                 )
                 # 4. 回填（消息历史归 agent 管理）
+                # 竞态防护：工具执行中 stop → 回填前检查（tool 消息不污染）
+                if self.context.should_stop():
+                    self.events.emit("agent/turn-end", reason="stopped")
+                    return "已按指令中断当前任务。"
                 for call in result.tool_calls:
                     output, _ = outcomes[call.id]
                     self.messages.append(

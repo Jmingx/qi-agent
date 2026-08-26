@@ -145,6 +145,23 @@ class AgentContext:
         """是否被要求终止（每轮检查）。"""
         return self._stop_flag.is_set()
 
+    def wait_stop_or_done(self, timeout: float | None = None) -> str:
+        """等待"被停止"或"chat 完成"，返回结果类型（stopped/done/timeout）。
+
+        方案 2026-08-24-stop实时中断（Phase A）：manager.run 主线程在这里等
+        后台 LLM 线程——stop 触发立即返回"stopped"（实时中断），
+        LLM 先完成返回"done"，超时返回"timeout"。
+
+        注意：stop() 内部会 set _done（释放等待者）——所以 stop 后
+        _done 也 set，这里必须【先查 _stop_flag】（stop 优先）。
+        """
+        self._done.wait(timeout=timeout)  # 等 chat 完成（stop 也会 set）
+        if self._stop_flag.is_set():
+            return "stopped"   # stop 优先（即使 done 也 set）
+        if self._done.is_set():
+            return "done"
+        return "timeout"
+
     def complete(self, result: dict) -> None:
         """正常完成（状态 COMPLETED，结果带回）。"""
         self.result = result

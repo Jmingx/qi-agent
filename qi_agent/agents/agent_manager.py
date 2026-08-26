@@ -174,19 +174,49 @@ class AgentManager:
         agent 在 pool 内即用即弃（acquire → chat → release），
         manager 不感知具体 agent 类型（可插拔）。
 
+        实时中断（方案 2026-08-24-stop实时中断 Phase A）：
+        - 整个 chat（LLM + 工具循环）放后台线程（daemon）——主线程不等 LLM
+        - 主线程 wait_stop_or_done 双事件等待（stop/done）
+        - stop 触发 → 立即返回"已按指令中断当前任务"（不等慢 LLM）
+          + pool.release 旧 agent（线程自然回收，timeout 兜底）
+        - 新请求 → 新 agent 接管同一 context（无状态替换，数据无缝）
+
         Args:
             context_id: 数据载体 id（ctx_ 前缀——会话身份）
             user_input: 用户输入
             stream_callback: 流式回调（透传 agent.chat）
 
         Returns:
-            最终回复（agent.chat 结果）
+            最终回复（agent.chat 结果）；被中断时返回中断提示
         """
         context = self.contexts.get(context_id)
         if context is None:
             raise KeyError(f"context 不存在: {context_id}")
+        # 每次 run 是新的会话轮次——清除上次的 stop 标志（防残留中断）
+        # （方案 2026-08-24-stop实时中断：stop 是一次性的，run 重新开始）
+        context._stop_flag.clear()
         agent = self.pool.acquire(context)  # 从 pool 取执行者（绑定 context）
-        try:
-            return agent.chat(user_input, stream_callback=stream_callback)
-        finally:
-            self.pool.release(agent)  # 即用即弃（生命周期在 pool）
+
+        # 后台线程跑整个 chat（LLM + 工具循环）——主线程可响应 stop
+        result_box: dict = {}
+
+        def _worker() -> None:
+            try:
+                result_box["value"] = agent.chat(
+                    user_input, stream_callback=stream_callback)
+            except Exception as exc:
+                result_box["error"] = exc
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        # 主线程双事件等待：stop → 实时中断；done → 正常取结果
+        outcome = context.wait_stop_or_done()
+        if outcome == "stopped":
+            self.pool.release(agent)  # 旧 agent 丢弃（线程自然回收）
+            return "已按指令中断当前任务。"
+
+        self.pool.release(agent)  # 即用即弃（生命周期在 pool）
+        if "error" in result_box:
+            raise result_box["error"]
+        return result_box["value"]
