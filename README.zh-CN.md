@@ -73,14 +73,6 @@ qi_agent/
 - **执行权归还 Manager**——CLI 只调 `manager.run(context_id, input)`，不持有 Agent。执行者在 AgentPool 内即用即弃（acquire → chat → release）。
 - **ID 约定**——`ctx_` 前缀 = 会话身份（数据载体）；`agt_` 前缀 = 执行者身份（可观测/审计）。
 
-## 测试
-
-```bash
-uv run python -m pytest            # 全量测试
-uv run python -m pytest -q         # 快速模式
-uv run python -m ruff check qi_agent tests evaluation   # 代码风格检查
-```
-
 ## 许可证
 
 MIT

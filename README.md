@@ -73,14 +73,6 @@ qi_agent/
 - **Execution ownership in Manager** — CLI calls `manager.run(context_id, input)`; it never holds an Agent. Executors live in the AgentPool (acquire → chat → release).
 - **ID convention** — `ctx_` prefix = session identity (data carrier); `agt_` prefix = executor identity (observability/audit).
 
-## Tests
-
-```bash
-uv run python -m pytest            # full test suite
-uv run python -m pytest -q         # quick mode
-uv run python -m ruff check qi_agent tests evaluation   # lint
-```
-
 ## License
 
 MIT
