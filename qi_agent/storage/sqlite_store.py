@@ -73,6 +73,17 @@ class SQLiteStore(Storage):
                     ON messages(session_id, seq);
                 """
             )
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """schema 迁移（幂等——旧库缺列时补列）。
+
+        IF NOT EXISTS 不会给已存在的旧表加列 → 手动检测 + ALTER。
+        当前迁移：messages.data（全量消息序列化——tool_call_id 等）。
+        """
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+        if "data" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN data TEXT DEFAULT NULL")
 
     # ── 会话 ─────────────────────────────────────────────────────────────
     def create_session(self, session_id: str, title: str = "") -> None:
@@ -157,6 +168,9 @@ class SQLiteStore(Storage):
             if row["tool_calls"]:
                 msg["tool_calls"] = json.loads(row["tool_calls"])
             messages.append(msg)
+        # 历史数据兜底：旧格式 tool 消息缺 tool_call_id →
+        # 从相邻 assistant 消息的 tool_calls 匹配补上（尽力恢复）
+        self._repair_tool_call_ids(messages)
         return {
             "id": sess["id"],
             "title": sess["title"],
@@ -166,6 +180,29 @@ class SQLiteStore(Storage):
             "phase": sess["phase"],
             "messages": messages,
         }
+
+    @staticmethod
+    def _repair_tool_call_ids(messages: list[dict]) -> None:
+        """补 tool_call_id（历史数据修复——旧格式丢失的字段）。
+
+        遍历 tool 消息，缺 tool_call_id 时从【前面最近的 assistant
+        消息】的 tool_calls 列表里找匹配的 id（按顺序配对）。
+        无法匹配 → 生成占位 id（保证 API 不 400——内容可能错位但可聊）。
+        """
+        pending_ids: list[str] = []
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                # 收集本条 assistant 声明的 tool_call id（顺序）
+                pending_ids = [
+                    tc.get("id") for tc in (msg.get("tool_calls") or [])
+                    if isinstance(tc, dict) and tc.get("id")
+                ]
+            elif msg.get("role") == "tool":
+                if "tool_call_id" not in msg:
+                    if pending_ids:
+                        msg["tool_call_id"] = pending_ids.pop(0)
+                    else:
+                        msg["tool_call_id"] = f"call_repair_{len(messages)}"
 
     def list_sessions(self) -> list[dict]:
         with self._connect() as conn:
