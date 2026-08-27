@@ -38,6 +38,21 @@ class EvalTask:
     # 期望【未】调用的工具（阶段 C 收尾 L3：压缩后不重做已完成工作）
     expected_keyword_min_count: int = 1
     # 关键词最少出现次数（L4 对比：压缩前/后各答一次 → 计数 ≥ 2）
+    expected_memory: str | None = None
+    # 期望记忆被写入（主动记忆/命令行记忆评测——检查记忆文件）：
+    # "user:XXX"（USER.md 含 XXX）/ "memory:XXX"（MEMORY.md 含 XXX）
+    memory_target: str = "memory"
+    # 记忆写入目标（expected_memory 未带前缀时默认 memory）
+
+
+def _setup_memory_preload() -> None:
+    """m7 前置：预置 USER.md 记忆（用户叫小明）——测记忆注入。"""
+    from qi_agent.storage.memory_store import MemoryStore
+
+    store = MemoryStore()
+    # 清空 USER.md（防残留）
+    store.remove_memory("用户叫小明", target="user")
+    store.add_memory("用户叫小明", target="user")
 
 
 # 固定任务集（16 个）：覆盖当前 agent 能力
@@ -107,6 +122,37 @@ TASKS: list[EvalTask] = [
     EvalTask("c3", "context", "工具结果记忆",
              ["看一下 README.md 的第一行", "刚才读的文件叫什么名字？"],
              expected_tools=["read_file"], expected_keywords=["README"]),
+    # ── memory：记忆能力（7）────────────────────────────────────────────
+    # ① 被动记忆（对话内记忆——agent 记住对话中信息）
+    EvalTask("m1", "memory", "被动记忆-名字",
+             ["我叫王小虎", "我叫什么名字？"],
+             expected_keywords=["王小虎"]),
+    EvalTask("m2", "memory", "被动记忆-事实",
+             ["我的生日是 5 月 20 日", "我的生日是几月几号？"],
+             expected_keywords=["5", "20", "五月", "5月"]),
+    EvalTask("m3", "memory", "被动记忆-跨轮工具结果",
+             ["读取 README.md 看下项目是什么", "这个项目的名字是什么？"],
+             expected_tools=["read_file"], expected_keywords=["qi-agent", "项目"]),
+    # ② 主动记忆（规则触发 → 自动写记忆文件 → 跨会话）
+    EvalTask("m4", "memory", "主动记忆-偏好写入",
+             ["我的爱好是打羽毛球"],  # 规则触发 → USER.md
+             expected_memory="user:打羽毛球",
+             expected_keywords=["记住", "记录", "爱好", "记下"]),
+    EvalTask("m5", "memory", "主动记忆-决策写入",
+             ["我们决定用 PostgreSQL 做数据库"],
+             expected_memory="memory:PostgreSQL",
+             expected_keywords=["记住", "记录", "决定", "记下", "定为"]),
+    # ③ 明确请求记忆（"请记住"规则触发 → USER.md）
+    # （/remember 命令行记忆本身由单测覆盖——CLI 命令层）
+    EvalTask("m6", "memory", "主动记忆-明确请求",
+             ["请记住用户叫李雷"],  # "请记住"规则触发 → USER.md
+             expected_memory="user:李雷",
+             expected_keywords=["记住", "记下"]),
+    # ④ 记忆注入（预置记忆 → 对话中 agent 利用）
+    EvalTask("m7", "memory", "记忆注入-利用预置记忆",
+             ["你还记得我的名字吗？"],
+             setup=_setup_memory_preload,
+             expected_keywords=["小明"]),
 ]
 
 # ── 阶段 C 收尾（方案 2026-08-23）：长对话事实保持评测（L3/L4）────────────

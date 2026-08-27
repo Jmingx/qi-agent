@@ -157,7 +157,7 @@ def test_tasks_all_valid() -> None:
     """任务集合法性：id 唯一/类别合法/期望非空。"""
     ids = [t.id for t in TASKS]
     assert len(ids) == len(set(ids)), "任务 id 必须唯一"
-    categories = {"tool", "error", "security", "context"}
+    categories = {"tool", "error", "security", "context", "memory"}
     for t in TASKS:
         assert t.category in categories, f"{t.id} 类别非法"
         assert t.steps, f"{t.id} 必须至少一步"

@@ -116,7 +116,35 @@ def judge(task: EvalTask, history: list[dict]) -> tuple[bool, list[str]]:
                 f"{task.expected_keywords}"
             )
 
+    # ④ 记忆写入检查（主动记忆/命令行记忆评测——方案 2026-08-26）
+    if task.expected_memory:
+        _check_expected_memory(task, failures)
+
     return (not failures, failures)
+
+
+def _check_expected_memory(task, failures: list) -> None:
+    """检查期望记忆是否写入记忆文件（USER.md/MEMORY.md）。"""
+    from qi_agent.storage.memory_store import MemoryStore
+
+    expect = task.expected_memory
+    if expect.startswith("user:"):
+        target, keyword = "user", expect[5:]
+    elif expect.startswith("memory:"):
+        target, keyword = "memory", expect[7:]
+    else:
+        target, keyword = task.memory_target, expect
+    try:
+        store = MemoryStore()
+        entries = store.list_entries(target)
+    except Exception as exc:
+        failures.append(f"记忆文件读取失败: {exc}")
+        return
+    if not any(keyword in e for e in entries):
+        failures.append(
+            f"期望记忆未写入 {target.upper()}.md: {keyword}"
+            f"（实际: {entries[:5]}）"
+        )
 
 
 def _run_task(task: EvalTask) -> dict:
