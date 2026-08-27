@@ -204,6 +204,7 @@ class AgentManager:
 
         # 后台线程跑整个 chat（LLM + 工具循环）——主线程可响应 stop
         result_box: dict = {}
+        done_box: dict = {"event": threading.Event()}  # worker 完成信号
 
         def _worker() -> None:
             try:
@@ -211,6 +212,8 @@ class AgentManager:
                     user_input, stream_callback=stream_callback)
             except Exception as exc:
                 result_box["error"] = exc
+            finally:
+                done_box["event"].set()  # worker 真正完成（含 result_box 写入）
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
@@ -222,6 +225,8 @@ class AgentManager:
             self._persist(context)
             return "已按指令中断当前任务。"
 
+        # 正常路径：等 worker 真正完成（result_box 写入）——防竞态
+        done_box["event"].wait(timeout=60)
         self.pool.release(agent)  # 即用即弃（生命周期在 pool）
         self._persist(context)
         if "error" in result_box:
