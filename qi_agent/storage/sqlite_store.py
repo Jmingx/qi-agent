@@ -65,6 +65,7 @@ class SQLiteStore(Storage):
                     role TEXT NOT NULL,
                     content TEXT,
                     tool_calls TEXT,
+                    data TEXT DEFAULT NULL,
                     created_at REAL DEFAULT 0,
                     FOREIGN KEY (session_id) REFERENCES sessions(id)
                 );
@@ -85,7 +86,7 @@ class SQLiteStore(Storage):
             )
 
     def append_message(self, session_id: str, message: dict) -> None:
-        """追加日志（主写入）。message: {role, content, tool_calls?}"""
+        """追加日志（主写入）。message: 完整消息 dict（全量序列化）。"""
         now = time.time()
         with self._lock, self._connect() as conn:
             # 序号 = 当前最大 seq + 1（保证重放顺序）
@@ -96,13 +97,15 @@ class SQLiteStore(Storage):
             seq = row[0] + 1
             conn.execute(
                 "INSERT INTO messages"
-                " (session_id, seq, role, content, tool_calls, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                " (session_id, seq, role, content, tool_calls, data, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     session_id, seq, message.get("role", ""),
                     message.get("content"),
                     json.dumps(message.get("tool_calls"), ensure_ascii=False)
                     if message.get("tool_calls") else None,
+                    # 全量序列化（防丢字段——tool_call_id 等）
+                    json.dumps(message, ensure_ascii=False),
                     now,
                 ),
             )
@@ -135,12 +138,19 @@ class SQLiteStore(Storage):
             # 快照时间点之后的消息（seq 全量——快照时 seq 已存，
             # 简化：快照状态字段已含 turn/usage，消息全量重放）
             rows = conn.execute(
-                "SELECT role, content, tool_calls FROM messages"
+                "SELECT role, content, tool_calls, data FROM messages"
                 " WHERE session_id=? ORDER BY seq",
                 (session_id,),
             ).fetchall()
         messages = []
         for row in rows:
+            # 优先完整 dict（data 列——含 tool_call_id 等全字段）
+            if row["data"]:
+                try:
+                    messages.append(json.loads(row["data"]))
+                    continue
+                except (json.JSONDecodeError, TypeError):
+                    pass  # data 损坏 → 回退旧列
             msg: dict = {"role": row["role"]}
             if row["content"] is not None:
                 msg["content"] = row["content"]
