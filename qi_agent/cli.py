@@ -42,6 +42,13 @@ STATUS_COMMANDS = {"status", "状态"}
 # 终止命令（方案 2026-08-24-AgentManager统一控制台）：/stop 中断长任务
 STOP_COMMANDS = {"stop", "停止"}
 
+# 会话命令（方案 2026-08-26-会话持久化）：/resume 恢复会话，/new 新建
+RESUME_PREFIX = "/resume"
+NEW_COMMANDS = {"new", "/new", "新会话"}
+
+# 记忆命令（方案 2026-08-26-记忆系统）：/memory 查看跨会话记忆
+MEMORY_COMMANDS = {"memory", "/memory", "记忆"}
+
 
 def _print_plugin_reports(installed_plugins: list) -> None:
     """打印所有带 report() 的插件汇总（约定：观测类插件提供 report 方法）。
@@ -80,6 +87,18 @@ def main(argv: list[str] | None = None) -> None:
     installed_plugins = runtime.installed
 
     print("欢迎使用 qi-agent！（输入 exit / quit / 退出 结束对话，clear 清理上下文。）")
+
+    # 崩溃恢复提示（方案 2026-08-26）：有历史会话时提示可恢复
+    # （write-behind 持久化——上次会话已落盘，/resume 可续聊）
+    try:
+        from qi_agent.storage import get_storage
+
+        prev_sessions = get_storage().list_sessions()
+        if prev_sessions:
+            print(f"（发现 {len(prev_sessions)} 个历史会话，输入 /resume 可恢复）")
+    except Exception:
+        pass  # 存储不可用不影响启动
+
     while True:
         try:
             user_input = input("你> ").strip()
@@ -104,14 +123,91 @@ def main(argv: list[str] | None = None) -> None:
             runtime.get_context().reset_session()
             continue
 
-        # 重要信息命令（阶段 B3）：/remember <内容> → sticky（永不裁剪）
+        # 会话命令（方案 2026-08-26）：/resume 恢复 /new 新建
+        if user_input.lower() in NEW_COMMANDS:
+            # 当前会话已持久化（persist=True 自动落盘）——直接开新 context
+            from qi_agent.context.context import AgentContext
+
+            new_ctx = AgentContext(persist=True,
+                                   events=runtime.get_context().events)
+            manager.unregister(runtime.context_id)
+            manager.register(new_ctx, role="main")
+            runtime.context_id = new_ctx.id  # 同一运行时换 context（数据载体）
+            print("已开始新会话！")
+            continue
+
+        if user_input.startswith(RESUME_PREFIX):
+            from qi_agent.storage import get_storage
+
+            store = get_storage()
+            arg = user_input[len(RESUME_PREFIX):].strip()
+            if not arg:
+                # 列出会话
+                sessions = store.list_sessions()
+                if not sessions:
+                    print("暂无历史会话。")
+                else:
+                    print("历史会话：")
+                    for s in sessions[:10]:
+                        print(f"  {s['id']}  {s['title'] or '(无标题)'}")
+                continue
+            # 恢复指定会话（按 id 前缀匹配）
+            sessions = store.list_sessions()
+            match = next((s for s in sessions if s["id"].startswith(arg)), None)
+            if match is None:
+                print(f"未找到会话: {arg}")
+                continue
+            loaded = store.load_session(match["id"])
+            if loaded is None:
+                print(f"会话数据为空: {arg}")
+                continue
+            # 用原 context_id 新建 context + 恢复数据
+            from qi_agent.context.context import AgentContext
+
+            new_ctx = AgentContext(persist=True, context_id=match["id"],
+                                   events=runtime.get_context().events)
+            new_ctx.messages = loaded["messages"]
+            new_ctx.turn = loaded["turn"]
+            new_ctx.usage = loaded["usage"]
+            new_ctx.system_prompt = (
+                new_ctx.messages[0]["content"] if new_ctx.messages
+                and new_ctx.messages[0]["role"] == "system" else "")
+            manager.unregister(runtime.context_id)
+            manager.register(new_ctx, role="main")
+            runtime.context_id = new_ctx.id  # 同一运行时换 context（数据载体）
+            print(f"已恢复会话 {match['id']}（{len(new_ctx.messages)} 条消息）")
+            continue
+
+        # 重要信息命令（阶段 B3 + 方案 2026-08-26）：
+        # /remember <内容> → sticky（会话内永不裁剪）+ MEMORY.md（跨会话）
         if user_input.startswith(REMEMBER_PREFIX):
             content = user_input[len(REMEMBER_PREFIX):].strip()
             if content:
-                remember(content)
-                print(f"已记住：{content}")
+                remember(content)  # sticky（会话内）
+                try:
+                    from qi_agent.storage.memory_store import MemoryStore
+
+                    MemoryStore().add_memory(content)
+                except Exception:
+                    pass  # 存储不可用 → 只留 sticky
+                print(f"已记住：{content}（会话内 + 跨会话）")
             else:
                 print("用法：/remember <要记住的内容>")
+            continue
+
+        # 记忆查看命令（方案 2026-08-26）：/memory 查看跨会话记忆
+        if user_input.lower() in MEMORY_COMMANDS:
+            try:
+                from qi_agent.storage.memory_store import MemoryStore
+
+                text = MemoryStore().read_memory()
+                if text:
+                    print("=== 跨会话记忆（MEMORY.md + USER.md）===")
+                    print(text)
+                else:
+                    print("暂无记忆。用 /remember <内容> 记录。")
+            except Exception as exc:
+                print(f"[memory] 读取失败: {exc}")
             continue
 
         # 资源消耗命令（2026-08-21：查看当前累计，不消耗 LLM 调用）

@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from qi_agent.agents.pool import AgentPool
 from qi_agent.context.context import AgentContext, ContextStatus
+from qi_agent.storage.base import Storage
 # 注意：不模块级 import SubagentContext——subagent.py 又 import 本模块
 # （SubagentManager 继承 AgentManager）→ 循环导入。SubagentContext 在
 # spawn() 内延迟 import（见下）。
@@ -31,10 +32,14 @@ from qi_agent.context.context import AgentContext, ContextStatus
 class AgentManager:
     """统一控制台：register / spawn / steer / stop / poll / unregister。"""
 
-    def __init__(self, max_concurrent: int = 3) -> None:
+    def __init__(self, max_concurrent: int = 3,
+                 storage: Storage | None = None) -> None:
         self.contexts: dict[str, AgentContext] = {}
         self.max_concurrent = max_concurrent
         self._lock = threading.Lock()
+        # 存储（方案 2026-08-26 会话持久化）：基础设施注入——persist=True
+        # 的 context 在 run 完成后落盘（write-behind 异步）。None = 不持久化。
+        self.storage = storage
         # AgentPool（方案 2026-08-24）：spawn 用池治理并发（max_concurrent
         # 真正生效——此前只是存着没用）。subagent 执行者仍由 _run_subagent
         # 特殊装配（工具子集/授权清单），pool 只提供并发额度。
@@ -214,9 +219,44 @@ class AgentManager:
         outcome = context.wait_stop_or_done()
         if outcome == "stopped":
             self.pool.release(agent)  # 旧 agent 丢弃（线程自然回收）
+            self._persist(context)
             return "已按指令中断当前任务。"
 
         self.pool.release(agent)  # 即用即弃（生命周期在 pool）
+        self._persist(context)
         if "error" in result_box:
             raise result_box["error"]
         return result_box["value"]
+
+    def _persist(self, context: AgentContext) -> None:
+        """会话持久化（方案 2026-08-26）：persist=True + 有 storage 时落盘。
+
+        write-behind：后台线程异步写（不阻塞主流程）；崩溃丢尾可接受。
+        双模型：append 日志（只写新增消息——增量）+ snapshot 状态字段。
+        """
+        if not context.persist or self.storage is None:
+            return
+
+        def _worker() -> None:
+            try:
+                # 会话不存在则创建（幂等）
+                existing = self.storage.load_session(context.id)
+                if existing is None:
+                    self.storage.create_session(context.id,
+                                                title=context.goal or "对话")
+                # 增量 append：只写上次持久化之后的新消息（防重复）
+                start = getattr(context, "_persisted_count", 0)
+                for msg in context.messages[start:]:
+                    self.storage.append_message(context.id, msg)
+                context._persisted_count = len(context.messages)
+                self.storage.snapshot(
+                    context.id,
+                    turn=context.turn,
+                    usage=context.usage,
+                    status=context.status.value,
+                    phase=context.phase.value,
+                )
+            except Exception:
+                pass  # 持久化失败不阻塞对话（记录级容错）
+
+        threading.Thread(target=_worker, daemon=True).start()

@@ -22,6 +22,7 @@ from qi_agent.events import EventBus
 from qi_agent.llm import LLMClient
 from qi_agent.plugins import load_plugins
 from qi_agent.plugins.config import load_plugin_config
+from qi_agent.storage import get_storage
 
 
 @dataclass
@@ -77,7 +78,8 @@ def load_api_key() -> str:
 
 def build_runtime(debug: bool = False, stats: bool = False,
                   interactive: bool = True,
-                  plugin_overrides: dict | None = None) -> RuntimeBundle:
+                  plugin_overrides: dict | None = None,
+                  persist: bool = True) -> RuntimeBundle:
     """构建运行时（真实形态）：manager + context + 插件装配——不建 agent。
 
     Args:
@@ -99,8 +101,8 @@ def build_runtime(debug: bool = False, stats: bool = False,
     # 插件挂 context.events（数据载体的总线），与执行者无关——延迟注入不影响。
     load_api_key()  # 校验 key 存在（运行时就要确认，make_agent 才真正用）
     events = EventBus()
-    context = AgentContext(persist=True, events=events)
-    manager = AgentManager()
+    context = AgentContext(persist=persist, events=events)
+    manager = AgentManager(storage=get_storage() if persist else None)
     manager.register(context, role="main")  # 返回 context_id（ID 规范化）
 
     # 插件装配（v0.4.9）：注册表 + 配置文件，加插件不再改这里

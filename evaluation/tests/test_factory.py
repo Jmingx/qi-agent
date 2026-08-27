@@ -18,7 +18,7 @@ def test_build_agent_plugins_mounted(fake_key) -> None:
     """build_agent 应装配插件（env_info/security_guard 默认开）——真实形态。"""
     from qi_agent.agents.factory import build_runtime
 
-    runtime = build_runtime()
+    runtime = build_runtime(persist=False)
     installed = runtime.installed
     # 默认装配：env_info + security_guard（默认启用），tool_stats（配置 false）
     names = [type(p).__name__ for p in installed]
@@ -33,7 +33,7 @@ def test_build_agent_stats_shortcut(fake_key) -> None:
     """stats=True 应快捷装配 tool_stats（不改配置文件）。"""
     from qi_agent.agents.factory import build_runtime
 
-    runtime = build_runtime(stats=True)
+    runtime = build_runtime(stats=True, persist=False)
     installed = runtime.installed
     names = [type(p).__name__ for p in installed]
     assert "ToolStatsPlugin" in names
@@ -43,7 +43,7 @@ def test_build_agent_debug_logger(fake_key) -> None:
     """debug=True 应装配 debug_logger 插件（2026-08-22 插件化）。"""
     from qi_agent.agents.factory import build_runtime
 
-    runtime = build_runtime(debug=True)
+    runtime = build_runtime(debug=True, persist=False)
     installed = runtime.installed
     names = [type(p).__name__ for p in installed]
     assert "DebugLoggerPlugin" in names
@@ -68,7 +68,7 @@ def test_build_agent_smoke_run(fake_key) -> None:
         def chat_stream(self, messages, tools=None, on_delta=None) -> ChatResult:
             return self.chat(messages, tools)
 
-    runtime = build_runtime(interactive=False)  # 评测形态（无审批弹窗）
+    runtime = build_runtime(interactive=False, persist=False)  # 评测形态（无审批弹窗）
     ctx = runtime.manager.get_context(runtime.context_id)
     agent = make_agent(ctx)
     installed = runtime.installed

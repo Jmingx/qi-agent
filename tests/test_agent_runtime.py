@@ -18,7 +18,7 @@ def test_build_runtime_no_agent(fake_key) -> None:
     """build_runtime 不创建 agent（运行时只含 manager/context/插件）。"""
     from qi_agent.agents.factory import RuntimeBundle, build_runtime
 
-    runtime = build_runtime(interactive=False)
+    runtime = build_runtime(interactive=False, persist=False)
     assert isinstance(runtime, RuntimeBundle)
     assert runtime.manager is not None
     assert runtime.context_id.startswith("ctx_")  # ID 规范化：ctx_ 前缀
@@ -29,7 +29,7 @@ def test_build_runtime_registers_main(fake_key) -> None:
     """build_runtime 注册主 agent 的 context（控制台可查）。"""
     from qi_agent.agents.factory import build_runtime
 
-    runtime = build_runtime(interactive=False)
+    runtime = build_runtime(interactive=False, persist=False)
     ctx = runtime.get_context()  # RuntimeBundle.get_context（数据访问入口）
     assert ctx is not None
     assert runtime.manager.poll(runtime.context_id) is not None
@@ -39,7 +39,7 @@ def test_make_agent_creates_executor(fake_key) -> None:
     """make_agent 创建执行者（绑定 context 数据载体）。"""
     from qi_agent.agents.factory import build_runtime, make_agent
 
-    runtime = build_runtime(interactive=False)
+    runtime = build_runtime(interactive=False, persist=False)
     ctx = runtime.get_context()
     agent = make_agent(ctx)
     assert agent is not None
@@ -51,7 +51,7 @@ def test_make_agent_uses_prod_prompt(fake_key) -> None:
     """make_agent 用 PROD_SYSTEM_PROMPT（subagent 能力引导）。"""
     from qi_agent.agents.factory import PROD_SYSTEM_PROMPT, build_runtime, make_agent
 
-    runtime = build_runtime(interactive=False)
+    runtime = build_runtime(interactive=False, persist=False)
     ctx = runtime.get_context()
     agent = make_agent(ctx)
     assert agent.system_prompt == PROD_SYSTEM_PROMPT
@@ -74,7 +74,7 @@ def test_runtime_then_make_agent_full_chain(fake_key) -> None:
         def chat_stream(self, messages, tools=None, on_delta=None):
             return self.chat(messages, tools)
 
-    runtime = build_runtime(interactive=False)
+    runtime = build_runtime(interactive=False, persist=False)
     ctx = runtime.get_context()
     agent = make_agent(ctx)
     agent.client = Fake()  # 替换真实 client（不走网络）

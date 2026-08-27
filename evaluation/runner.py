@@ -128,6 +128,7 @@ def _run_task(task: EvalTask) -> dict:
     runtime = build_runtime(
         interactive=False,
         plugin_overrides=task.plugin_overrides,
+        persist=False,  # 评测任务隔离——不落盘（每任务独立，无恢复需求）
     )  # 真实形态（含插件），每任务隔离；执行权归还 Manager（方案 2026-08-24）
     ctx = runtime.get_context()
     manager = runtime.manager
