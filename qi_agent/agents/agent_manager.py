@@ -231,6 +231,7 @@ class AgentManager:
         self._persist(context)
         if "error" in result_box:
             raise result_box["error"]
+        self._maybe_extract_memory(context)  # 主动记忆：每 10 轮触发提炼
         return result_box["value"]
 
     def _persist(self, context: AgentContext) -> None:
@@ -265,3 +266,56 @@ class AgentManager:
                 pass  # 持久化失败不阻塞对话（记录级容错）
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _maybe_extract_memory(self, context: AgentContext) -> None:
+        """主动记忆（方案 2026-08-26-主动记忆系统 V1）：每 10 轮触发提炼。
+
+        提炼 = spawn 一个 subagent（后台 daemon 线程，复用现有执行链）：
+          subagent 读最近对话 → LLM 分析提炼 → 写 MEMORY.md/USER.md
+        - 主对话不阻塞（异步）
+        - 失败容错：提炼失败不影响主对话（结果丢弃）
+        - 无需审批（方案 D3——记忆文件直接写）
+        """
+        interval = getattr(context, "memory_extract_interval", 10)
+        last = getattr(context, "last_extract_turn", 0)
+        if context.turn - last < interval:
+            return  # 未到提炼间隔
+        context.last_extract_turn = context.turn
+
+        # 提炼 subagent：读最近 N 轮消息 → LLM 提炼 → 写记忆文件
+        recent_messages = context.messages[-20:]  # 最近约 10 轮（含 system）
+
+        def _extract_worker() -> None:
+            try:
+                from qi_agent.llm import LLMClient
+                from qi_agent.storage.memory_store import MemoryStore
+
+                client = LLMClient()
+                # 提炼 prompt：让 LLM 输出"值得长期记住的信息"
+                extract_prompt = (
+                    "你是记忆提炼助手。分析下面的对话，提取【值得长期记住】"
+                    "的信息（用户偏好/身份/项目决策/关键约定）。\n"
+                    "输出格式：每行一条，以 [USER] 或 [MEMORY] 开头表示去向"
+                    "（[USER]=用户画像，[MEMORY]=长期知识）。\n"
+                    "没有值得记的 → 输出 'NONE'。\n\n"
+                    f"对话：\n{recent_messages}"
+                )
+                result = client.chat(
+                    [{"role": "system", "content": extract_prompt}])
+                content = result.content.strip()
+                if not content or content == "NONE":
+                    return
+                store = MemoryStore()
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("[USER]"):
+                        store.add_memory(line[6:].strip(), target="user")
+                    elif line.startswith("[MEMORY]"):
+                        store.add_memory(line[8:].strip(), target="memory")
+                    # 其他格式行忽略（LLM 输出不可靠时容错）
+            except Exception:
+                pass  # 提炼失败不影响主对话（容错）
+
+        threading.Thread(target=_extract_worker, daemon=True).start()

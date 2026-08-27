@@ -93,6 +93,10 @@ class AgentContext:
             "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
         }
 
+        # 主动记忆（方案 2026-08-26-主动记忆系统）：每 N 轮触发提炼
+        self.memory_extract_interval = 10  # 提炼间隔（用户拍板：至少每 10 轮）
+        self.last_extract_turn = 0  # 上次提炼的轮数（防重复触发）
+
         # 状态机（两级，方案 2026-08-24 §4.5）
         self.status = ContextStatus.IDLE  # 会话级：新建未开始
         self.phase = ChatPhase.IDLE       # 循环级：当前 chat 内部阶段

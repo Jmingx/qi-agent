@@ -77,3 +77,26 @@ def test_resume_loads_session() -> None:
 def test_resume_not_found() -> None:
     """/resume 不存在 → 提示未找到（不崩溃）。"""
     _run_cli(["/resume nope", "exit"])
+
+
+def test_remember_command_writes_memory() -> None:
+    """/remember 命令行记忆：写 sticky + MEMORY.md。"""
+    from qi_agent.context.sticky import get_sticky_text
+
+    # 用临时记忆目录（防污染真实 ~/.qi-agent）
+    import tempfile
+
+    import qi_agent.storage.memory_store as ms
+
+    tmp = tempfile.mkdtemp()
+    orig_dir = ms._DEFAULT_DIR
+    ms._DEFAULT_DIR = tmp
+    try:
+        _run_cli(["/remember 用户叫王五", "exit"])
+        # sticky（会话内）
+        assert "用户叫王五" in get_sticky_text()
+        # MEMORY.md（跨会话）
+        store = ms.MemoryStore()
+        assert any("用户叫王五" in e for e in store.list_entries("memory"))
+    finally:
+        ms._DEFAULT_DIR = orig_dir
