@@ -83,7 +83,6 @@ def main(argv: list[str] | None = None) -> None:
     # agent 生命周期在 pool（即用即弃），manager 不感知具体执行者
     runtime = build_runtime(debug=args.debug, stats=args.stats)
     manager = runtime.manager
-    context_id = runtime.context_id
     installed_plugins = runtime.installed
 
     print("欢迎使用 qi-agent！（输入 exit / quit / 退出 结束对话，clear 清理上下文。）")
@@ -302,7 +301,7 @@ def main(argv: list[str] | None = None) -> None:
         # 状态命令（方案 2026-08-24-AgentManager统一控制台）：/status
         # 显示两级状态机（会话级 status + 循环级 phase）+ usage/turn/消息数
         if user_input.lower() in STATUS_COMMANDS:
-            status = manager.poll(context_id)
+            status = manager.poll(runtime.context_id)
             ctx = runtime.get_context()
             phase = ctx.phase.value
             u = ctx.usage
@@ -317,7 +316,7 @@ def main(argv: list[str] | None = None) -> None:
         # 终止命令（方案 2026-08-24-AgentManager统一控制台）：/stop
         # 中断当前长任务（下轮生效——chat 阻塞在 LLM 调用时 v2 升级实时中断）
         if user_input.lower() in STOP_COMMANDS:
-            stopped = manager.stop(context_id)
+            stopped = manager.stop(runtime.context_id)
             print("[stop] 已请求中断当前任务（下轮生效）" if stopped
                   else "[stop] 主 agent 不在控制台")
             continue
@@ -331,8 +330,9 @@ def main(argv: list[str] | None = None) -> None:
                 print("agent> ", end="", flush=True)
             # 执行权归还 Manager（方案 2026-08-24）：CLI 只调 manager.run，
             # 不持有 agent——执行者由 manager 内部经 pool 即用即弃
+            # 注：用 runtime.context_id（resume/new 会更新它——防旧 id）
             reply = manager.run(
-                context_id,
+                runtime.context_id,
                 user_input,
                 # 流式回调：逐块打印（flush=True 强制立即输出，否则被缓冲）
                 stream_callback=lambda delta: print(delta, end="", flush=True),
