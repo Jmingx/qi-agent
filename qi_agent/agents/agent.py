@@ -14,11 +14,10 @@ AgentContext 统一合并（方案 2026-08-24，用户拍板 D2/D3）：
   cli/runner/delegate_task 零改动）。
 """
 
-import uuid
 
 from typing import Protocol
 
-from qi_agent.context.context import AgentContext
+from qi_agent.context.context import AgentContext, generate_id
 from qi_agent.events import EventBus
 from qi_agent.llm import ChatResult
 from qi_agent.tools.decision import ToolDecision
@@ -53,7 +52,7 @@ class Agent:
         context: AgentContext | None = None,
     ) -> None:
         self.client = client
-        self.id = f"agt_{uuid.uuid4().hex[:12]}"
+        self.id = generate_id("agt")
         # 执行者身份（方案 2026-08-24-ID规范化）：agt_ 前缀区别于
         # context（ctx_）——agent 是瞬态执行者（可观测/审计），context 是
         # 会话身份（持久化键）。无状态：数据全在 context，agent 即用即弃。
@@ -147,7 +146,9 @@ class Agent:
         # 状态机（方案 2026-08-24 §4.5）：会话级 RUNNING + 循环级 TURN_START
         self.context.begin_chat()
         self.messages.append({"role": "user", "content": user_input})
-        self._turn += 1  # 会话内轮数计数（事件 payload 用）
+        # 会话轮数累计（数据载体——跨 chat 累计；主动记忆提炼触发用）。
+        # 注：_turn 是 property 委托 context.turn——只此一处递增（防双计）
+        self._turn += 1
         # 事件点：turn-start（广播，通知类监听者——debug_logger 打印 [USER]）
         self.events.emit("agent/turn-start", user_input=user_input)
 

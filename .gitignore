@@ -33,3 +33,4 @@ tmp/
 
 # 发布 worktree（release-push 脚本用，本地-only）
 .release-wt/
+user_profile.md

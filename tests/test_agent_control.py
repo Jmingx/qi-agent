@@ -79,7 +79,12 @@ def test_agent_has_id() -> None:
 
     agent = Agent(_DoneClient())
     assert agent.id.startswith("agt_")
-    assert len(agent.id) == 16  # "agt_" + 12 hex
+    # 时间戳后缀：agt_<YYYYMMDD>_<HHMMSS>_<随机>
+    parts = agent.id.split("_")
+    assert parts[0] == "agt"
+    assert len(parts[1]) == 8
+    assert len(parts[2]) == 6
+    assert len(parts[3]) == 6
     # 两个执行者 id 不同（瞬态身份）
     agent2 = Agent(_DoneClient())
     assert agent.id != agent2.id

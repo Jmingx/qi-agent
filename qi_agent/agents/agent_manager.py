@@ -197,6 +197,13 @@ class AgentManager:
         context = self.contexts.get(context_id)
         if context is None:
             raise KeyError(f"context 不存在: {context_id}")
+        # 并发防护（2026-08-28 教训：审批弹窗时用户输入被主线程抢走 →
+        # 同 context 并发 run → 消息交错 + 400 + 'value' KeyError）
+        # 同一 context 已有任务在跑 → 拒绝（不并发写同一数据载体）
+        if context.status == ContextStatus.RUNNING:
+            raise RuntimeError(
+                f"context {context_id} 正在运行（status=RUNNING）——"
+                f"请先 /stop 或等待完成")
         # 每次 run 是新的会话轮次——清除上次的 stop 标志（防残留中断）
         # （方案 2026-08-24-stop实时中断：stop 是一次性的，run 重新开始）
         context._stop_flag.clear()
@@ -287,35 +294,61 @@ class AgentManager:
 
         def _extract_worker() -> None:
             try:
+                from qi_agent.agents.factory import load_api_key
                 from qi_agent.llm import LLMClient
                 from qi_agent.storage.memory_store import MemoryStore
 
-                client = LLMClient()
+                # 与主对话一致：LLMClient 需要 api_key（2026-08-28 教训：
+                # 无参调用炸 missing api_key——真实场景提炼失败）
+                client = LLMClient(load_api_key())
                 # 提炼 prompt：让 LLM 输出"值得长期记住的信息"
                 extract_prompt = (
                     "你是记忆提炼助手。分析下面的对话，提取【值得长期记住】"
                     "的信息（用户偏好/身份/项目决策/关键约定）。\n"
                     "输出格式：每行一条，以 [USER] 或 [MEMORY] 开头表示去向"
-                    "（[USER]=用户画像，[MEMORY]=长期知识）。\n"
-                    "没有值得记的 → 输出 'NONE'。\n\n"
+                    "（[USER]=用户画像，如偏好/身份；[MEMORY]=长期知识，如决策）。\n"
+                    "示例：\n[USER] 用户喜欢简洁回答\n"
+                    "[MEMORY] 项目决定用 SQLite\n"
+                    "没有值得记的 → 输出 NONE。\n\n"
                     f"对话：\n{recent_messages}"
                 )
                 result = client.chat(
                     [{"role": "system", "content": extract_prompt}])
                 content = result.content.strip()
-                if not content or content == "NONE":
+                if not content or content.upper() == "NONE":
                     return
                 store = MemoryStore()
+                wrote = 0
                 for line in content.splitlines():
                     line = line.strip()
                     if not line:
                         continue
                     if line.startswith("[USER]"):
                         store.add_memory(line[6:].strip(), target="user")
+                        wrote += 1
                     elif line.startswith("[MEMORY]"):
                         store.add_memory(line[8:].strip(), target="memory")
-                    # 其他格式行忽略（LLM 输出不可靠时容错）
-            except Exception:
-                pass  # 提炼失败不影响主对话（容错）
+                        wrote += 1
+                    else:
+                        # 格式容错（2026-08-27 教训：LLM 不带前缀输出
+                        # 被静默丢弃 → 记忆永远写不进）：
+                        # 无前缀行 → 启发式判断去向（含偏好词 → USER，
+                        # 否则 MEMORY），默认 MEMORY
+                        target = ("user" if any(
+                            kw in line for kw in ("喜欢", "偏好", "爱好",
+                                                  "我叫", "我的", "习惯"))
+                            else "memory")
+                        store.add_memory(line, target=target)
+                        wrote += 1
+                # 可观测：提炼结果留痕（不再静默）
+                if wrote:
+                    context.events.emit(
+                        "agent/memory-extracted",
+                        context_id=context.id, count=wrote)
+            except Exception as exc:
+                # 提炼失败不影响主对话，但留痕（可观测——不静默吞）
+                context.events.emit(
+                    "agent/memory-extract-failed",
+                    context_id=context.id, error=str(exc))
 
         threading.Thread(target=_extract_worker, daemon=True).start()

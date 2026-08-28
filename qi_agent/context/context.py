@@ -25,9 +25,21 @@
 import threading
 import uuid
 
+from datetime import datetime
 from enum import Enum
 
 from qi_agent.events import EventBus
+
+
+def generate_id(prefix: str) -> str:
+    """生成可读 ID：<前缀>_<YYYYMMDD_HHMMSS>_<6位随机>。
+
+    时间戳后缀（用户拍板 2026-08-27）：一眼看出创建时间/事件顺序；
+    随机位防同秒冲突。用于 ctx_（数据载体）/ agt_（执行者）。
+    """
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    rand = uuid.uuid4().hex[:6]
+    return f"{prefix}_{ts}_{rand}"
 
 
 class ContextStatus(str, Enum):
@@ -73,10 +85,11 @@ class AgentContext:
         events: EventBus | None = None,
         context_id: str | None = None,
     ) -> None:
-        self.id = context_id or f"ctx_{uuid.uuid4().hex[:12]}"
+        self.id = context_id or generate_id("ctx")
         # id 前缀（方案 2026-08-24-执行权归还Manager与ID规范化）：
         # ctx_ = 数据载体（会话身份，持久化键——恢复会话时传原 id）；
         # agent 用 agt_（执行者身份，在 Agent 上，不在 context）
+        # 格式：<前缀>_<YYYYMMDD_HHMMSS>_<6位随机>（时间戳可读 + 随机防冲突）
         self.goal = goal
         self.parent = parent
         self.persist = persist

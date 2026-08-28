@@ -24,12 +24,17 @@ def test_initial_state() -> None:
 
 
 def test_auto_id() -> None:
-    """自动生成 id（ctx_ 前缀 + 12 位 hex——ID 规范化）。"""
+    """自动生成 id（ctx_ 前缀 + 时间戳——ID 规范化 + 可读性）。"""
     ctx1 = AgentContext()
     ctx2 = AgentContext()
     assert ctx1.id != ctx2.id
     assert ctx1.id.startswith("ctx_")
-    assert len(ctx1.id) == 16  # "ctx_" + 12 hex
+    # 时间戳后缀（用户拍板 2026-08-27）：ctx_<YYYYMMDD>_<HHMMSS>_<随机>
+    parts = ctx1.id.split("_")
+    assert parts[0] == "ctx"
+    assert len(parts[1]) == 8   # YYYYMMDD
+    assert len(parts[2]) == 6   # HHMMSS
+    assert len(parts[3]) == 6   # 随机位
 
 
 def test_messages_data_carrier() -> None:
