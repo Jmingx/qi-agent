@@ -79,6 +79,13 @@ class Agent:
         # agent 核心保持零侵入——2026-08-22 用户架构修正
         if not self.context.messages:
             self._init_messages()
+        # 邮局消费钩子（2026-08-30 收敛：主/子统一在 Agent 构造挂 pre-step——
+        # 之前分散两处：子 agent 在 delegate_task._steer_watcher（每轮感知），
+        # 主 agent 在 chat 开头（仅一次）——时机不对称。收敛到一处：
+        # 所有 Agent（主/子）每轮 pre-step 消费邮箱，时机一致。
+        # 直接挂 context.consume_mailbox（签名兼容事件 handler——无薄桥）
+        self.events.on("agent/pre-step", self.context.consume_mailbox,
+                       priority=100)
 
     # ── 薄委托（外部读取方零改动：cli/runner/delegate_task）────────────
     @property
@@ -145,6 +152,8 @@ class Agent:
         """
         # 状态机（方案 2026-08-24 §4.5）：会话级 RUNNING + 循环级 TURN_START
         self.context.begin_chat()
+        # 邮局消费已收敛到 pre-step 钩子（_consume_mailbox——Agent 构造时
+        # 挂载，主/子统一每轮消费）。此处不再硬编码（2026-08-30）。
         self.messages.append({"role": "user", "content": user_input})
         # 会话轮数累计（数据载体——跨 chat 累计；主动记忆提炼触发用）。
         # 注：_turn 是 property 委托 context.turn——只此一处递增（防双计）

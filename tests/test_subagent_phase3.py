@@ -10,7 +10,7 @@
 import time
 
 from qi_agent.context.context import ContextStatus as SubagentContextStatus
-from qi_agent.agents.subagent import SubagentManager
+from qi_agent.agents.agent_manager import AgentManager
 
 
 class _SlowClient:
@@ -53,7 +53,7 @@ def _final(text: str):
 class TestLifecycle:
     def test_spawn_to_completed(self) -> None:
         """正常流程：spawn → running → completed（结果带回）。"""
-        mgr = SubagentManager()
+        mgr = AgentManager()
         session = mgr.spawn(
             goal="调研", context="背景",
             client_factory=lambda: _SlowClient(rounds=2),
@@ -65,7 +65,7 @@ class TestLifecycle:
 
     def test_state_machine_transitions(self) -> None:
         """状态机合法转换：spawn→completed（wait 后必为终态）。"""
-        mgr = SubagentManager()
+        mgr = AgentManager()
         session = mgr.spawn(
             goal="g", context="c",
             client_factory=lambda: _SlowClient(rounds=1),
@@ -77,7 +77,7 @@ class TestLifecycle:
 
     def test_timeout(self) -> None:
         """超时：spawn 带 timeout → 超时标记 FAILED(timeout)。"""
-        mgr = SubagentManager()
+        mgr = AgentManager()
 
         class _HangingClient:
             def chat(self, messages, tools=None):
@@ -97,7 +97,7 @@ class TestLifecycle:
 class TestSteer:
     def test_steer_injected_before_next_turn(self) -> None:
         """steer 注入 → 子 agent 下一轮看到补充指令。"""
-        mgr = SubagentManager()
+        mgr = AgentManager()
 
         class _SteerAwareClient(_SlowClient):
             def chat(self, messages, tools=None):
@@ -118,7 +118,7 @@ class TestSteer:
 class TestStop:
     def test_stop_terminates_with_partial(self) -> None:
         """stop 强制终止 → 子 agent 停止，状态 STOPPED。"""
-        mgr = SubagentManager()
+        mgr = AgentManager()
 
         class _LongClient(_SlowClient):
             def chat(self, messages, tools=None):
@@ -136,7 +136,7 @@ class TestStop:
 
     def test_poll_returns_status(self) -> None:
         """poll：查询运行中的会话状态。"""
-        mgr = SubagentManager()
+        mgr = AgentManager()
         session = mgr.spawn(
             goal="g", context="c",
             client_factory=lambda: _SlowClient(rounds=3),
@@ -149,7 +149,7 @@ class TestStop:
 class TestManager:
     def test_sessions_registry(self) -> None:
         """manager 维护会话注册表（spawn/poll/steer/stop 按 id 寻址）。"""
-        mgr = SubagentManager()
+        mgr = AgentManager()
         s1 = mgr.spawn(goal="g1", context="c", client_factory=lambda: _SlowClient(1))
         s2 = mgr.spawn(goal="g2", context="c", client_factory=lambda: _SlowClient(1))
         assert len(mgr.contexts) == 2

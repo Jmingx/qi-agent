@@ -1,355 +1,337 @@
-"""CLI 入口：交互式 REPL（Read-Eval-Print Loop）。
+"""CLI 外壳（方案 2026-08-28-内核外壳分离）：只调 Gateway，不碰内核。
+
+职责（外壳层——唯一读 stdin/渲染输出的地方）：
+  - 读用户输入 → 调 Gateway 方法（session/create, message/send...）
+  - 渲染通知（delta 流式 / approval 弹窗 / turn/end）
+  - 命令处理（/status /resume /remember → 对应 Gateway/协议）
+
+解耦：不 import 内核组件（build_runtime/AgentManager/AgentContext）——
+  交互只在外壳，stdin 竞争根治（2026-08-28 并发排查）。
 
 用法:
     uv run python -m qi_agent.cli            # 正常模式
-    uv run python -m qi_agent.cli --debug    # 调试模式（打印 LLM 交互链路）
+    uv run python -m qi_agent.cli --debug    # 调试模式
 """
 
 import argparse
+import json
 
-from qi_agent.agents.factory import build_runtime
-from qi_agent.context.sticky import remember
-from qi_agent.interaction import TerminalInteraction, set_interaction_provider
-from qi_agent.tools.builtin import (  # noqa: F401  导入即注册内置工具
-    get_time, read_file, run_python, shell,
-)
+from qi_agent.gateway.gateway import Gateway
 
-# 退出命令集合
-EXIT_COMMANDS = {"exit", "quit", "退出", "q"}
-
-# 清理上下文命令集合
-CLEAR_COMMANDS = {"clear"}
-
-# 重要信息命令前缀（阶段 B3，方案 2026-08-22）：/remember <内容>
-# sticky 挂 system prompt——用户要求保留的信息永不裁剪
+# ── 命令集合（2026-08-29 统一：全部 / 前缀——与业界 CLI 对齐）──────────
+# 退出命令
+EXIT_COMMANDS = {"/exit", "/quit", "/q"}
+# 清理上下文（新会话）
+CLEAR_COMMANDS = {"/clear"}
+# 重要信息命令（/remember <内容>——sticky 挂 system prompt，永不裁剪）
 REMEMBER_PREFIX = "/remember"
-
-# 资源查看命令集合（2026-08-21 交互调整：命令式查看资源消耗，不再每轮输出）
-USAGE_COMMANDS = {"usage", "资源"}
-
-# 上下文构成命令（阶段 C 收尾，方案 2026-08-23）：/context 看占用构成
-CONTEXT_COMMANDS = {"context", "上下文"}
-
-# 手动压缩命令（阶段 C 收尾）：/compact 强制同步压缩
-COMPACT_COMMANDS = {"compact"}
-
-# 子任务命令（subagent 方案 2026-08-23）：/delegate <目标> 手动拉起子任务
+# 资源查看命令（2026-08-30 删除：/usage 是半成品指路牌——/status 已
+# 完整展示状态 + token 统计，重复命令冗余）
+# 上下文构成命令（/context 看占用构成）
+CONTEXT_COMMANDS = {"/context"}
+# 手动压缩命令（/compact 强制同步压缩）
+COMPACT_COMMANDS = {"/compact"}
+# 子任务命令（/delegate <目标> 手动拉起子任务）
 DELEGATE_PREFIX = "/delegate"
-
-# 状态命令（方案 2026-08-24-AgentManager统一控制台）：/status 看两级状态
-STATUS_COMMANDS = {"status", "状态"}
-
-# 终止命令（方案 2026-08-24-AgentManager统一控制台）：/stop 中断长任务
-STOP_COMMANDS = {"stop", "停止"}
-
-# 会话命令（方案 2026-08-26-会话持久化）：/resume 恢复会话，/new 新建
+# 状态命令（/status 看两级状态）
+STATUS_COMMANDS = {"/status"}
+# 终止命令（/stop 中断长任务）
+STOP_COMMANDS = {"/stop"}
+# 会话命令（/resume 恢复会话，/new 新建）
 RESUME_PREFIX = "/resume"
-NEW_COMMANDS = {"new", "/new", "新会话"}
+NEW_COMMANDS = {"/new"}
+# 记忆命令（/memory 查看跨会话记忆）
+MEMORY_COMMANDS = {"/memory"}
+# 帮助命令（/help 展示命令及用途——新增 2026-08-29）
+HELP_COMMANDS = {"/help", "/h"}
 
-# 记忆命令（方案 2026-08-26-记忆系统）：/memory 查看跨会话记忆
-MEMORY_COMMANDS = {"memory", "/memory", "记忆"}
+# 命令帮助表（/help 展示——命令 + 用途）
+HELP_TEXT = """可用命令：
+  /exit            退出对话
+  /clear           清空上下文（开始新会话）
+  /new             新建会话
+  /resume [id]     恢复历史会话（不带 id 列出可恢复的）
+  /status          查看当前会话状态（轮数/消息/token）
+  /stop            中断当前任务
+  /remember <内容>  记住重要信息（会话内 + 跨会话）
+  /memory          查看跨会话记忆
+  /context         查看上下文构成
+  /compact         手动压缩上下文
+  /delegate <目标>  手动拉起子任务
+  /help            显示本帮助
+其他输入作为对话消息发送。"""
 
 
-def _print_plugin_reports(installed_plugins: list) -> None:
-    """打印所有带 report() 的插件汇总（约定：观测类插件提供 report 方法）。
+class CliShell:
+    """CLI 外壳：Gateway 客户端（进程内 Phase 1）+ 渲染。"""
 
-    会话退出时与 usage 命令共用——一次查看全会话统计。
-    """
-    for plugin in installed_plugins:
-        report = getattr(plugin, "report", None)
-        if report:
-            print(report())
+    def __init__(self, gateway: Gateway | None = None) -> None:
+        self.gateway = gateway or Gateway()
+        # 注册通知回调（审批弹窗/流式渲染——唯一读 stdin 的地方）
+        self.gateway.shell_callback = self._on_notification
+        self.session_id: str | None = None
 
-
-def main(argv: list[str] | None = None) -> None:
-    """启动 REPL 对话循环。
-
-    Args:
-        argv: 命令行参数列表（测试时注入，避免读取全局 sys.argv）。
-              默认 None 表示从 sys.argv 解析（正常 CLI 使用）。
-    """
-    parser = argparse.ArgumentParser(description="qi-agent 命令行对话")
-    parser.add_argument("--debug", action="store_true", help="打印 LLM 交互调试日志")
-    parser.add_argument("--stats", action="store_true", help="会话结束打印工具调用统计")
-    args = parser.parse_args(argv)
-
-    # 交互注入（v0.4.26）：clarify 等交互工具注册终端实现——未来 Web/GUI
-    # 换 InteractionProvider 实现即可，工具零改动（交互与工具分离架构）
-    set_interaction_provider(TerminalInteraction())
-
-    # 构建运行时（真实形态）：manager + context + 插件装配收敛在 agent_factory
-    # RuntimeBundle（方案 2026-08-24）：manager + context_id（ctx_ 前缀）
-    # 执行权归还 Manager（用户拍板）：CLI 不持有 agent，只调 manager.run——
-    # agent 生命周期在 pool（即用即弃），manager 不感知具体执行者
-    runtime = build_runtime(debug=args.debug, stats=args.stats)
-    manager = runtime.manager
-    installed_plugins = runtime.installed
-
-    print("欢迎使用 qi-agent！（输入 exit / quit / 退出 结束对话，clear 清理上下文。）")
-
-    # 崩溃恢复提示（方案 2026-08-26）：有历史会话时提示可恢复
-    # （write-behind 持久化——上次会话已落盘，/resume 可续聊）
-    try:
-        from qi_agent.storage import get_storage
-
-        prev_sessions = get_storage().list_sessions()
-        if prev_sessions:
-            print(f"（发现 {len(prev_sessions)} 个历史会话，输入 /resume 可恢复）")
-    except Exception:
-        pass  # 存储不可用不影响启动
-
-    while True:
+    # ── 通知处理（网关 → 外壳）──────────────────────────────────────────
+    def _on_notification(self, json_str: str) -> None:
+        """处理网关通知（审批请求/流式增量/轮次结束）。"""
         try:
-            user_input = input("你> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            # Ctrl+D / Ctrl+C：优雅退出
-            print("\n再见！")
-            break
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            return
+        method = data.get("method")
+        params = data.get("params") or {}
+        if method == "serverRequest/approval":
+            self._handle_approval(params)
+        elif method == "item/agentMessage/delta":
+            print(params.get("text", ""), end="", flush=True)
+        # turn/end 等其他通知暂不渲染（响应结果已含）
 
-        # 空输入：跳过，不浪费一次 API 调用
-        if not user_input:
-            continue
+    def _handle_approval(self, params: dict) -> None:
+        """审批弹窗（外壳唯一读 stdin 的交互点）。"""
+        command = params.get("command", "")
+        approval_id = params.get("approval_id", "")
+        print(f"\n🤔 [审批] 执行命令 '{command}'？")
+        choices = ["y", "n", "a"]
+        for i, c in enumerate(choices, 1):
+            print(f"  {i}. {c}")
+        print("  0. 其他（自行输入）")
+        while True:
+            try:
+                raw = input("请选择 (1-N 或 0 输入其他): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                raw = "n"  # 中断 = 拒绝（fail-closed）
+            if raw in ("y", "1"):
+                decision = "approve"
+                break
+            if raw in ("n", "2"):
+                decision = "deny"
+                break
+            if raw in ("a", "3"):
+                decision = "approve"  # a = 总是允许（简化：本次批准）
+                break
+            if raw == "0":
+                decision = "deny"  # 其他 = 拒绝（简化）
+                break
+            print("无效选择，请重试")
+        # 响应回网关（approval/respond）
+        self.gateway._respond_approval(
+            self.session_id or "", approval_id, decision)
 
-        # 退出命令
-        if user_input.lower() in EXIT_COMMANDS:
+    # ── 命令处理（协议方法调用）─────────────────────────────────────────
+    def _handle_command(self, user_input: str) -> bool:
+        """处理命令。返回 True = 已处理（不再当对话消息）。"""
+        low = user_input.lower()
+        if low in EXIT_COMMANDS:
             print("再见！")
-            break
+            return True  # 主循环据此退出
 
-        # 清理上下文命令（2026-08-24 用户拍板：clear 是数据载体重置，
-        # 挪到 context——agent 无状态，没有"清自己"的概念）
-        if user_input.lower() in CLEAR_COMMANDS:
-            print("已为您清理上下文！")
-            runtime.get_context().reset_session()
-            continue
+        if low in HELP_COMMANDS:
+            print(HELP_TEXT)
+            return True
 
-        # 会话命令（方案 2026-08-26）：/resume 恢复 /new 新建
-        if user_input.lower() in NEW_COMMANDS:
-            # 当前会话已持久化（persist=True 自动落盘）——直接开新 context
-            from qi_agent.context.context import AgentContext
+        if low in CLEAR_COMMANDS:
+            # 清空会话（新会话——数据载体重建）
+            self._new_session()
+            print("已开始新会话（上下文已清空）！")
+            return True
 
-            new_ctx = AgentContext(persist=True,
-                                   events=runtime.get_context().events)
-            manager.unregister(runtime.context_id)
-            manager.register(new_ctx, role="main")
-            runtime.context_id = new_ctx.id  # 同一运行时换 context（数据载体）
-            print("已开始新会话！")
-            continue
-
-        if user_input.startswith(RESUME_PREFIX):
-            from qi_agent.storage import get_storage
-
-            store = get_storage()
-            arg = user_input[len(RESUME_PREFIX):].strip()
-            if not arg:
-                # 列出会话
-                sessions = store.list_sessions()
-                if not sessions:
-                    print("暂无历史会话。")
-                else:
-                    print("历史会话：")
-                    for s in sessions[:10]:
-                        print(f"  {s['id']}  {s['title'] or '(无标题)'}")
-                continue
-            # 恢复指定会话（按 id 前缀匹配）
-            sessions = store.list_sessions()
-            match = next((s for s in sessions if s["id"].startswith(arg)), None)
-            if match is None:
-                print(f"未找到会话: {arg}")
-                continue
-            loaded = store.load_session(match["id"])
-            if loaded is None:
-                print(f"会话数据为空: {arg}")
-                continue
-            # 用原 context_id 新建 context + 恢复数据
-            from qi_agent.context.context import AgentContext
-
-            new_ctx = AgentContext(persist=True, context_id=match["id"],
-                                   events=runtime.get_context().events)
-            new_ctx.messages = loaded["messages"]
-            new_ctx.turn = loaded["turn"]
-            new_ctx.usage = loaded["usage"]
-            new_ctx.system_prompt = (
-                new_ctx.messages[0]["content"] if new_ctx.messages
-                and new_ctx.messages[0]["role"] == "system" else "")
-            manager.unregister(runtime.context_id)
-            manager.register(new_ctx, role="main")
-            runtime.context_id = new_ctx.id  # 同一运行时换 context（数据载体）
-            print(f"已恢复会话 {match['id']}（{len(new_ctx.messages)} 条消息）")
-            continue
-
-        # 重要信息命令（阶段 B3 + 方案 2026-08-26）：
-        # /remember <内容> → sticky（会话内永不裁剪）+ MEMORY.md（跨会话）
         if user_input.startswith(REMEMBER_PREFIX):
             content = user_input[len(REMEMBER_PREFIX):].strip()
             if content:
+                from qi_agent.storage.memory_store import MemoryStore
+                from qi_agent.context.sticky import remember
+
                 remember(content)  # sticky（会话内）
                 try:
-                    from qi_agent.storage.memory_store import MemoryStore
-
                     MemoryStore().add_memory(content)
                 except Exception:
-                    pass  # 存储不可用 → 只留 sticky
+                    pass
                 print(f"已记住：{content}（会话内 + 跨会话）")
             else:
                 print("用法：/remember <要记住的内容>")
-            continue
+            return True
 
-        # 记忆查看命令（方案 2026-08-26）：/memory 查看跨会话记忆
-        if user_input.lower() in MEMORY_COMMANDS:
-            try:
-                from qi_agent.storage.memory_store import MemoryStore
-
-                text = MemoryStore().read_memory()
-                if text:
-                    print("=== 跨会话记忆（MEMORY.md + USER.md）===")
-                    print(text)
-                else:
-                    print("暂无记忆。用 /remember <内容> 记录。")
-            except Exception as exc:
-                print(f"[memory] 读取失败: {exc}")
-            continue
-
-        # 资源消耗命令（2026-08-21：查看当前累计，不消耗 LLM 调用）
-        if user_input.lower() in USAGE_COMMANDS:
-            _print_plugin_reports(installed_plugins)
-            continue
-
-        # 上下文构成命令（阶段 C 收尾）：/context 显示占用构成（估算分段
-        # + 真实 usage 累计——分工：估算=预测展示，真实=统计/事实窗口）
-        # 数据走 context（数据载体），不直连 agent（换执行者不受影响）
-        if user_input.lower() in CONTEXT_COMMANDS:
-            from qi_agent.context.breakdown import (
-                compute_breakdown,
-                format_breakdown,
-            )
-            from qi_agent.tools.registry import get_tool_schemas
-
-            ctx = runtime.get_context()
-            print(format_breakdown(compute_breakdown(
-                ctx.messages, get_tool_schemas())))
-            u = ctx.usage
-            print(
-                f"[用量] 累计 {u['total_tokens']} tokens"
-                f"（prompt {u['prompt_tokens']} + completion {u['completion_tokens']}）"
-            )
-            continue
-
-        # 手动压缩命令（阶段 C 收尾）：/compact 强制同步压缩当前消息
-        if user_input.lower() in COMPACT_COMMANDS:
-            from qi_agent.plugins.builtin.context_manager import (
-                ContextManagerPlugin,
-            )
-
-            cm = next(
-                (p for p in installed_plugins
-                 if isinstance(p, ContextManagerPlugin)), None)
-            if cm is None:
-                print("[compact] 上下文管理插件未启用")
+        if low in STATUS_COMMANDS:
+            ctx = self.gateway.manager.contexts.get(self.session_id or "")
+            if ctx:
+                print(f"[状态] 轮数: {ctx.turn} | 消息: {len(ctx.messages)}"
+                      f" | status: {ctx.status.value} | phase: {ctx.phase.value}")
+                u = ctx.usage
+                print(f"[usage] prompt: {u['prompt_tokens']} | "
+                      f"completion: {u['completion_tokens']} | "
+                      f"total: {u['total_tokens']}")
             else:
-                ctx = runtime.get_context()
-                before = len(ctx.messages)
-                new_msgs, summary = cm.compact_now(ctx.messages)
-                ctx.messages = new_msgs
-                print(
-                    f"[compact] 压缩完成：{before} → {len(new_msgs)} 条消息"
-                )
-                if summary:
-                    print(f"摘要：{summary[:200]}")
-                else:
-                    print("（无可压缩历史）")
-            continue
+                print("[状态] 无活动会话")
+            return True
 
-        # 子任务命令（subagent 方案 2026-08-23）：/delegate <目标>
-        # 手动拉起子任务（用户主导，不走主 agent 工具循环——编排双入口之一）
         if user_input.startswith(DELEGATE_PREFIX):
+            # /delegate <目标>——拉起子 agent 并等结果（2026-08-30 修复：
+            # 原异步拉起后立即返回（结果躺父 mailbox 没人展示）——现在
+            # Gateway 同步等子完成，返回结果直接打印）
             goal = user_input[len(DELEGATE_PREFIX):].strip()
             if not goal:
-                print(
-                    "用法：/delegate <子任务目标>\n"
-                    "示例：/delegate 调研 docs/ 目录下所有方案文档的核心决策"
-                )
+                print("用法：/delegate <任务目标>")
+                return True
+            print(f"[delegate] 正在执行子任务：{goal}（请稍候...）")
+            result = self.gateway._delegate(self.session_id or "", goal)
+            r = result.get("result") or {}
+            print(f"[delegate] 子任务 {result['session_id']} 完成：")
+            if isinstance(r, dict):
+                summary = r.get("summary", "")
+                if summary:
+                    print(f"  {summary[:2000]}")
+                if r.get("error"):
+                    print(f"  [错误] {r['error']}")
             else:
-                from qi_agent.tools.builtin.delegate_task import delegate_task
+                print(f"  {str(r)[:2000]}")
+            return True
 
-                print(f"[delegate] 子任务启动：{goal[:80]}")
-                ctx = runtime.get_context()
-                output = delegate_task(
-                    goal=goal,
-                    context=(
-                        "主对话上下文：当前项目 qi-agent（Python agent 框架）。"
-                        f"最近用户输入：{ctx.messages[-1].get('content', '')[:200]}"
-                        if ctx.messages else "主对话上下文：当前项目 qi-agent。"
-                    ),
-                )
-                try:
-                    import json
+        if low in CONTEXT_COMMANDS:
+            ctx = self.gateway.manager.contexts.get(self.session_id or "")
+            if ctx:
+                print(f"[上下文构成] 消息数: {len(ctx.messages)} | "
+                      f"轮数: {ctx.turn} | 状态: {ctx.status.value} | "
+                      f"阶段: {ctx.phase.value}")
+                for m in ctx.messages[-5:]:
+                    print(f"  {m.get('role')}: {str(m.get('content'))[:60]}")
+            else:
+                print("[上下文] 无活动会话")
+            return True
 
-                    data = json.loads(output)
-                    print(f"[delegate] 状态：{data.get('status')}")
-                    if data.get("summary"):
-                        print(f"总结：{data['summary']}")
-                    if data.get("artifacts"):
-                        print(f"产出：{', '.join(data['artifacts'])}")
-                    if data.get("error"):
-                        print(f"错误：{data['error']}")
-                    if data.get("question"):
-                        print(f"询问：{data['question']}")
-                except (json.JSONDecodeError, ValueError):
-                    print(output)
-            continue
+        if low in COMPACT_COMMANDS:
+            # /compact——手动压缩（2026-08-30 补全：走 compressor 摘要压缩）
+            ctx = self.gateway.manager.contexts.get(self.session_id or "")
+            if ctx:
+                from qi_agent.context.compressor import compress_messages
+                summary = compress_messages(ctx.messages)
+                print(f"[compact] 压缩完成（摘要已生成：{summary[:60]}...）")
+            else:
+                print("[compact] 无活动会话")
+            return True
 
-        # 状态命令（方案 2026-08-24-AgentManager统一控制台）：/status
-        # 显示两级状态机（会话级 status + 循环级 phase）+ usage/turn/消息数
-        if user_input.lower() in STATUS_COMMANDS:
-            status = manager.poll(runtime.context_id)
-            ctx = runtime.get_context()
-            phase = ctx.phase.value
-            u = ctx.usage
-            print(
-                f"[状态] 会话级: {status.value} | 循环级: {phase}\n"
-                f"[状态] 轮数: {ctx.turn} | 消息: {len(ctx.messages)}\n"
-                f"[用量] 累计 {u['total_tokens']} tokens"
-                f"（prompt {u['prompt_tokens']} + completion {u['completion_tokens']}）"
-            )
-            continue
+        if low in MEMORY_COMMANDS:
+            from qi_agent.storage.memory_store import MemoryStore
+            text = MemoryStore().read_memory()
+            if text:
+                print("=== 跨会话记忆（MEMORY.md + USER.md）===")
+                print(text)
+            else:
+                print("暂无记忆。用 /remember <内容> 记录。")
+            return True
 
-        # 终止命令（方案 2026-08-24-AgentManager统一控制台）：/stop
-        # 中断当前长任务（下轮生效——chat 阻塞在 LLM 调用时 v2 升级实时中断）
-        if user_input.lower() in STOP_COMMANDS:
-            stopped = manager.stop(runtime.context_id)
-            print("[stop] 已请求中断当前任务（下轮生效）" if stopped
-                  else "[stop] 主 agent 不在控制台")
-            continue
+        if low in STOP_COMMANDS:
+            try:
+                result = self.gateway._stop_session(self.session_id or "")
+                print("[stop] 已请求中断当前任务" if result.get("stopped")
+                      else "[stop] 无活动任务")
+            except Exception as exc:
+                print(f"[stop] {exc}")
+            return True
 
+        if user_input.startswith(RESUME_PREFIX):
+            self._resume(user_input)
+            return True
+
+        if low in NEW_COMMANDS:
+            self._new_session()
+            return True
+
+        if low in MEMORY_COMMANDS:
+            from qi_agent.storage.memory_store import MemoryStore
+
+            text = MemoryStore().read_memory()
+            if text:
+                print("=== 跨会话记忆（MEMORY.md + USER.md）===")
+                print(text)
+            else:
+                print("暂无记忆。用 /remember <内容> 记录。")
+            return True
+
+        return False  # 不是命令 → 当对话消息
+
+    def _new_session(self) -> None:
+        result = self.gateway._create_session()
+        self.session_id = result["session_id"]
+        print(f"（新会话 {self.session_id}）")
+
+    def _resume(self, user_input: str) -> None:
+        from qi_agent.storage import get_storage
+
+        store = get_storage()
+        arg = user_input[len(RESUME_PREFIX):].strip()
+        if not arg:
+            sessions = store.list_sessions()
+            if not sessions:
+                print("暂无历史会话。")
+            else:
+                print("历史会话：")
+                for s in sessions[:10]:
+                    print(f"  {s['id']}  {s['title'] or '(无标题)'}")
+            return
+        sessions = store.list_sessions()
+        match = next((s for s in sessions if s["id"].startswith(arg)), None)
+        if match is None:
+            print(f"未找到会话: {arg}")
+            return
+        result = self.gateway._resume_session(match["id"])
+        self.session_id = result["session_id"]
+        print(f"已恢复会话 {result['session_id']}"
+              f"（{result['messages']} 条消息）")
+
+    # ── 主循环 ───────────────────────────────────────────────────────────
+    def run(self, debug: bool = False) -> None:
+        """REPL 主循环（读 stdin → 调 Gateway → 渲染）。"""
+        # 启动提示 + 历史会话提示（命令统一 / 前缀——2026-08-29）
+        print("欢迎使用 qi-agent！（输入 /help 查看命令，/exit 退出，"
+              "/clear 清理上下文。）")
         try:
-            # 流式前缀处理：
-            # - 普通模式：打印 "agent> " 前缀，流式内容紧跟（打字机效果）
-            # - --debug 模式：不打印前缀——日志插件已展示完整链路
-            #   （[USER]→[RESP]），流式文本单独一行输出，避免前缀粘连
-            if not args.debug:
-                print("agent> ", end="", flush=True)
-            # 执行权归还 Manager（方案 2026-08-24）：CLI 只调 manager.run，
-            # 不持有 agent——执行者由 manager 内部经 pool 即用即弃
-            # 注：用 runtime.context_id（resume/new 会更新它——防旧 id）
-            reply = manager.run(
-                runtime.context_id,
-                user_input,
-                # 流式回调：逐块打印（flush=True 强制立即输出，否则被缓冲）
-                stream_callback=lambda delta: print(delta, end="", flush=True),
-            )
-            print()  # 流式结束后换行（打字机效果完整）
-            _ = reply  # 完整文本已在流式中显示，无需重复打印
-        except KeyboardInterrupt:
-            # Ctrl+C 在等待 API 响应时按下：优雅退出（KeyboardInterrupt
-            # 继承 BaseException，不会被 except Exception 捕获，需单独处理）
-            print("\n[已中断] 再见！")
-            break
-        except Exception as exc:  # API 失败不崩溃，继续对话
-            print(f"[错误] 调用失败: {exc}")
+            from qi_agent.storage import get_storage
 
-    # 会话结束（while break 后）：打印所有带 report() 的插件汇总
-    # （约定：观测类插件提供 report() 方法；与 usage 命令共用 _print_plugin_reports）
-    _print_plugin_reports(installed_plugins)
+            prev = get_storage().list_sessions()
+            if prev:
+                print(f"（发现 {len(prev)} 个历史会话，输入 /resume 可恢复）")
+        except Exception:
+            pass
+        # 新建会话
+        self._new_session()
+
+        while True:
+            try:
+                user_input = input("你> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n再见！")
+                break
+            if not user_input:
+                continue
+
+            # 命令处理（先于对话消息）
+            if self._handle_command(user_input):
+                if user_input.lower() in EXIT_COMMANDS:
+                    break
+                continue
+
+            # 对话消息 → Gateway
+            try:
+                if not debug:
+                    print("agent> ", end="", flush=True)
+                result = self.gateway._send_message(
+                    self.session_id or "", user_input)
+                if debug:
+                    print(f"\n[回复] {result.get('reply', '')}")
+                else:
+                    print()  # 流式结束后换行
+            except Exception as exc:
+                print(f"[错误] 调用失败: {exc}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    """CLI 入口。"""
+    parser = argparse.ArgumentParser(description="qi-agent CLI")
+    parser.add_argument("--debug", action="store_true",
+                        help="调试模式（打印回复）")
+    args = parser.parse_args(argv)
+    shell = CliShell()
+    shell.run(debug=args.debug)
 
 
 if __name__ == "__main__":

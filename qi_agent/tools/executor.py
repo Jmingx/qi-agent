@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from qi_agent.events import EventBus
 from qi_agent.llm import ToolCall
+from qi_agent.logging_setup import get_run_logger
 from qi_agent.tools.decision import ToolAction, ToolDecision
 from qi_agent.tools.registry import execute_tool
 
@@ -142,6 +143,12 @@ class ToolExecutor:
                     turn=turn,
                     step=step,
                 )
+                # run.log 工具调用日志（2026-08-30：执行流审计——
+                # 工具名 + 参数 + context_id（归属 agent——定位用））
+                ctx_id = getattr(self.events, "context_id", "") or "?"
+                get_run_logger().info(
+                    "tool-start context=%s name=%s args=%s turn=%d step=%d",
+                    ctx_id, call.name, call.arguments, turn, step)
             with ThreadPoolExecutor(max_workers=_MAX_PARALLEL_TOOLS) as pool:
                 futures = {
                     cid: pool.submit(_execute_with_timing, call.name, call.arguments)
@@ -188,5 +195,13 @@ class ToolExecutor:
                 output=output,
                 duration=duration,
             )
+            # run.log 工具结果日志（2026-08-30：结果摘要 + 耗时 + 状态
+            # + context_id——归属 agent 定位）
+            status = "blocked" if decision is not None else "ok"
+            ctx_id = getattr(self.events, "context_id", "") or "?"
+            get_run_logger().info(
+                "tool-result context=%s name=%s status=%s duration=%.0fms out=%s",
+                ctx_id, call.name, status, duration * 1000,
+                str(output)[:80])
             results[call.id] = (output, duration)
         return results

@@ -103,7 +103,7 @@ def test_steer_during_run() -> None:
         target=lambda: result_box.update(r=mgr.run(ctx.id, "任务")))
     t.start()
     time.sleep(0.2)
-    ctx.steer("改变方向")  # 并发 steer
+    mgr.steer(ctx.id, "改变方向")  # 并发 steer（唯一入口=manager）
     t.join(timeout=10)
 
     assert "r" in result_box  # run 正常完成（steer 排队不阻塞）

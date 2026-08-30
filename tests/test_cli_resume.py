@@ -41,19 +41,25 @@ def _run_cli(inputs: list[str], plugins: list | None = None) -> None:
 
     with mock.patch("builtins.input",
                     side_effect=lambda prompt="": next(inputs_iter)), \
-            mock.patch("qi_agent.cli.build_runtime", return_value=type(
-                "B", (), {
+            mock.patch("qi_agent.cli.Gateway", return_value=type(
+                "G", (), {
                     "manager": type("M", (), {
                         "get_context": lambda self, cid: agent.context,
                         "run": lambda self, cid, text, stream_callback=None:
                             agent.chat(text),
-                        "poll": lambda self, cid: None,
+                        "contexts": {},
                         "stop": lambda self, cid: True,
                         "register": lambda self, ctx, role="main": ctx.id,
                         "unregister": lambda self, cid: None,
                     })(),
-                    "context_id": "ctx_main", "installed": plugins or [],
-                    "get_context": lambda self: agent.context,
+                    "session_id": "ctx_main",
+                    "shell_callback": None,
+                    "_create_session": lambda self, goal="": {"session_id": "ctx_main"},
+                    "_send_message": lambda self, sid, text: {"reply": agent.chat(text)},
+                    "_stop_session": lambda self, sid: {"stopped": True},
+                    "_resume_session": lambda self, sid: {
+                        "session_id": sid, "messages": 3, "turn": 1},
+                    "_respond_approval": lambda self, sid, aid, dec: {"ok": True},
                 })()), \
             mock.patch("qi_agent.storage.get_storage", return_value=fake_store):
         main(argv=[])
@@ -61,22 +67,22 @@ def _run_cli(inputs: list[str], plugins: list | None = None) -> None:
 
 def test_resume_lists_sessions() -> None:
     """/resume 无参 → 列出历史会话。"""
-    _run_cli(["/resume", "exit"])  # 不崩溃即可（list 被 mock）
+    _run_cli(["/resume", "/exit"])  # 不崩溃即可（list 被 mock）
 
 
 def test_new_starts_fresh() -> None:
     """/new → 开新会话（不崩溃 + 正常继续）。"""
-    _run_cli(["/new", "你好", "exit"])
+    _run_cli(["/new", "你好", "/exit"])
 
 
 def test_resume_loads_session() -> None:
     """/resume <id> → 恢复指定会话（不崩溃）。"""
-    _run_cli(["/resume ctx_old", "exit"])
+    _run_cli(["/resume ctx_old", "/exit"])
 
 
 def test_resume_not_found() -> None:
     """/resume 不存在 → 提示未找到（不崩溃）。"""
-    _run_cli(["/resume nope", "exit"])
+    _run_cli(["/resume nope", "/exit"])
 
 
 def test_remember_command_writes_memory() -> None:
@@ -92,7 +98,7 @@ def test_remember_command_writes_memory() -> None:
     orig_dir = ms._DEFAULT_DIR
     ms._DEFAULT_DIR = tmp
     try:
-        _run_cli(["/remember 用户叫王五", "exit"])
+        _run_cli(["/remember 用户叫王五", "/exit"])
         # sticky（会话内）
         assert "用户叫王五" in get_sticky_text()
         # MEMORY.md（跨会话）

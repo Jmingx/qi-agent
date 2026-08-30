@@ -17,12 +17,14 @@ AgentManager（= SubagentManager 构建升级）：
 """
 
 import threading
-import uuid
 
 from typing import Any, Callable
 
+from qi_agent.agents.mailbox import Dispatcher, Message, MessageType
 from qi_agent.agents.pool import AgentPool
-from qi_agent.context.context import AgentContext, ContextStatus
+from qi_agent.context.context import AgentContext, ContextStatus, WaitOutcome
+from qi_agent.util import generate_id
+from qi_agent.logging_setup import get_run_logger
 from qi_agent.storage.base import Storage
 # 注意：不模块级 import SubagentContext——subagent.py 又 import 本模块
 # （SubagentManager 继承 AgentManager）→ 循环导入。SubagentContext 在
@@ -44,6 +46,12 @@ class AgentManager:
         # 真正生效——此前只是存着没用）。subagent 执行者仍由 _run_subagent
         # 特殊装配（工具子集/授权清单），pool 只提供并发额度。
         self.pool = AgentPool(max_workers=max_concurrent)
+        # 邮局（方案 2026-08-29 v3 中央队列修正）：Dispatcher 独立线程搬运。
+        # mailbox 统一挂 context（主/子一样）——Manager 不持有 main_mailbox
+        # （修正：AgentManager 只管理 context，主 agent = 主程序创建的
+        #  context，其 mailbox 随 context 注册）
+        self.dispatcher = Dispatcher()
+        self.dispatcher.start()  # 启动搬运线程（v3：中央队列异步投递）
 
     # ── 注册（主/子 agent 通用）──────────────────────────────────────────
     def register(self, context: AgentContext, role: str = "subagent") -> str:
@@ -56,6 +64,9 @@ class AgentManager:
         """
         with self._lock:
             self.contexts[context.id] = context
+        # 邮局（v3 修正）：mailbox 是 AgentContext 必备属性（构造即创建）——
+        # register 统一注册路由（主/子一样，Manager 不特设）
+        self.dispatcher.register(context.mailbox)
         context.events.emit("agent-manager/register",
                             context_id=context.id, role=role)
         return context.id
@@ -63,7 +74,10 @@ class AgentManager:
     def unregister(self, context_id: str) -> None:
         """注销（任务结束清理）。"""
         with self._lock:
-            self.contexts.pop(context_id, None)
+            context = self.contexts.pop(context_id, None)
+        # 邮局：注销路由（mailbox 解绑防误发）
+        if context is not None:
+            self.dispatcher.unregister(context_id)
 
     def get_context(self, context_id: str) -> AgentContext | None:
         """按 id 取数据载体（CLI/调用方数据访问的唯一入口）。
@@ -79,6 +93,7 @@ class AgentManager:
         self,
         goal: str,
         context: str = "",
+        parent_id: str = "",
         client_factory: Callable | None = None,
         timeout: float = 120.0,
         max_turns: int = 8,
@@ -93,6 +108,8 @@ class AgentManager:
         Args:
             goal: 任务目标
             context: 父提炼的背景
+            parent_id: 父 context id（结果回传目标——v3 修正：
+                不用魔法 "main"，投回父 context 的 mailbox）
             client_factory: 子 agent 的 LLM 客户端工厂（测试注入；生产默认）
             timeout: 超时秒数（超时 → FAILED）
             max_turns: 子 agent 最大对话轮数（预算兜底）
@@ -100,13 +117,25 @@ class AgentManager:
             tools: 子 agent 工具白名单（None = 默认只读子集）
             write_paths: 可写路径白名单（授权清单）
         """
-        session_id = uuid.uuid4().hex[:12]
-        from qi_agent.agents.subagent import SubagentContext  # 延迟 import（防循环）
+        session_id = generate_id("agt")
+        # 收敛（方案 2026-08-29-Subagent类型收敛）：不再建 SubagentContext——
+        # 直接用 AgentContext + 设子专属字段（write_paths/timeout）+ 
+        # system_prompt（context_text 消除——背景直接算成 system_prompt）
+        from qi_agent.context.context import AgentContext
+        from qi_agent.tools.builtin.delegate_task import _SUBAGENT_PROMPT
 
-        ctx = SubagentContext(session_id, goal, context, timeout, max_turns,
-                              write_paths=write_paths)
-        with self._lock:
-            self.contexts[session_id] = ctx
+        ctx = AgentContext(context_id=session_id, goal=goal,
+                           persist=False,  # 子 agent 默认瞬态
+                           max_turns=max_turns)
+        # ── 子 agent 专属配置（归拢字段——AgentContext 默认空）──
+        ctx.write_paths = write_paths or []   # 授权清单
+        ctx.timeout = timeout                 # 子任务超时
+        ctx.system_prompt = _SUBAGENT_PROMPT.format(
+            goal=goal, context=context)       # 背景注入 system prompt
+        ctx.parent_id = parent_id
+        ctx.begin_chat()  # spawn 语义 = 立即运行（创建即 RUNNING）
+        # 统一注册（v3 修正）：走 register()——dict + 邮局路由 + 事件上报
+        self.register(ctx, role="subagent")
 
         thread = threading.Thread(
             target=self._run, args=(ctx,),
@@ -130,7 +159,18 @@ class AgentManager:
         """
         from qi_agent.tools.builtin.delegate_task import _run_subagent
 
-        self.pool.acquire(None)  # 并发额度（等待直到有位置）
+        # 并发额度（等待最多 60s——2026-08-30：避免无限阻塞挂死）
+        # 超时未获得额度 → 通知父（NOTIFY pool_timeout——父感知排队超时）
+        parent_id = getattr(context, "parent_id", "") or "main"
+        if self.pool.acquire(None, timeout=60) is None:
+            context.fail("并发额度等待超时（>60s）")
+            get_run_logger().warning(
+                "pool-timeout context=%s parent=%s", context.id, parent_id)
+            self.dispatcher.send(Message(
+                sender=context.id, target=parent_id, type=MessageType.NOTIFY,
+                data={"event": "pool_timeout", "context_id": context.id,
+                      "reason": "concurrency_slot_timeout"}))
+            return
         try:
             result = _run_subagent(context, kwargs.get("client_factory"),
                                    kwargs.get("tool_executor_factory"),
@@ -138,23 +178,59 @@ class AgentManager:
                                    kwargs.get("write_paths"))
             if context.status == ContextStatus.RUNNING:
                 context.complete(result)
+            # 日志（run.log——子任务完成）
+            get_run_logger().info(
+                "subagent-complete context=%s parent=%s status=%s",
+                context.id, parent_id,
+                (result or {}).get("status", "completed"))
+            # 邮局结果回传（v3 修正）：subagent 完成 → 投回【父 context】
+            # 的 mailbox（不用魔法 "main"——parent_id 寻址）
+            self.dispatcher.send(Message(
+                sender=context.id, target=parent_id, type=MessageType.RESULT,
+                data=result))
         except Exception as exc:
             if context.status == ContextStatus.RUNNING:
                 context.fail(f"子任务执行异常: {exc}")
+            # 日志（run.log——子任务异常）
+            get_run_logger().error(
+                "subagent-error context=%s parent=%s error=%s",
+                context.id, parent_id, exc)
+            # 失败通知（v3 补充 2026-08-29）：意外崩溃也投 message 给父——
+            # 失败通知统一（常规失败走 RESULT.data.status=="failed"，
+            # 意外崩溃走这里——父 agent 都能收到，不依赖 poll）
+            self.dispatcher.send(Message(
+                sender=context.id, target=parent_id, type=MessageType.RESULT,
+                data={"summary": "", "artifacts": [],
+                      "status": "failed", "error": f"子任务执行异常: {exc}",
+                      "question": None, "usage": None}))
         finally:
             self.pool.release(None)  # 回收额度（异常也不泄漏）
 
     # ── 控制面（任何控制者：父 agent / 用户 / CLI）───────────────────────
-    def steer(self, context_id: str, message: str) -> bool:
+    def steer(self, context_id: str, message: str,
+              sender_id: str = "unknown") -> bool:
         """注入补充指令（agent 下轮生效）。返回是否找到运行环境。
 
         不要求 RUNNING——IDLE 也能排队（用户先说"改方向"，agent 启动后
         下轮生效）。指令只是入队，运行中才消费。
+
+        语义（2026-08-29 用户拍板）：调用者（外部/父 agent）发送邮件——
+          sender = 调用者自己的 context_id（sender_id——谁调填谁）
+          target = 需要做出改变的 agent（入参 context_id）
+        → 消息构造在 manager 一处完成（context.steer 已删——不绕）。
+
+        sender_id 默认 "unknown"（外部用户调用——无 context 身份）。
         """
         context = self.contexts.get(context_id)
         if context is None:
             return False
-        context.steer(message)  # 统一 Context 控制面
+        self.dispatcher.send(Message(
+            sender=sender_id,      # 调用者身份（谁调填谁的 context_id）
+            target=context_id,     # 入参即 target（需要改变的 agent）
+            type=MessageType.STEER,
+            data=message))
+        context.events.emit("subagent/steer",
+                            session_id=context_id, message=message)
         return True
 
     def stop(self, context_id: str) -> bool:
@@ -169,6 +245,32 @@ class AgentManager:
         """查询状态（探活）。"""
         context = self.contexts.get(context_id)
         return context.poll() if context else None
+
+    # ── 邮局对话投递（方案 2026-08-29 v2 验收 4）─────────────────────────
+    def send_message(self, context_id: str, text: str,
+                     sender_id: str = "") -> bool:
+        """对话投递：父 agent → subagent（持续追加消息——多轮指导）。
+
+        父 agent 可持续给 subagent 发对话（不再 spawn 一次性传参）；
+        子循环每轮 drain 消费 → 追加 context.messages（存储分离）。
+
+        Args:
+            context_id: 目标子 agent（context id——2026-08-30 命名修正：
+                项目无 session 概念，context 就是会话载体，统一 context_id）
+            text: 对话内容
+            sender_id: 发送方 context id（v3 修正——不用魔法 "main"；
+                空 = 兼容旧调用（投递方未知））
+
+        Returns:
+            是否投递成功（context 不存在/无邮箱 → False）
+        """
+        context = self.contexts.get(context_id)
+        if context is None or getattr(context, "mailbox", None) is None:
+            return False
+        self.dispatcher.send(Message(
+            sender=sender_id or "main", target=context_id,
+            type=MessageType.MESSAGE, data=text))
+        return True
 
     # ── 执行入口（方案 2026-08-24-执行权归还Manager）────────────────────
     def run(self, context_id: str, user_input: str,
@@ -197,6 +299,10 @@ class AgentManager:
         context = self.contexts.get(context_id)
         if context is None:
             raise KeyError(f"context 不存在: {context_id}")
+        # 日志（run.log——run 入口审计；完整打印 input——不省略）
+        get_run_logger().info(
+            "run-start context=%s turn=%d input=%s",
+            context_id, context.turn, user_input)
         # 并发防护（2026-08-28 教训：审批弹窗时用户输入被主线程抢走 →
         # 同 context 并发 run → 消息交错 + 400 + 'value' KeyError）
         # 同一 context 已有任务在跑 → 拒绝（不并发写同一数据载体）
@@ -227,7 +333,7 @@ class AgentManager:
 
         # 主线程双事件等待：stop → 实时中断；done → 正常取结果
         outcome = context.wait_stop_or_done()
-        if outcome == "stopped":
+        if outcome == WaitOutcome.STOPPED:
             self.pool.release(agent)  # 旧 agent 丢弃（线程自然回收）
             self._persist(context)
             return "已按指令中断当前任务。"

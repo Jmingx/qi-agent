@@ -45,21 +45,27 @@ def test_snapshot_while_appending() -> None:
 
 
 def test_steer_queue_race() -> None:
-    """steer 并发 append + 消费（drain）——复合操作竞争。"""
+    """steer 并发投递 + 消费（drain）——零丢失（方案 2026-08-29 验收 1）。
+
+    v3（2026-08-29）：steer 走 mailbox（STEER 消息）——put/get 原子。
+    唯一入口 = manager.steer（2026-08-29 收敛）。验证生成=消费（零丢失）。
+    """
+    from qi_agent.agents.agent_manager import AgentManager
+
+    mgr = AgentManager()
     ctx = AgentContext()
+    mgr.register(ctx, role="main")
     n_threads = 10
     per_thread = 100
-    consumed = []
+    consumed: list[str] = []
 
     def stepper():
         for i in range(per_thread):
-            ctx.steer_queue.append(f"s{i}")
+            mgr.steer(ctx.id, f"s{i}")
 
     def drainer():
         for _ in range(50):
-            if ctx.steer_queue:
-                # 复合：检查 + 弹出（可能交错）
-                consumed.append(ctx.steer_queue.pop(0))
+            consumed.extend(ctx.drain_steer())  # 取空（原子）
 
     threads = [threading.Thread(target=stepper) for _ in range(n_threads)]
     d = threading.Thread(target=drainer)
@@ -68,10 +74,14 @@ def test_steer_queue_race() -> None:
         t.start()
     for t in threads:
         t.join()
+    # 生产者结束后清尾（drain 可能错过最后一批 + Dispatcher 异步搬运）
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        consumed.extend(ctx.drain_steer())
+        if len(consumed) >= n_threads * per_thread:
+            break
+        time.sleep(0.01)
 
     total = n_threads * per_thread
-    remaining = len(ctx.steer_queue)
-    print(f"steer: 生成{total} 消费{len(consumed)} 剩余{remaining} "
-          f"总={len(consumed) + remaining}")
-    # pop(0) 是 O(n) 且可能 IndexError（两个 drainer 竞争）——这里单 drainer
-    assert len(consumed) + remaining == total, "steer 队列元素丢失"
+    print(f"steer: 生成{total} 消费{len(consumed)}")
+    assert len(consumed) == total, "steer 指令丢失（queue.Queue 应零丢失）"

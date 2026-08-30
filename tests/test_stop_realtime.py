@@ -9,7 +9,7 @@ import time
 
 
 from qi_agent.agents.agent_manager import AgentManager
-from qi_agent.context.context import AgentContext
+from qi_agent.context.context import AgentContext, WaitOutcome
 
 
 class _SlowClient:
@@ -59,7 +59,7 @@ def test_wait_returns_done_on_complete() -> None:
     ctx = AgentContext()
     ctx.begin_chat()
     ctx.complete_chat()
-    assert ctx.wait_stop_or_done(timeout=0.5) == "done"
+    assert ctx.wait_stop_or_done(timeout=0.5) == WaitOutcome.DONE
 
 
 def test_wait_returns_stopped_on_stop() -> None:
@@ -67,14 +67,14 @@ def test_wait_returns_stopped_on_stop() -> None:
     ctx = AgentContext()
     ctx.begin_chat()
     ctx.stop()  # stop 内部 set _done——wait 立即返回
-    assert ctx.wait_stop_or_done(timeout=0.5) == "stopped"
+    assert ctx.wait_stop_or_done(timeout=0.5) == WaitOutcome.STOPPED
 
 
 def test_wait_returns_timeout() -> None:
     """既没完成也没 stop → 超时返回 timeout。"""
     ctx = AgentContext()
     ctx.begin_chat()
-    assert ctx.wait_stop_or_done(timeout=0.1) == "timeout"
+    assert ctx.wait_stop_or_done(timeout=0.1) == WaitOutcome.TIMEOUT
 
 
 # ── Phase A-2: manager.run 实时中断 + pool 替换 ──────────────────────────

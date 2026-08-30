@@ -23,23 +23,11 @@
 """
 
 import threading
-import uuid
 
-from datetime import datetime
 from enum import Enum
 
 from qi_agent.events import EventBus
-
-
-def generate_id(prefix: str) -> str:
-    """生成可读 ID：<前缀>_<YYYYMMDD_HHMMSS>_<6位随机>。
-
-    时间戳后缀（用户拍板 2026-08-27）：一眼看出创建时间/事件顺序；
-    随机位防同秒冲突。用于 ctx_（数据载体）/ agt_（执行者）。
-    """
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    rand = uuid.uuid4().hex[:6]
-    return f"{prefix}_{ts}_{rand}"
+from qi_agent.util import generate_id  # noqa: F401  统一 ID（util 收口）
 
 
 class ContextStatus(str, Enum):
@@ -73,6 +61,19 @@ class ChatPhase(str, Enum):
     DONE = "done"               # 本次 chat 结束
 
 
+class WaitOutcome(Enum):
+    """wait_stop_or_done 的结果（2026-08-30：枚举化——替代字符串魔法值）。
+
+    STOPPED: stop 信号优先（即使 done 也 set）
+    DONE:    chat 正常完成
+    TIMEOUT: 等待超时
+    """
+
+    STOPPED = "stopped"
+    DONE = "done"
+    TIMEOUT = "timeout"
+
+
 class AgentContext:
     """统一运行环境：数据载体（消息/轮数/用量）+ 状态机 + 控制面。"""
 
@@ -94,7 +95,18 @@ class AgentContext:
         self.parent = parent
         self.persist = persist
         self.max_turns = max_turns
-        self.events = events or EventBus()
+        self.events = events or EventBus(context_id=self.id)
+        # 2026-08-30 修复：传入的 events 也要绑定 context_id（否则 on/emit
+        # 日志 context= 空——无法定位）。make_agent 创建 EventBus() 后传入
+        # AgentContext——这里补绑。
+        if events is not None and not self.events.context_id:
+            self.events.context_id = self.id
+        # 邮局（v3 修正 2026-08-29）：mailbox 是【必备】能力——所有
+        # agent（主/子/未来 team 成员）都要通信（A2A/结果回传/对话投递）。
+        # 构造即创建（owner=context.id）——register 时统一注册路由。
+        from qi_agent.agents.mailbox import AgentMailbox  # 延迟（防循环）
+
+        self.mailbox = AgentMailbox(self.id)
         # system_prompt（数据载体的一部分——system 消息初始化属于数据初始化，
         # 2026-08-24 用户拍板：clear/reset 挪到 context，重建 system 需要它）
         self.system_prompt = ""
@@ -105,6 +117,12 @@ class AgentContext:
         self.usage: dict[str, int] = {
             "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
         }
+        # ── 子 agent 专属配置（spawn 时设置；主 agent 不用——默认值空）──
+        # （方案 2026-08-29-Subagent类型收敛：SubagentContext 合并进
+        #   AgentContext——子专属字段归拢放一块；context_text 消除，
+        #   背景直接算成 system_prompt）
+        self.write_paths: list[str] = []   # 授权清单（子只写这些前缀路径）
+        self.timeout: float = 120.0        # 子任务超时（超时 → FAILED）
 
         # 主动记忆（方案 2026-08-26-主动记忆系统）：每 N 轮触发提炼
         self.memory_extract_interval = 10  # 提炼间隔（用户拍板：至少每 10 轮）
@@ -117,15 +135,14 @@ class AgentContext:
         self.error: str | None = None
 
         # 控制面（任何控制者都能用：父 agent / 用户 / CLI）
-        self.steer_queue: list[str] = []  # 注入的补充指令（下轮消费）
+        # v3 修正（2026-08-29）：steer 走 mailbox（MessageType.STEER——
+        # 统一邮局通道）；stop 保持 Event 信号（立即生效——信号语义）
         self._stop_flag = threading.Event()
         self._done = threading.Event()
 
     # ── 控制面（控制者侧调用）────────────────────────────────────────────
-    def steer(self, message: str) -> None:
-        """注入补充指令（agent 下轮生效）。"""
-        self.steer_queue.append(message)
-        self.events.emit("subagent/steer", session_id=self.id, message=message)
+    # steer 已收敛到 manager（2026-08-29 用户拍板：manager.steer 直接构造
+    # 发送——入参即 target；context 不再有同名方法——不绕）。stop 保留。
 
     def stop(self) -> None:
         """强制终止（agent 下轮检查标志退出）。"""
@@ -153,31 +170,80 @@ class AgentContext:
 
     # ── agent 侧调用（循环内每轮检查）────────────────────────────────────
     def drain_steer(self) -> list[str]:
-        """取走待处理的补充指令（每轮检查——下轮生效）。"""
-        msgs = list(self.steer_queue)
-        self.steer_queue.clear()
-        return msgs
+        """取走待处理的补充指令（每轮检查——下轮生效）。
+
+        v3 修正：从 mailbox 读 STEER 消息（收敛到邮局统一通道——
+        控制指令 = 消息，对齐 A2A）。drain_by_type 只取 STEER
+        （2026-08-30 修复：不连带清掉其他类型——互不清空）。
+        """
+        from qi_agent.agents.mailbox import MessageType
+
+        return [m.data for m in self.mailbox.drain_by_type(MessageType.STEER)]
+
+    def drain_messages(self) -> list[str]:
+        """取走对话投递（mailbox 中 type="message" 的消息内容）。
+
+        通用能力（v3 修正 2026-08-29——从 SubagentContext 上移）：
+        所有 agent（主/子/team 成员）都消费对话投递——未来其他 agent
+        给主 agent 发消息，主 agent 也要收。
+
+        循环每轮消费（感知时机 = 循环检查点）；追加 context.messages
+        由调用方执行——存储分离（邮箱只投递不存储）。
+        drain_by_type 只取 MESSAGE（2026-08-30 修复：互不清空）。
+        """
+        from qi_agent.agents.mailbox import MessageType
+
+        return [m.data for m in self.mailbox.drain_by_type(MessageType.MESSAGE)]
+
+    def consume_mailbox(self, messages: list, **extra) -> list:
+        """消费邮箱消息并注入 messages（2026-08-30：消费逻辑收敛到 context）。
+
+        数据层能力（与 drain 系列一致——context 持有 mailbox）：
+          drain_messages（对话投递）→ [消息投递] 前缀
+          drain_steer（控制指令）→ [引导] 前缀
+
+        防连续 user（2026-08-30 修复）：多条消息【合并成一条 user】——
+        相邻追加多条 user 可能触发 LLM 400（role 必须交替）。
+
+        **extra 忽略（2026-08-30：签名兼容 pre-step 事件 handler——
+        Agent 构造时直接挂本方法，无需薄桥）。
+
+        Returns:
+            增强后的 messages（追加一条合并 user——无消息则原样）
+        """
+        from qi_agent.agents.mailbox import MessageType
+
+        pieces = [f"[消息投递] {m.data}" for m in
+                  self.mailbox.drain_by_type(MessageType.MESSAGE)]
+        pieces += [f"[引导] {m.data}" for m in
+                   self.mailbox.drain_by_type(MessageType.STEER)]
+        if pieces:
+            messages = messages + [{"role": "user",
+                                    "content": " | ".join(pieces)}]
+        return messages
 
     def should_stop(self) -> bool:
         """是否被要求终止（每轮检查）。"""
         return self._stop_flag.is_set()
 
-    def wait_stop_or_done(self, timeout: float | None = None) -> str:
-        """等待"被停止"或"chat 完成"，返回结果类型（stopped/done/timeout）。
+    def wait_stop_or_done(self, timeout: float | None = None) -> WaitOutcome:
+        """等待"被停止"或"chat 完成"，返回 WaitOutcome 枚举。
 
         方案 2026-08-24-stop实时中断（Phase A）：manager.run 主线程在这里等
-        后台 LLM 线程——stop 触发立即返回"stopped"（实时中断），
-        LLM 先完成返回"done"，超时返回"timeout"。
+        后台 LLM 线程——stop 触发立即返回 STOPPED（实时中断），
+        LLM 先完成返回 DONE，超时返回 TIMEOUT。
+
+        2026-08-30：枚举化（替代字符串魔法值——状态用枚举不用字符串）。
 
         注意：stop() 内部会 set _done（释放等待者）——所以 stop 后
         _done 也 set，这里必须【先查 _stop_flag】（stop 优先）。
         """
         self._done.wait(timeout=timeout)  # 等 chat 完成（stop 也会 set）
         if self._stop_flag.is_set():
-            return "stopped"   # stop 优先（即使 done 也 set）
+            return WaitOutcome.STOPPED   # stop 优先（即使 done 也 set）
         if self._done.is_set():
-            return "done"
-        return "timeout"
+            return WaitOutcome.DONE
+        return WaitOutcome.TIMEOUT
 
     def complete(self, result: dict) -> None:
         """正常完成（状态 COMPLETED，结果带回）。"""
@@ -237,7 +303,6 @@ class AgentContext:
         self.phase = ChatPhase.IDLE
         self.result = None
         self.error = None
-        self.steer_queue.clear()
         self._stop_flag.clear()
         self._done.clear()
 

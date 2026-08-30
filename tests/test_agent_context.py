@@ -13,6 +13,18 @@ from qi_agent.context.context import (
 )
 
 
+def _wait_steer(ctx: AgentContext, n: int, timeout: float = 2.0) -> list[str]:
+    """等待异步投递（v3 Dispatcher 搬运）——轮询直到收满 n 条。"""
+    deadline = time.monotonic() + timeout
+    acc: list[str] = []
+    while time.monotonic() < deadline:
+        acc.extend(ctx.drain_steer())  # 累计（2026-08-30 修复：分批到达不丢）
+        if len(acc) >= n:
+            return acc
+        time.sleep(0.01)
+    return acc
+
+
 def test_initial_state() -> None:
     """初始状态：IDLE + 空消息 + 空用量 + 0 轮。"""
     ctx = AgentContext(persist=True)
@@ -45,11 +57,19 @@ def test_messages_data_carrier() -> None:
 
 
 def test_steer_drain_once() -> None:
-    """steer 指令 drain 后清空（每条只消费一次）。"""
+    """steer 指令 drain 后清空（每条只消费一次）——走邮局（v3）。
+
+    2026-08-29 收敛：steer 唯一入口 = manager.steer（context 不再有同名
+    方法——消息构造在 manager 一处完成）。
+    """
+    from qi_agent.agents.agent_manager import AgentManager
+
+    mgr = AgentManager()
     ctx = AgentContext()
-    ctx.steer("纠偏1")
-    ctx.steer("纠偏2")
-    assert ctx.drain_steer() == ["纠偏1", "纠偏2"]
+    mgr.register(ctx, role="main")
+    mgr.steer(ctx.id, "纠偏1")
+    mgr.steer(ctx.id, "纠偏2")
+    assert _wait_steer(ctx, 2) == ["纠偏1", "纠偏2"]
     assert ctx.drain_steer() == []  # 二次 drain 为空（已清空）
 
 
@@ -102,11 +122,18 @@ def test_wait_blocks_until_complete() -> None:
 
 
 def test_steer_emits_event() -> None:
-    """steer 发 subagent/steer 事件（审计）。"""
+    """steer 发 subagent/steer 事件（审计）——走邮局（v3）。
+
+    2026-08-29 收敛：steer 唯一入口 = manager.steer（context 无同名方法）。
+    """
+    from qi_agent.agents.agent_manager import AgentManager
+
+    mgr = AgentManager()
     ctx = AgentContext()
+    mgr.register(ctx, role="main")
     seen = []
     ctx.events.on("subagent/steer", lambda **kw: seen.append(kw))
-    ctx.steer("x")
+    mgr.steer(ctx.id, "x")
     assert len(seen) == 1
     assert seen[0]["message"] == "x"
 

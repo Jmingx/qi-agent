@@ -40,23 +40,30 @@ class AgentPool:
             return self._active
 
     def acquire(self, context: AgentContext | None = None,
-                type: str = "standard") -> Agent:
+                type: str = "standard", timeout: float | None = None) -> Agent | None:
         """取执行者（检查并发上限，超限等待）。
 
         Args:
             context: 数据载体——None = 新建子任务 context（独立隔离）；
                 传入 = 绑定该 context（主对话/复用场景）
             type: 执行者类型（透传 make_agent——可插拔）
+            timeout: 等待超时秒数（None = 无限等；超时返回 None——
+                调用方决定处理：通知/失败，不无限阻塞）
 
         Returns:
-            Agent 执行者（无状态——数据全在 context，完成即弃）
+            Agent 执行者（无状态——数据全在 context，完成即弃）；
+            超时未获得额度 → None
         """
         # 并发上限（D3：等待而非拒绝——任务会完成，拒绝要调用方重试）
+        # 2026-08-30：加 timeout——避免无限阻塞（worker 挂死，父等不到结果）
+        deadline = (time.monotonic() + timeout) if timeout is not None else None
         while True:
             with self._lock:
                 if self._active < self.max_workers:
                     self._active += 1
                     break
+            if deadline is not None and time.monotonic() >= deadline:
+                return None  # 超时未获得额度（调用方处理）
             time.sleep(0.05)  # 超限等待（轮询——简单可靠）
         try:
             if context is None:

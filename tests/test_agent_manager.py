@@ -49,12 +49,56 @@ def test_stop_unknown_id_returns_false() -> None:
 
 
 def test_steer_main_agent() -> None:
-    """steer 主 agent：指令进队列（下轮生效）。"""
+    """steer 主 agent：指令走邮局（下轮生效——等异步投递）。"""
+    import time
+
     mgr = AgentManager()
     ctx = AgentContext()
     agent_id = mgr.register(ctx, role="main")
     assert mgr.steer(agent_id, "改方向")
-    assert ctx.drain_steer() == ["改方向"]
+    # v3：steer 走 mailbox（Dispatcher 异步搬运）——等待投递
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if ctx.drain_steer() == ["改方向"]:
+            break
+        time.sleep(0.01)
+    assert ctx.drain_steer() == []  # 已消费（二次 drain 空）
+
+
+def test_steer_sender_is_current_context() -> None:
+    """steer 的 sender = 当前 context_id（调用者身份——2026-08-29 修正：
+    不是 parent（创建关系≠控制发起者），谁调填谁的 context id）。"""
+    import time
+
+    mgr = AgentManager()
+    parent = AgentContext(context_id="ctx_parent")
+    mgr.register(parent, role="main")
+    sub = mgr.spawn("目标", parent_id="ctx_parent")
+
+    # 主 context（当前）steer 子——sender 填当前 context_id
+    assert mgr.steer(sub.id, "改方向", sender_id="ctx_parent")
+    # 等消息到达（不 drain_steer——直接读 inbox 验证 sender）
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        msgs = sub.mailbox.drain()
+        if msgs:
+            break
+        time.sleep(0.01)
+    assert len(msgs) == 1
+    assert msgs[0].sender == "ctx_parent"  # 当前 context_id（调用者身份）
+    assert msgs[0].type == "steer" and msgs[0].data == "改方向"
+
+    # 默认 sender = unknown（外部/未知发起——保守不猜）
+    assert mgr.steer(sub.id, "再来")
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        msgs = sub.mailbox.drain()
+        if msgs:
+            break
+        time.sleep(0.01)
+    assert len(msgs) == 1
+    assert msgs[0].sender == "unknown"
+    assert msgs[0].data == "再来"
 
 
 def test_stop_main_agent() -> None:

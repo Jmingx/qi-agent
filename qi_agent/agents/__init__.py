@@ -4,8 +4,11 @@
   agents/ = "有哪些执行者可以用"（可插拔边界——换执行者=本包加文件）
     agent.py         Agent 执行者（无状态循环）
     agent_manager.py AgentManager 统一控制台（register/spawn/steer/stop/poll）
-    subagent.py      SubagentContext + SubagentManager（子 agent 专属）
     factory.py       build_agent + AgentBundle + PROD_SYSTEM_PROMPT（装配）
+
+注（方案 2026-08-29-Subagent类型收敛）：SubagentContext/SubagentManager
+已删除——所有 agent（主/子）统一 AgentManager + AgentContext（子专属
+字段 write_paths/timeout 归拢在 AgentContext 并加注释）。
 
 与正交基础设施的边界（不在本包）：
   context/  = 数据载体（AgentContext——执行者跑在什么数据上，session 接入点）
@@ -20,15 +23,12 @@ from qi_agent.agents.agent import Agent
 from qi_agent.agents.agent_manager import AgentManager
 from qi_agent.agents.factory import RuntimeBundle, build_runtime, make_agent
 from qi_agent.agents.pool import AgentPool
-from qi_agent.agents.subagent import SubagentContext, SubagentManager
 
 __all__ = [
     "Agent",
     "AgentManager",
     "AgentPool",
     "RuntimeBundle",
-    "SubagentContext",
-    "SubagentManager",
     "build_runtime",
     "make_agent",
 ]

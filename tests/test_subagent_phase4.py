@@ -9,7 +9,7 @@ import json
 
 
 from qi_agent.context.context import ContextStatus as SubagentContextStatus
-from qi_agent.agents.subagent import SubagentManager
+from qi_agent.agents.agent_manager import AgentManager
 
 
 class _FakeClient:
@@ -33,7 +33,7 @@ class _FakeClient:
 class TestAudit:
     def test_audit_spawn_event_recorded(self) -> None:
         """审计：spawn 事件记录（会话 id/goal/工具集）。"""
-        mgr = SubagentManager()
+        mgr = AgentManager()
 
         session = mgr.spawn(
             goal="调研", context="背景",
@@ -54,7 +54,7 @@ class TestAudit:
                 time.sleep(0.1)  # 保证会话在 steer/stop 时仍 running
                 return super().chat(messages, tools)
 
-        mgr = SubagentManager()
+        mgr = AgentManager()
         seen: list[str] = []
 
         session = mgr.spawn(

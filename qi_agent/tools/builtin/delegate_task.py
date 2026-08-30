@@ -146,16 +146,23 @@ def _run_subagent(
     from qi_agent.agents.agent import Agent
 
     client = client_factory() if client_factory else _build_client()
-    events = EventBus()
+    # 2026-08-30：总线绑定子 context_id（日志定位——on/emit context=agt_xxx）
+    # getattr 兜底：同步模式 _ContextAdapter 无 id（空——日志无 context）
+    events = EventBus(context_id=getattr(session, "id", ""))
     events.on("agent/tool-approval", _make_approval_handler(write_paths or []))
     executor = (
         tool_executor_factory(events) if tool_executor_factory
         else _build_executor(events)
     )
+    # system_prompt：manager 模式已在 ctx 算好（方案 2026-08-29 收敛——
+    # context_text 消除，spawn 时直接算）；同步模式 _ContextAdapter 没有
+    # → 回退现算（字段对齐兜底）
+    system_prompt = getattr(session, "system_prompt", "") or (
+        _SUBAGENT_PROMPT.format(goal=session.goal,
+                                context=getattr(session, "context_text", "")))
     subagent = Agent(
         client,
-        system_prompt=_SUBAGENT_PROMPT.format(goal=session.goal,
-                                              context=session.context_text),
+        system_prompt=system_prompt,
         max_turns=session.max_turns,
         events=events,
         tool_executor=executor,
@@ -164,18 +171,16 @@ def _run_subagent(
 
     # 3. 跑子任务（steer/stop 注入：子 agent 每轮检查——半双工控制面）
 
-    steer_hook = getattr(session, "drain_steer", lambda: [])
     stop_hook = getattr(session, "should_stop", lambda: False)
 
-    def _steer_watcher(messages, **extra):
-        """pre-step 瀑布钩子：消费 steer 指令 + 检查 stop（子下轮生效）。"""
+    def _stop_watcher(messages, **extra):
+        """pre-step 瀑布钩子：检查 stop（实时中断——消息注入已收敛到
+        Agent._consume_mailbox——2026-08-30 主/子统一每轮消费）。"""
         if stop_hook():
             raise _StopRequested()
-        for msg in steer_hook():
-            messages = messages + [{"role": "user", "content": f"[父补充指令] {msg}"}]
         return messages
 
-    events.on("agent/pre-step", _steer_watcher, priority=100)
+    events.on("agent/pre-step", _stop_watcher, priority=200)
 
     try:
         subagent.chat(session.goal)
