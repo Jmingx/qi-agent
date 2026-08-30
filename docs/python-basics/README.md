@@ -17,3 +17,6 @@ agent / LLM 相关的项目技术原理请归档到 `docs/principles/`。
 | 04 | 异常处理与BaseException层级（Ctrl+C中断处理） | 2026-08-14 |
 | 05 | dict的setdefault与映射惯用法（"取桶没有就建"+Java computeIfAbsent对照） | 2026-08-18 |
 | 06 | Python的接口哲学（ABC/Protocol/鸭子类型 vs Java interface） | 2026-08-19 |
+| 07 | queue.Queue线程安全队列（阻塞/非阻塞/有界背压）+ str-Enum陷阱 | 2026-08-29 |
+| 08 | 协议分层：JSON-RPC over stdio 是什么意思（应用层/传输层/为什么不用HTTP） | 2026-08-29 |
+| 09 | async/await与事件循环（单线程协作式并发、vs线程、asyncio内部、场景账） | 2026-08-29 |
