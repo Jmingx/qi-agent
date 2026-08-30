@@ -144,7 +144,7 @@ class ToolExecutor:
                     step=step,
                 )
                 # run.log 工具调用日志（2026-08-30：执行流审计——
-                # 工具名 + 参数 + context_id（归属 agent——定位用））
+                # 工具名 + 参数 + context_id（归属 agent——定位用）
                 ctx_id = getattr(self.events, "context_id", "") or "?"
                 get_run_logger().info(
                     "tool-start context=%s name=%s args=%s turn=%d step=%d",
