@@ -36,6 +36,20 @@ def format_report(results: list[dict]) -> str:
         avg_turns = sum(r["turns"] for r in results) / total
         avg_elapsed = sum(r["elapsed"] for r in results) / total
         lines.append(f"  平均轮次: {avg_turns:.1f} | 平均耗时: {avg_elapsed:.1f}s")
+    # ④ token / 成本（方案 2026-08-29 测评打分：指标采集 Phase 1）
+    total_tokens = sum(
+        (r.get("tokens") or {}).get("total_tokens", 0) for r in results)
+    total_cost = sum(r.get("cost", 0.0) for r in results)
+    lines.append(
+        f"  总 token: {total_tokens} | 总成本: ¥{total_cost:.4f}")
+    # ⑤ 质量分（Phase 2：有 score 的任务统计均分；None = 未打分不误导）
+    scored = [r["score"] for r in results if r.get("score") is not None]
+    unscored = sum(1 for r in results if r.get("score") is None)
+    if scored:
+        avg_score = sum(scored) / len(scored)
+        lines.append(f"  质量均分: {avg_score:.1f}（打分 {len(scored)}/{total}）")
+    if unscored:
+        lines.append(f"  未打分 {unscored} 个（无 rubric——存量任务默认不打分）")
     # 失败明细
     failed = [r for r in results if not r["passed"]]
     if failed:

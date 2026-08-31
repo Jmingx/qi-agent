@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import json
 import time
 
 from qi_agent.agents.factory import build_runtime
@@ -17,6 +18,96 @@ from evaluation.tasks import EvalTask, TASKS
 
 # 同时执行的评测任务数（LLM API 并发友好上限）
 _MAX_CONCURRENT = 3
+
+# 成本估算单价（¥/百万 token——DeepSeek 官方价，可配置调整）
+# v4-flash：输入 ¥1/1M（缓存命中 ¥0.02/1M，Phase 1 未采集缓存字段，
+# 缓存命中优化归缓存监控方案）；输出 ¥2/1M（占位，以官方价为准）
+COST_PER_M_INPUT = 1.0
+COST_PER_M_OUTPUT = 2.0
+
+
+def estimate_cost(usage: dict | None) -> float:
+    """估算一次评测的 API 成本（¥，粗略——不含缓存命中折扣）。"""
+    if not usage:
+        return 0.0
+    prompt = usage.get("prompt_tokens", 0)
+    completion = usage.get("completion_tokens", 0)
+    return round(
+        prompt / 1_000_000 * COST_PER_M_INPUT
+        + completion / 1_000_000 * COST_PER_M_OUTPUT,
+        4,
+    )
+
+
+# ── Phase 2：LLM-as-judge 质量打分（方案 2026-08-29）───────────────────
+JUDGE_PROMPT = """你是评测裁判。根据任务目标和评分标准，评估 agent 的执行结果。
+只根据提供的证据评分，不要脑补证据之外的内容。
+输出严格 JSON：{{"score": 0-100 整数, "reason": "一句话理由",
+"missing_points": ["缺失点1", ...]}}（missing_points 无缺失则为空数组）。
+
+任务目标: {goal}
+评分标准（rubric）: {rubric}
+最终回答: {final}
+执行历史（工具调用摘要）: {history_summary}"""
+
+
+def _default_judge_client():
+    """默认 judge 客户端（延迟 import 防循环）。"""
+    from qi_agent.agents.factory import load_api_key
+    from qi_agent.llm import LLMClient
+
+    return LLMClient(load_api_key())
+
+
+def score_task(task: EvalTask, history: list[dict],
+               failures: list[str], client=None) -> int | None:
+    """质量打分：规则不过短路（0 分）；规则过且有 rubric → judge 打分。
+
+    Args:
+        task: 任务定义
+        history: agent 消息历史
+        failures: 规则判定失败项（非空 = 规则不过）
+        client: judge LLM 客户端（测试注入；None → 默认）
+
+    Returns:
+        0-100 分数；规则不过 → 0；无 rubric → None（不打分）；
+        judge 失败 → None（标注失败，不阻塞评测）
+    """
+    if failures:
+        return 0  # 规则不过 → 短路（不进 judge——省成本）
+    if not task.expected_rubric:
+        return None  # 无 rubric → 不打分（存量任务零成本）
+    # 构造 judge 输入（只给证据：目标/rubric/最终回答/工具摘要——不透传
+    # system prompt 等内部信息）
+    final = next(
+        (m.get("content", "") for m in reversed(history)
+         if m.get("role") == "assistant" and m.get("content")),
+        "",
+    )
+    tools_used = sorted({
+        (call.get("function", {}).get("name", "")
+         if isinstance(call, dict) else getattr(call, "name", ""))
+        for m in history
+        if m.get("role") == "assistant"
+        for call in (m.get("tool_calls", []) or [])
+        if (call.get("function", {}).get("name", "")
+            if isinstance(call, dict) else getattr(call, "name", ""))
+    })
+    try:
+        judge_client = client or _default_judge_client()
+        resp = judge_client.chat([{
+            "role": "system",
+            "content": JUDGE_PROMPT.format(
+                goal=task.name, rubric=task.expected_rubric,
+                final=final[:500],  # 截断——judge 输入有界
+                history_summary=f"调用工具: {tools_used or '无'}",
+            ),
+        }])
+        data = json.loads(resp.content)
+        score = int(data.get("score", 0))
+        return max(0, min(100, score))  # 夹取 0-100（防越界输出）
+    except Exception:
+        return None  # judge 失败（解析/网络/格式）→ 不阻塞评测
 
 
 def judge(task: EvalTask, history: list[dict]) -> tuple[bool, list[str]]:
@@ -64,6 +155,12 @@ def judge(task: EvalTask, history: list[dict]) -> tuple[bool, list[str]]:
     for t in task.expected_tools:
         if t not in tools_used:
             failures.append(f"未调用工具 {t}（实际: {sorted(tools_used) or '无'}）")
+    # ①a 任一工具（2026-08-31：e1 侦察类——任一命中即满足）
+    if task.expected_tools_any and not (
+        tools_used & set(task.expected_tools_any)):
+        failures.append(
+            f"未调用任一期望工具 {task.expected_tools_any}"
+            f"（实际: {sorted(tools_used) or '无'}）")
 
     # ①b 期望未调用的工具（L3：压缩后不重做已完成工作——todo 等）
     # 支持 "tool" 整工具禁 + "tool:action" 只禁特定动作（查询放行）
@@ -170,12 +267,17 @@ def _run_task(task: EvalTask) -> dict:
             "id": task.id, "name": task.name, "category": task.category,
             "passed": False, "failures": [f"执行异常: {exc}"],
             "turns": ctx.turn, "elapsed": round(time.perf_counter() - start, 1),
+            "tokens": dict(ctx.usage), "cost": estimate_cost(ctx.usage),
         }
     passed, failures = judge(task, ctx.messages)
+    # Phase 2：质量打分（规则不过 → 0 短路；无 rubric → None）
+    score = score_task(task, ctx.messages, failures)
     return {
         "id": task.id, "name": task.name, "category": task.category,
         "passed": passed, "failures": failures,
+        "score": score,
         "turns": ctx.turn, "elapsed": round(time.perf_counter() - start, 1),
+        "tokens": dict(ctx.usage), "cost": estimate_cost(ctx.usage),
     }
 
 
@@ -192,6 +294,7 @@ async def _run_one(task: EvalTask) -> dict:
             "id": task.id, "name": task.name, "category": task.category,
             "passed": False, "failures": [f"任务超时（>{task.timeout}s）"],
             "turns": 0, "elapsed": task.timeout,
+            "tokens": {}, "cost": 0.0,
         }
 
 

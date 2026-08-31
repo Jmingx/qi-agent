@@ -52,7 +52,11 @@ def main() -> None:
         print()
         print(format_compare(prev_run_at, compare(prev, results)), flush=True)
     save_report(results)  # 覆盖为本次（即新基线）
+    from evaluation.history import save_run
+
+    run_id = save_run(results)  # 历史完整保留（方案 2026-08-29 Phase 3）
     print(f"\n报告已保存: {save_report.__globals__['REPORT_JSON']}", flush=True)
+    print(f"历史已归档: eval_runs/{run_id}_report.json", flush=True)
 
 
 if __name__ == "__main__":
