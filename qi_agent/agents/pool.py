@@ -40,7 +40,8 @@ class AgentPool:
             return self._active
 
     def acquire(self, context: AgentContext | None = None,
-                type: str = "standard", timeout: float | None = None) -> Agent | None:
+                type: str = "standard",
+                timeout: float | None = None) -> Agent | None:
         """取执行者（检查并发上限，超限等待）。
 
         Args:

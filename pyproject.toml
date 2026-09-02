@@ -9,6 +9,9 @@ description = "从零构建的类 Hermes AI Agent（练手项目）"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.40",
+    "opentelemetry-api>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0",
+    "opentelemetry-sdk>=1.44.0",
     "psutil>=7.2.2",
     "python-dotenv>=1.0",
     "restrictedpython>=8.5",
@@ -27,7 +30,7 @@ pythonpath = ["."]
 [tool.ruff]
 line-length = 100
 # 排除临时目录（用户测试脚本 tmp/，不进版本库、不参与 lint）
-extend-exclude = ["tmp"]
+extend-exclude = ["tmp", "sitecustomize.py"]
 
 [tool.ruff.lint]
 select = ["E", "F"]

@@ -313,7 +313,12 @@ class AgentManager:
         # 每次 run 是新的会话轮次——清除上次的 stop 标志（防残留中断）
         # （方案 2026-08-24-stop实时中断：stop 是一次性的，run 重新开始）
         context._stop_flag.clear()
-        agent = self.pool.acquire(context)  # 从 pool 取执行者（绑定 context）
+        agent = self.pool.acquire(context)
+        if agent is None:
+            raise RuntimeError("AgentPool 获取执行者超时")
+
+        def runner() -> str:
+            return agent.chat(user_input, stream_callback=stream_callback)
 
         # 后台线程跑整个 chat（LLM + 工具循环）——主线程可响应 stop
         result_box: dict = {}
@@ -321,8 +326,7 @@ class AgentManager:
 
         def _worker() -> None:
             try:
-                result_box["value"] = agent.chat(
-                    user_input, stream_callback=stream_callback)
+                result_box["value"] = runner()
             except Exception as exc:
                 result_box["error"] = exc
             finally:
@@ -334,13 +338,15 @@ class AgentManager:
         # 主线程双事件等待：stop → 实时中断；done → 正常取结果
         outcome = context.wait_stop_or_done()
         if outcome == WaitOutcome.STOPPED:
-            self.pool.release(agent)  # 旧 agent 丢弃（线程自然回收）
+            if agent is not None:
+                self.pool.release(agent)  # 旧 agent 丢弃（线程自然回收）
             self._persist(context)
             return "已按指令中断当前任务。"
 
         # 正常路径：等 worker 真正完成（result_box 写入）——防竞态
         done_box["event"].wait(timeout=60)
-        self.pool.release(agent)  # 即用即弃（生命周期在 pool）
+        if agent is not None:
+            self.pool.release(agent)  # 即用即弃（生命周期在 pool）
         self._persist(context)
         if "error" in result_box:
             raise result_box["error"]

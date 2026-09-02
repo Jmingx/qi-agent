@@ -39,9 +39,15 @@ def format_report(results: list[dict]) -> str:
     # ④ token / 成本（方案 2026-08-29 测评打分：指标采集 Phase 1）
     total_tokens = sum(
         (r.get("tokens") or {}).get("total_tokens", 0) for r in results)
-    total_cost = sum(r.get("cost", 0.0) for r in results)
-    lines.append(
-        f"  总 token: {total_tokens} | 总成本: ¥{total_cost:.4f}")
+    total_cost = sum(r.get("cost") or 0.0 for r in results)
+    subscription_tasks = sum(
+        1 for r in results if r.get("cost_status") == "subscription_included")
+    if subscription_tasks:
+        lines.append(
+            f"  总 token: {total_tokens} | API 成本: 不适用（订阅任务 {subscription_tasks} 个）")
+    else:
+        lines.append(
+            f"  总 token: {total_tokens} | 总成本: ¥{total_cost:.4f}")
     # ⑤ 质量分（Phase 2：有 score 的任务统计均分；None = 未打分不误导）
     scored = [r["score"] for r in results if r.get("score") is not None]
     unscored = sum(1 for r in results if r.get("score") is None)

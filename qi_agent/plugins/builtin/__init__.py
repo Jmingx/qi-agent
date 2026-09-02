@@ -14,6 +14,7 @@ from qi_agent.plugins.builtin import (  # noqa: F401  导入即注册
     debug_logger,
     env_info,
     memory,
+    telemetry_otel,
     resource_monitor,
     security_guard,
     tool_stats,

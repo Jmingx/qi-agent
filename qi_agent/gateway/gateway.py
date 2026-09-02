@@ -44,9 +44,8 @@ class Gateway:
     def __init__(
         self,
         manager: AgentManager | None = None,
-        provider: str = "deepseek",
     ) -> None:
-        self.manager = manager or AgentManager(provider=provider)
+        self.manager = manager or AgentManager()
         self.dispatcher = RpcDispatcher()
         self.shell_callback: Callable[[str], None] | None = None
         self._approval_events: dict[str, threading.Event] = {}

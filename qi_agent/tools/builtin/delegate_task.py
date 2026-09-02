@@ -148,7 +148,7 @@ def _run_subagent(
     client = client_factory() if client_factory else _build_client()
     # 2026-08-30：总线绑定子 context_id（日志定位——on/emit context=agt_xxx）
     # getattr 兜底：同步模式 _ContextAdapter 无 id（空——日志无 context）
-    events = EventBus(context_id=getattr(session, "id", ""))
+    events = getattr(session, "events", None) or EventBus(context_id=getattr(session, "id", ""))
     events.on("agent/tool-approval", _make_approval_handler(write_paths or []))
     executor = (
         tool_executor_factory(events) if tool_executor_factory

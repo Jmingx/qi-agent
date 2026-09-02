@@ -6,9 +6,12 @@ import argparse
 import asyncio
 import json
 import sys
+import weakref
 from typing import Any
 
 from qi_agent.gateway.gateway import Gateway
+from qi_agent.plugins import load_plugins
+from qi_agent.plugins.config import load_plugin_config
 from qi_agent.tools.decision import ToolAction, ToolDecision
 
 
@@ -31,6 +34,19 @@ def _tool_result_ok(output: str) -> bool:
     return not output.startswith(blocked_prefixes)
 
 
+def _summarize_text(value: Any, limit: int) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except TypeError:
+            text = str(value)
+    return _truncate_text(text, limit)
+
+
 class ServeTransport:
     """把 Gateway 事件转成 WebSocket 通知。"""
 
@@ -44,7 +60,10 @@ class ServeTransport:
         self._loop: asyncio.AbstractEventLoop | None = loop
         self._send_queues: dict[Any, asyncio.Queue[str]] = {}
         self._workers: set[Any] = set()
-        self._attached_contexts: set[str] = set()
+        self._plugin_config = load_plugin_config()
+        # 以对象身份去重（WeakSet）：避免同一个 session_id 的新 context 被误判为
+        # “已附加”，也避免 int id() 复用导致长跑进程里新对象撞上历史 id 被跳过。
+        self._attached_contexts: weakref.WeakSet[Any] = weakref.WeakSet()
         self._wrap_manager_register()
         for context in list(self.gateway.manager.contexts.values()):
             self._attach_context(context)
@@ -60,10 +79,20 @@ class ServeTransport:
         self.gateway.manager.register = wrapped_register
 
     def _attach_context(self, context) -> None:
-        if context.id in self._attached_contexts:
+        if context in self._attached_contexts:
             return
-        self._attached_contexts.add(context.id)
+        self._attached_contexts.add(context)
+        load_plugins(context.events, self._plugin_config)
         self._wrap_tool_call_bail(context)
+        context.events.on(
+            "agent/turn-start",
+            self._make_subtask_progress_handler(context, "turn-start", "📖 开始"),
+        )
+        context.events.on(
+            "agent/pre-llm",
+            self._make_subtask_progress_handler(context, "pre-llm", "🤖 调用 LLM"),
+        )
+        context.events.on("agent/final-answer", self._make_final_answer_handler(context))
         context.events.on("agent/tool-result", self._make_tool_result_handler(context))
         context.events.on("agent/turn-end", self._make_turn_end_handler(context))
 
@@ -74,18 +103,64 @@ class ServeTransport:
             result = original_bail(event, **data)
             if event == "agent/tool-call":
                 status, reason = _tool_call_status(result)
-                payload = {
-                    "session_id": context.id,
-                    "name": data.get("name", ""),
-                    "arguments": data.get("arguments") or {},
-                    "status": status,
-                }
-                if reason:
-                    payload["reason"] = reason
-                self._notify("item/toolCall", **payload)
+                parent_id = getattr(context, "parent_id", None)
+                arguments_detail = _summarize_text(data.get("arguments") or {}, 80)
+                detail = _summarize_text(
+                    f"🔧 {data.get('name', '')} {arguments_detail}".strip(),
+                    80,
+                )
+                if parent_id:
+                    self._notify_subtask_progress(context, "tool-call", detail)
+                else:
+                    payload = {
+                        "session_id": context.id,
+                        "name": data.get("name", ""),
+                        "arguments": data.get("arguments") or {},
+                        "status": status,
+                    }
+                    if reason:
+                        payload["reason"] = reason
+                    self._notify("item/toolCall", **payload)
             return result
 
         context.events.bail = wrapped_bail
+
+    def _notify_subtask_progress(self, context, event: str, detail: str) -> None:
+        parent_id = getattr(context, "parent_id", None)
+        if not parent_id:
+            return
+        self._notify(
+            "item/subtaskProgress",
+            session_id=str(parent_id),
+            sub_id=context.id,
+            event=event,
+            detail=detail,
+        )
+
+    def _make_subtask_progress_handler(self, context, event: str, detail: str):
+        def _handler(**_: Any) -> None:
+            self._notify_subtask_progress(context, event, detail)
+
+        return _handler
+
+    def _make_final_answer_handler(self, context):
+        def _handler(**data: Any) -> None:
+            parent_id = getattr(context, "parent_id", None)
+            if not parent_id:
+                return
+            detail = _summarize_text(
+                data.get("content")
+                or data.get("text")
+                or data.get("answer")
+                or data.get("message")
+                or "",
+                80,
+            )
+            if not detail:
+                detail = "✍️ 回答"
+            self._notify_subtask_progress(context, "final-answer", detail)
+
+        return _handler
 
     def _make_tool_result_handler(self, context):
         def _handler(
@@ -95,6 +170,10 @@ class ServeTransport:
             duration: float,
             **_: Any,
         ) -> None:
+            parent_id = getattr(context, "parent_id", None)
+            if parent_id:
+                self._notify_subtask_progress(context, "tool-result", "✓ 完成")
+                return
             self._notify(
                 "item/toolResult",
                 session_id=context.id,
@@ -108,6 +187,10 @@ class ServeTransport:
 
     def _make_turn_end_handler(self, context):
         def _handler(reason: str, error: str | None = None, **_: Any) -> None:
+            parent_id = getattr(context, "parent_id", None)
+            if parent_id:
+                self._notify_subtask_progress(context, "turn-end", "🏁")
+                return
             payload = {"session_id": context.id, "reason": reason}
             if error is not None:
                 payload["error"] = error
