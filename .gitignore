@@ -35,3 +35,9 @@ tmp/
 .release-wt/
 user_profile.md
 evaluation/eval_runs/
+
+# codex-dev 开发流程工具（用户定位：非 qi-agent 内容，完全不进 git）
+codex-dev/
+
+# 前端依赖（node_modules 不进 git——源码 + package-lock 可重建）
+node_modules/
