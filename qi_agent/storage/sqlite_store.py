@@ -1,15 +1,6 @@
-"""SQLite 存储实现（默认——stdlib sqlite3，零依赖）。
+"""SQLite 持久化实现。"""
 
-方案 2026-08-26-会话持久化与记忆系统：
-- 双模型（快照 + append 日志）在 SQLite 里的落地：
-  快照 = sessions 表【状态字段】+ snapshot_at 时间点（O(1) UPDATE）
-  日志 = messages 表【逐条追加】（INSERT 天然 append）
-- 恢复 = 读快照状态 + 重放快照之后的增量消息（Event Sourcing 标准）
-- SQLite 事务保证：写一半崩溃 → 回滚不半写（对比 JSONL 追加损坏）
-
-线程安全：每操作独立连接（SQLite 单写多读；check_same_thread=False
-不需要——每次操作短连接，避免跨线程共享连接）。
-"""
+from __future__ import annotations
 
 import json
 import os
@@ -21,7 +12,7 @@ from qi_agent.storage.base import Storage
 
 
 def _default_db_path() -> str:
-    """默认数据目录：~/.qi-agent/qi.db（对齐 Hermes ~/.hermes）。"""
+    """默认数据库位置。"""
     home = os.path.expanduser("~")
     data_dir = os.path.join(home, ".qi-agent")
     os.makedirs(data_dir, exist_ok=True)
@@ -29,21 +20,19 @@ def _default_db_path() -> str:
 
 
 class SQLiteStore(Storage):
-    """SQLite 实现（双模型：状态字段快照 + 消息追加日志）。"""
+    """使用 SQLite 保存会话快照和消息日志。"""
 
     def __init__(self, db_path: str | None = None) -> None:
         self.db_path = db_path or _default_db_path()
-        self._lock = threading.Lock()  # 写锁（SQLite 单写）
+        self._lock = threading.Lock()
         self._init_schema()
 
-    # ── 内部 ─────────────────────────────────────────────────────────────
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init_schema(self) -> None:
-        """建表（幂等——IF NOT EXISTS）。"""
         with self._connect() as conn:
             conn.executescript(
                 """
@@ -76,16 +65,10 @@ class SQLiteStore(Storage):
             self._migrate(conn)
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
-        """schema 迁移（幂等——旧库缺列时补列）。
-
-        IF NOT EXISTS 不会给已存在的旧表加列 → 手动检测 + ALTER。
-        当前迁移：messages.data（全量消息序列化——tool_call_id 等）。
-        """
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
         if "data" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN data TEXT DEFAULT NULL")
 
-    # ── 会话 ─────────────────────────────────────────────────────────────
     def create_session(self, session_id: str, title: str = "") -> None:
         now = time.time()
         with self._lock, self._connect() as conn:
@@ -97,10 +80,9 @@ class SQLiteStore(Storage):
             )
 
     def append_message(self, session_id: str, message: dict) -> None:
-        """追加日志（主写入）。message: 完整消息 dict（全量序列化）。"""
+        """追加一条完整消息。"""
         now = time.time()
         with self._lock, self._connect() as conn:
-            # 序号 = 当前最大 seq + 1（保证重放顺序）
             row = conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id=?",
                 (session_id,),
@@ -111,11 +93,13 @@ class SQLiteStore(Storage):
                 " (session_id, seq, role, content, tool_calls, data, created_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    session_id, seq, message.get("role", ""),
+                    session_id,
+                    seq,
+                    message.get("role", ""),
                     message.get("content"),
                     json.dumps(message.get("tool_calls"), ensure_ascii=False)
-                    if message.get("tool_calls") else None,
-                    # 全量序列化（防丢字段——tool_call_id 等）
+                    if message.get("tool_calls")
+                    else None,
                     json.dumps(message, ensure_ascii=False),
                     now,
                 ),
@@ -125,10 +109,14 @@ class SQLiteStore(Storage):
                 (now, session_id),
             )
 
-    def snapshot(self, session_id: str, turn: int,
-                 usage: dict | None = None,
-                 status: str = "", phase: str = "") -> None:
-        """打快照：更新会话状态字段（O(1)）+ 记录时间点。"""
+    def snapshot(
+        self,
+        session_id: str,
+        turn: int,
+        usage: dict | None = None,
+        status: str = "",
+        phase: str = "",
+    ) -> None:
         now = time.time()
         usage_json = json.dumps(usage or {}, ensure_ascii=False)
         with self._lock, self._connect() as conn:
@@ -139,37 +127,34 @@ class SQLiteStore(Storage):
             )
 
     def load_session(self, session_id: str) -> dict | None:
-        """恢复：快照状态 + 增量重放（快照后的所有消息）。"""
         with self._connect() as conn:
             sess = conn.execute(
-                "SELECT * FROM sessions WHERE id=?", (session_id,)
+                "SELECT * FROM sessions WHERE id=?",
+                (session_id,),
             ).fetchone()
             if sess is None:
                 return None
-            # 快照时间点之后的消息（seq 全量——快照时 seq 已存，
-            # 简化：快照状态字段已含 turn/usage，消息全量重放）
             rows = conn.execute(
                 "SELECT role, content, tool_calls, data FROM messages"
                 " WHERE session_id=? ORDER BY seq",
                 (session_id,),
             ).fetchall()
+
         messages = []
         for row in rows:
-            # 优先完整 dict（data 列——含 tool_call_id 等全字段）
             if row["data"]:
                 try:
                     messages.append(json.loads(row["data"]))
                     continue
                 except (json.JSONDecodeError, TypeError):
-                    pass  # data 损坏 → 回退旧列
+                    pass
             msg: dict = {"role": row["role"]}
             if row["content"] is not None:
                 msg["content"] = row["content"]
             if row["tool_calls"]:
                 msg["tool_calls"] = json.loads(row["tool_calls"])
             messages.append(msg)
-        # 历史数据兜底：旧格式 tool 消息缺 tool_call_id →
-        # 从相邻 assistant 消息的 tool_calls 匹配补上（尽力恢复）
+
         self._repair_tool_call_ids(messages)
         return {
             "id": sess["id"],
@@ -183,42 +168,62 @@ class SQLiteStore(Storage):
 
     @staticmethod
     def _repair_tool_call_ids(messages: list[dict]) -> None:
-        """补 tool_call_id（历史数据修复——旧格式丢失的字段）。
-
-        遍历 tool 消息，缺 tool_call_id 时从【前面最近的 assistant
-        消息】的 tool_calls 列表里找匹配的 id（按顺序配对）。
-        无法匹配 → 生成占位 id（保证 API 不 400——内容可能错位但可聊）。
-        """
+        """补齐老数据里的 tool_call_id。"""
         pending_ids: list[str] = []
         for msg in messages:
             if msg.get("role") == "assistant":
-                # 收集本条 assistant 声明的 tool_call id（顺序）
                 pending_ids = [
-                    tc.get("id") for tc in (msg.get("tool_calls") or [])
+                    tc.get("id")
+                    for tc in (msg.get("tool_calls") or [])
                     if isinstance(tc, dict) and tc.get("id")
                 ]
-            elif msg.get("role") == "tool":
-                if "tool_call_id" not in msg:
-                    if pending_ids:
-                        msg["tool_call_id"] = pending_ids.pop(0)
-                    else:
-                        msg["tool_call_id"] = f"call_repair_{len(messages)}"
+            elif msg.get("role") == "tool" and "tool_call_id" not in msg:
+                if pending_ids:
+                    msg["tool_call_id"] = pending_ids.pop(0)
+                else:
+                    msg["tool_call_id"] = f"call_repair_{len(messages)}"
 
     def list_sessions(self) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT id, title, updated_at, snapshot_at FROM sessions"
-                " ORDER BY updated_at DESC"
+                " ORDER BY updated_at DESC",
             ).fetchall()
         return [
-            {"id": r["id"], "title": r["title"],
-             "updated_at": r["updated_at"]}
-            for r in rows
+            {"id": row["id"], "title": row["title"], "updated_at": row["updated_at"]}
+            for row in rows
         ]
 
     def delete_session(self, session_id: str) -> None:
         with self._lock, self._connect() as conn:
             conn.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
-    # 注：记忆（MEMORY.md/USER.md）在 MemoryStore（Markdown 分层）——
-    # SQLite 只存会话消息日志（方案 2026-08-26 修正）
+
+    @staticmethod
+    def _escape_like(text: str) -> str:
+        return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def search_messages(self, query: str) -> list[dict]:
+        pattern = f"%{self._escape_like(query)}%"
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.session_id, s.title, m.role, m.content, m.created_at
+                FROM messages AS m
+                JOIN sessions AS s ON s.id = m.session_id
+                WHERE COALESCE(m.content, '') LIKE ? ESCAPE '\\'
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT 50
+                """,
+                (pattern,),
+            ).fetchall()
+        return [
+            {
+                "session_id": row["session_id"],
+                "title": row["title"],
+                "role": row["role"],
+                "content": row["content"],
+                "time": row["created_at"],
+            }
+            for row in rows
+        ]
