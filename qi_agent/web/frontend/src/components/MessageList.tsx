@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { MessageBubble } from './MessageBubble'
 import { ToolCard } from './ToolCard'
+import { ToolRunHeader } from './ToolRunHeader'
 import { SubTaskCard } from './SubTaskCard'
 import {
   normalizeSearchText,
-  stringifyValue,
   type PendingScrollTarget,
   type StreamEntry,
+  type ToolEntry,
   type SubTaskEntry,
   type TextEntry,
 } from '../appModel'
@@ -26,14 +27,8 @@ type MessageListProps = {
 
 const ROW_GAP = 16
 const OVERSCAN_PX = 900
-
-function isTextEntry(entry: StreamEntry): entry is TextEntry {
-  return entry.kind === 'message'
-}
-
-function isSubTaskEntry(entry: StreamEntry): entry is SubTaskEntry {
-  return entry.kind === 'subtask'
-}
+const TOOL_RUN_GAP = 8
+const TOOL_RUN_PADDING_Y = 12
 
 function estimateTextHeight(entry: TextEntry): number {
   const base = entry.role === 'system' ? 56 : 82
@@ -44,13 +39,20 @@ function estimateTextHeight(entry: TextEntry): number {
 }
 
 function estimateToolHeight(entry: StreamEntry): number {
-  if (entry.kind !== 'tool') {
+  // v2 工具行已无参数 JSON 块：行高 ≈ 名称行 + 结果摘要行 + 间距（紧凑估算，ResizeObserver 实测兜底）
+  const footerRows = entry.kind === 'tool' && entry.result ? 2 : 1
+  return 56 + (footerRows * 16)
+}
+
+function estimateToolRunHeight(toolEntries: ToolEntry[]): number {
+  if (toolEntries.length === 0) {
     return 0
   }
-  const jsonLength = stringifyValue(entry.toolArguments).length
-  const jsonRows = Math.max(1, Math.ceil(jsonLength / 120))
-  const resultRows = entry.result ? 2 : 0
-  return Math.min(520, 160 + (jsonRows * 22) + (resultRows * 18))
+
+  const toolHeights = toolEntries.reduce((sum, entry) => sum + estimateToolHeight(entry), 0)
+  const gaps = TOOL_RUN_GAP * (toolEntries.length - 1)
+  // 工具活动容器只是把原有工具卡平铺到同一个视觉块里，所以估算时直接叠加单行高度。
+  return toolHeights + gaps + (TOOL_RUN_PADDING_Y * 2)
 }
 
 function estimateSubTaskHeight(entry: SubTaskEntry): number {
@@ -61,14 +63,140 @@ function estimateSubTaskHeight(entry: SubTaskEntry): number {
   return Math.min(620, 210 + (progressRows * 18) + (bodyRows * 14) + expandedBoost)
 }
 
-function estimateEntryHeight(entry: StreamEntry): number {
-  if (entry.kind === 'message') {
-    return estimateTextHeight(entry)
+type RenderItem =
+  | { kind: 'message'; entry: TextEntry; id: number }
+  | {
+    kind: 'assistant-turn'
+    toolEntries: ToolEntry[]
+    noteEntries: TextEntry[]
+    textEntries: TextEntry[]
+    id: number
   }
-  if (entry.kind === 'tool') {
-    return estimateToolHeight(entry)
+  | { kind: 'subtask'; entry: SubTaskEntry; id: number }
+
+// 这里只能按“连续 tool entry 段 + 前后紧邻的 assistant 文本”切回合，因为数据流里
+// 没有 turn 字段可直接依赖。一次用户提问 → 若干工具 → 最终回复，在对话流中的形态：
+//   user
+//   assistant 文本（中间话：模型工具轮次间的过渡输出，如“我来帮你查一下…”）
+//   tool ×N（连续）
+//   assistant 文本（最终回复，流式中可能晚到）
+// 中间话收进回合容器顶部注记区（turn-notes），最终回复收进文本区；两者与工具段
+// 一起构成一个 assistant-turn。纯文本回复（无工具）仍是独立 message。
+function splitTurnItems(entries: StreamEntry[]): RenderItem[] {
+  const items: RenderItem[] = []
+  let index = 0
+
+  while (index < entries.length) {
+    const entry = entries[index]
+
+    // assistant 文本且后面紧跟 tool 段 → 它是工具轮次的中间话（注记）
+    if (
+      entry.kind === 'message'
+      && entry.role === 'assistant'
+      && index + 1 < entries.length
+      && entries[index + 1].kind === 'tool'
+    ) {
+      const noteEntries: TextEntry[] = []
+      while (
+        index < entries.length
+        && entries[index].kind === 'message'
+        && entries[index].role === 'assistant'
+        && index + 1 < entries.length
+        && entries[index + 1].kind === 'tool'
+      ) {
+        noteEntries.push(entries[index] as TextEntry)
+        index += 1
+      }
+      // 吸收中间话后必定是 tool 段开头，走下面的统一收集逻辑
+      const toolEntries: ToolEntry[] = []
+      while (index < entries.length && entries[index].kind === 'tool') {
+        toolEntries.push(entries[index] as ToolEntry)
+        index += 1
+      }
+      const textEntries: TextEntry[] = []
+      while (
+        index < entries.length
+        && entries[index].kind === 'message'
+        && (entries[index] as TextEntry).role === 'assistant'
+      ) {
+        textEntries.push(entries[index] as TextEntry)
+        index += 1
+      }
+      items.push({
+        kind: 'assistant-turn',
+        toolEntries,
+        noteEntries,
+        textEntries,
+        id: toolEntries[0].id,
+      })
+      continue
+    }
+
+    if (entry.kind === 'tool') {
+      // 攒连续 tool 段
+      const toolEntries: ToolEntry[] = []
+      while (index < entries.length && entries[index].kind === 'tool') {
+        toolEntries.push(entries[index] as ToolEntry)
+        index += 1
+      }
+      // 吸收紧随其后的连续 assistant 文本（最终回复，流式中可能晚到）
+      const textEntries: TextEntry[] = []
+      while (
+        index < entries.length
+        && entries[index].kind === 'message'
+        && (entries[index] as TextEntry).role === 'assistant'
+      ) {
+        textEntries.push(entries[index] as TextEntry)
+        index += 1
+      }
+      items.push({
+        kind: 'assistant-turn',
+        toolEntries,
+        noteEntries: [],
+        textEntries,
+        id: toolEntries[0].id,
+      })
+      continue
+    }
+
+    if (entry.kind === 'message') {
+      items.push({ kind: 'message', entry, id: entry.id })
+      index += 1
+      continue
+    }
+
+    items.push({ kind: 'subtask', entry, id: entry.id })
+    index += 1
   }
-  return estimateSubTaskHeight(entry)
+
+  return items
+}
+
+function estimateAssistantTurnHeight(item: {
+  toolEntries: ToolEntry[]
+  noteEntries: TextEntry[]
+  textEntries: TextEntry[]
+}): number {
+  // 注记摘要行 ~28px（+展开全文行）+ 折叠 header ~40px + 工具区（展开态估算，
+  // 折叠后由 ResizeObserver 实测修正）+ 文本区（纯文本 pre-wrap，按字符估算行数）
+  const notesHeight = item.noteEntries.length > 0 ? 30 : 0
+  const headHeight = 40
+  const toolsHeight = estimateToolRunHeight(item.toolEntries)
+  const textHeight = item.textEntries.reduce((sum, textEntry) => {
+    const rows = Math.max(1, Math.ceil(textEntry.content.length / 66))
+    return sum + 18 + (rows * 20)
+  }, 0)
+  return Math.min(1150, notesHeight + headHeight + toolsHeight + textHeight + 24)
+}
+
+function estimateRenderItemHeight(item: RenderItem): number {
+  if (item.kind === 'message') {
+    return estimateTextHeight(item.entry)
+  }
+  if (item.kind === 'assistant-turn') {
+    return estimateAssistantTurnHeight(item)
+  }
+  return estimateSubTaskHeight(item.entry)
 }
 
 function findFirstVisibleIndex(offsets: number[], heights: number[], scrollTop: number): number {
@@ -116,7 +244,7 @@ function findTargetEntry(entries: StreamEntry[], target: PendingScrollTarget): T
   const normalizedQuery = normalizeSearchText(target.query || target.content)
   const normalizedContent = normalizeSearchText(target.content)
   for (const entry of entries) {
-    if (!isTextEntry(entry)) {
+    if (entry.kind !== 'message') {
       continue
     }
     const normalizedEntry = normalizeSearchText(entry.content)
@@ -146,30 +274,31 @@ export function MessageList({
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(1)
   const [measureVersion, setMeasureVersion] = useState(0)
+  const renderItems = useMemo(() => splitTurnItems(entries), [entries])
 
-  const heights = useMemo(() => entries.map((entry) => (
-    measuredHeightsRef.current.get(entry.id) ?? estimateEntryHeight(entry)
-  )), [entries, measureVersion])
+  const heights = useMemo(() => renderItems.map((item) => (
+    measuredHeightsRef.current.get(item.id) ?? estimateRenderItemHeight(item)
+  )), [measureVersion, renderItems])
 
   const offsets = useMemo(() => {
     const next: number[] = []
     let offset = 0
-    entries.forEach((_, index) => {
+    renderItems.forEach((_, index) => {
       next[index] = offset
       offset += heights[index]
-      if (index < entries.length - 1) {
+      if (index < renderItems.length - 1) {
         offset += ROW_GAP
       }
     })
     return next
-  }, [entries, heights])
+  }, [heights, renderItems])
 
   const totalHeight = useMemo(() => {
-    if (entries.length === 0) {
+    if (renderItems.length === 0) {
       return 0
     }
-    return offsets[entries.length - 1] + heights[entries.length - 1]
-  }, [entries.length, heights, offsets])
+    return offsets[renderItems.length - 1] + heights[renderItems.length - 1]
+  }, [heights, offsets, renderItems.length])
 
   const handleRowRef = useMemo(() => {
     return (entryId: number) => (node: HTMLDivElement | null): void => {
@@ -244,7 +373,7 @@ export function MessageList({
       skipNextAutoScrollRef.current = false
       return
     }
-    if (loading || entries.length === 0 || scrollTarget) {
+    if (loading || renderItems.length === 0 || scrollTarget) {
       return
     }
     const container = containerRef.current
@@ -254,10 +383,10 @@ export function MessageList({
     const nextScrollTop = Math.max(0, totalHeight - viewportHeight)
     container.scrollTop = nextScrollTop
     setScrollTop(nextScrollTop)
-  }, [entries, loading, scrollTarget, totalHeight, viewportHeight])
+  }, [loading, renderItems, scrollTarget, totalHeight, viewportHeight])
 
   useLayoutEffect(() => {
-    if (!scrollTarget || entries.length === 0) {
+    if (!scrollTarget || renderItems.length === 0) {
       return
     }
     const container = containerRef.current
@@ -275,7 +404,7 @@ export function MessageList({
       return
     }
 
-    const index = entries.findIndex((entry) => entry.id === matchedEntry.id)
+    const index = renderItems.findIndex((item) => item.id === matchedEntry.id)
     if (index < 0) {
       return
     }
@@ -291,7 +420,7 @@ export function MessageList({
     onHighlightMessage(matchedEntry.id)
     skipNextAutoScrollRef.current = true
     onScrollTargetHandled()
-  }, [entries, heights, offsets, onHighlightMessage, onScrollTargetHandled, scrollTarget, totalHeight, viewportHeight])
+  }, [heights, offsets, onHighlightMessage, onScrollTargetHandled, renderItems, scrollTarget, totalHeight, viewportHeight])
 
   useEffect(() => {
     return () => {
@@ -303,93 +432,121 @@ export function MessageList({
   }, [])
 
   const startIndex = useMemo(() => {
-    if (entries.length === 0) {
+    if (renderItems.length === 0) {
       return 0
     }
     return findFirstVisibleIndex(offsets, heights, Math.max(0, scrollTop - OVERSCAN_PX))
-  }, [entries.length, heights, offsets, scrollTop])
+  }, [heights, offsets, renderItems.length, scrollTop])
 
   const endIndex = useMemo(() => {
-    if (entries.length === 0) {
+    if (renderItems.length === 0) {
       return 0
     }
     const index = findLastVisibleIndex(offsets, scrollTop + viewportHeight + OVERSCAN_PX)
-    return Math.min(entries.length, Math.max(startIndex + 1, index + 1))
-  }, [entries.length, offsets, scrollTop, startIndex, viewportHeight])
+    return Math.min(renderItems.length, Math.max(startIndex + 1, index + 1))
+  }, [offsets, renderItems.length, scrollTop, startIndex, viewportHeight])
 
-  const visibleEntries = entries.slice(startIndex, endIndex)
-  const topSpacer = entries.length > 0 ? offsets[startIndex] : 0
-  const bottomSpacer = entries.length > 0
+  const visibleItems = renderItems.slice(startIndex, endIndex)
+  const topSpacer = renderItems.length > 0 ? offsets[startIndex] : 0
+  const bottomSpacer = renderItems.length > 0
     ? Math.max(0, totalHeight - (offsets[endIndex] ?? totalHeight))
     : 0
 
-  const renderEntry = (entry: StreamEntry, index: number): JSX.Element | null => {
+  const renderItem = (item: RenderItem, index: number): JSX.Element | null => {
     const globalIndex = startIndex + index
-    const isLastOverall = globalIndex === entries.length - 1
+    const isLastOverall = globalIndex === renderItems.length - 1
     const marginBottom = isLastOverall ? 0 : ROW_GAP
 
-    if (entry.kind === 'tool') {
+    if (item.kind === 'assistant-turn') {
       return (
         <div
-          key={entry.id}
-          ref={handleRowRef(entry.id)}
-          className="row tool message-row"
+          key={item.id}
+          ref={handleRowRef(item.id)}
+          className="row assistant-turn message-row"
           style={{ marginBottom }}
         >
-          <div className="avatar tool">🔧</div>
+          <div className="avatar ai">qi</div>
           <div className="bubble-wrap tool-wrap">
-            <ToolCard
-              name={entry.name}
-              toolArguments={entry.toolArguments}
-              status={entry.status}
-              reason={entry.reason}
-              result={entry.result}
-            />
+            <div className={`assistant-turn${item.textEntries.length > 0 ? ' has-text' : ''}${item.noteEntries.length > 0 ? ' has-notes' : ''}`}>
+              {item.noteEntries.length > 0 && (
+                <details className="turn-notes">
+                  <summary>
+                    <span className="turn-notes-label">过程说明</span>
+                  </summary>
+                  <div className="turn-notes-body">
+                    {item.noteEntries.map((noteEntry) => (
+                      <div key={noteEntry.id} className="turn-note">{noteEntry.content}</div>
+                    ))}
+                  </div>
+                </details>
+              )}
+              <ToolRunHeader toolEntries={item.toolEntries}>
+                <div className="turn-tools">
+                  {item.toolEntries.map((toolEntry) => (
+                    <ToolCard
+                      key={toolEntry.id}
+                      compact
+                      name={toolEntry.name}
+                      status={toolEntry.status}
+                      reason={toolEntry.reason}
+                      result={toolEntry.result}
+                    />
+                  ))}
+                </div>
+              </ToolRunHeader>
+              {item.textEntries.length > 0 && (
+                <div className="turn-texts">
+                  {item.textEntries.map((textEntry) => (
+                    <div key={textEntry.id} className="turn-text">{textEntry.content}</div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )
     }
 
-    if (isSubTaskEntry(entry)) {
+    if (item.kind === 'subtask') {
       return (
         <div
-          key={entry.id}
-          ref={handleRowRef(entry.id)}
+          key={item.id}
+          ref={handleRowRef(item.id)}
           className="row subtask message-row"
           style={{ marginBottom }}
         >
           <div className="avatar subtask">🚀</div>
           <div className="bubble-wrap tool-wrap">
             <SubTaskCard
-              goal={entry.goal}
-              subId={entry.subId}
-              status={entry.status}
-              progress={entry.progress}
-              resultText={entry.resultText}
-              reason={entry.reason}
-              expanded={Boolean(entry.expanded)}
-              timedOut={Boolean(entry.timedOut)}
-              startedAtMs={entry.startedAtMs}
-              onToggleExpanded={() => onToggleSubTaskExpanded(entry.subId)}
+              goal={item.entry.goal}
+              subId={item.entry.subId}
+              status={item.entry.status}
+              progress={item.entry.progress}
+              resultText={item.entry.resultText}
+              reason={item.entry.reason}
+              expanded={Boolean(item.entry.expanded)}
+              timedOut={Boolean(item.entry.timedOut)}
+              startedAtMs={item.entry.startedAtMs}
+              onToggleExpanded={() => onToggleSubTaskExpanded(item.entry.subId)}
             />
           </div>
         </div>
       )
     }
 
-    if (isTextEntry(entry)) {
+    if (item.kind === 'message') {
       return (
         <div
-          key={entry.id}
-          ref={handleRowRef(entry.id)}
-          className={`row ${entry.role} message-row ${highlightedMessageId === entry.id ? 'highlighted' : ''}`}
+          key={item.id}
+          ref={handleRowRef(item.id)}
+          className={`row ${item.entry.role} message-row ${highlightedMessageId === item.id ? 'highlighted' : ''}`}
           style={{ marginBottom }}
         >
-          {entry.role === 'assistant' && <div className="avatar ai">qi</div>}
-          {entry.role === 'user' && <div className="avatar user">我</div>}
+          {item.entry.role === 'assistant' && <div className="avatar ai">qi</div>}
+          {item.entry.role === 'user' && <div className="avatar user">我</div>}
           <MessageBubble
-            entry={entry}
-            highlighted={highlightedMessageId === entry.id}
+            entry={item.entry}
+            highlighted={highlightedMessageId === item.id}
             onCopy={onCopyMessage}
             onEdit={onEditMessage}
             onRetry={(message) => onRetryMessage(message.id, message.content)}
@@ -434,7 +591,7 @@ export function MessageList({
       {!loading && entries.length > 0 && (
         <>
           {topSpacer > 0 && <div className="message-spacer" style={{ height: topSpacer }} aria-hidden="true" />}
-          {visibleEntries.map((entry, index) => renderEntry(entry, index))}
+          {visibleItems.map((item, index) => renderItem(item, index))}
           {bottomSpacer > 0 && <div className="message-spacer" style={{ height: bottomSpacer }} aria-hidden="true" />}
         </>
       )}

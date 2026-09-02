@@ -90,6 +90,7 @@ export default function App() {
     connectionState: ws.connectionState,
     connectionStateRef: ws.connectionStateRef,
     sessionIdRef: session.sessionIdRef,
+    entriesRef: messages.entriesRef,
     appendSubTaskEntry: messages.appendSubTaskEntry,
     updateSubTaskEntry: messages.updateSubTaskEntry,
     appendSystemMessage: messages.appendSystemMessage,

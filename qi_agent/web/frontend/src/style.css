@@ -413,7 +413,6 @@ pre {
 
 .bubble {
   position: relative;
-  padding-right: 42px;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--panel-strong) 92%, transparent);
   box-shadow: var(--shadow-sm);
@@ -434,13 +433,14 @@ pre {
 }
 
 .bubble-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
   display: flex;
-  justify-content: flex-end;
   gap: 8px;
-  margin-top: 10px;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-2px);
+  transform: translateY(-2px) scale(0.98);
   transition: opacity 0.15s ease, transform 0.15s ease;
 }
 
@@ -448,18 +448,38 @@ pre {
 .bubble-wrap:focus-within .bubble-actions {
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(0);
+  transform: translateY(0) scale(1);
 }
 
 .bubble-action-btn {
-  padding: 6px 11px;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 9px;
   color: var(--text);
-  background: var(--panel-muted);
+  background: color-mix(in srgb, var(--panel-strong) 88%, transparent);
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(10px);
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.bubble-action-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.bubble-action-btn:hover {
+  transform: translateY(-1px);
+  border-color: var(--brand);
 }
 
 .bubble-action-btn.primary {
@@ -489,37 +509,6 @@ pre {
     color-mix(in srgb, var(--danger-bg) 68%, var(--panel-muted))
   );
   box-shadow: 0 12px 24px color-mix(in srgb, var(--danger-text) 14%, transparent);
-}
-
-.copy-btn {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--panel-strong) 88%, transparent);
-  cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(-2px);
-  transition: opacity 0.15s ease, transform 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-}
-
-.bubble-wrap:hover .copy-btn,
-.bubble-wrap:focus-within .copy-btn {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
-}
-
-.copy-btn:hover {
-  color: var(--text);
-  border-color: var(--brand);
 }
 
 .message-skeleton-list {
@@ -591,7 +580,8 @@ pre {
   }
 }
 
-.row.tool {
+.row.tool,
+.row.assistant-turn {
   align-items: flex-start;
 }
 
@@ -609,12 +599,87 @@ pre {
   width: min(100%, 760px);
 }
 
+/* v2 回合一体化容器：工具区（可折叠）+ 文本区在同一个气泡内 */
+.tool-wrap > .assistant-turn {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 84%, transparent), var(--panel-muted));
+  box-shadow: var(--shadow-sm);
+}
+
+/* 工具区折叠头部 */
+.tool-run-head {
+  border-bottom: 1px solid transparent;
+}
+
+.assistant-turn.has-text .tool-run-head {
+  border-bottom-color: color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.tool-run-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 15px 15px 0 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tool-run-toggle:hover {
+  background: color-mix(in srgb, var(--panel-muted) 70%, transparent);
+  color: var(--text);
+}
+
+.tool-run-chevron {
+  flex: none;
+  color: var(--muted-2);
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+
+.tool-run-label.done {
+  color: var(--success-text);
+}
+
+.tool-run-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 14px 12px;
+}
+
+/* 工具行：容器内嵌行（去外框，只留内容节奏） */
 .tool-card {
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 16px;
   background: color-mix(in srgb, var(--panel-strong) 92%, transparent);
   box-shadow: var(--shadow-sm);
+}
+
+.assistant-turn .tool-card {
+  padding: 4px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.assistant-turn .tool-card + .tool-card {
+  border-top: 1px dashed color-mix(in srgb, var(--border) 62%, transparent);
+  padding-top: 8px;
+  margin-top: 2px;
 }
 
 .tool-card.success {
@@ -637,11 +702,19 @@ pre {
   margin-bottom: 10px;
 }
 
+.assistant-turn .tool-card-head {
+  margin-bottom: 4px;
+}
+
 .tool-card-name {
   min-width: 0;
   color: var(--brand);
   font-size: 14px;
   font-weight: 800;
+}
+
+.assistant-turn .tool-card-name {
+  font-size: 13px;
 }
 
 .tool-card-status {
@@ -670,43 +743,6 @@ pre {
   background: color-mix(in srgb, var(--brand-3) 12%, transparent);
 }
 
-.tool-card-details {
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--panel-muted);
-}
-
-.tool-card-details summary {
-  list-style: none;
-  padding: 10px 12px;
-  color: var(--muted);
-  cursor: pointer;
-  user-select: none;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.tool-card-details summary::-webkit-details-marker {
-  display: none;
-}
-
-.tool-card-details[open] summary {
-  border-bottom: 1px solid var(--border);
-}
-
-.tool-card-json {
-  overflow: auto;
-  max-height: 260px;
-  padding: 12px;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
-  font-size: 12px;
-  line-height: 1.65;
-}
-
 .tool-card-footer {
   margin-top: 10px;
   color: var(--muted);
@@ -714,8 +750,86 @@ pre {
   line-height: 1.6;
 }
 
+.assistant-turn .tool-card-footer {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 .tool-card.blocked .tool-card-footer {
   color: var(--danger-text);
+}
+
+/* 回合容器顶部注记区（模型工具轮次间的过渡话，折叠态只留摘要） */
+.turn-notes {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.turn-notes summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--muted-2);
+  background: color-mix(in srgb, var(--panel-muted) 55%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.turn-notes summary::-webkit-details-marker {
+  display: none;
+}
+
+.turn-notes summary::before {
+  content: '💬';
+  font-size: 10px;
+}
+
+.turn-notes[open] summary {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.turn-notes-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 14px 10px;
+}
+
+.turn-note {
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+  font-size: 12px;
+}
+
+/* 有注记区时，工具折叠头部不再需要顶部圆角 */
+.assistant-turn.has-notes .tool-run-toggle {
+  border-radius: 0;
+}
+
+/* 回合容器内的最终文本区 */
+.turn-texts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+.turn-text {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+  font-size: 14px;
 }
 
 .subtask-card {
@@ -739,6 +853,14 @@ pre {
 
 .subtask-card.failed {
   border-color: color-mix(in srgb, var(--danger-text) 24%, transparent);
+}
+
+.subtask-card.need-more-info {
+  border-color: color-mix(in srgb, var(--warn-text) 24%, transparent);
+}
+
+.subtask-card.stopped {
+  border-color: color-mix(in srgb, var(--danger-text) 20%, transparent);
 }
 
 .subtask-card.timed-out {
@@ -781,6 +903,16 @@ pre {
 }
 
 .subtask-card.failed .subtask-card-status {
+  color: var(--danger-text);
+  background: var(--danger-bg);
+}
+
+.subtask-card.need-more-info .subtask-card-status {
+  color: var(--warn-text);
+  background: var(--warn-bg);
+}
+
+.subtask-card.stopped .subtask-card-status {
   color: var(--danger-text);
   background: var(--danger-bg);
 }
@@ -1724,6 +1856,12 @@ pre {
     display: none;
   }
 
+  .bubble-actions {
+    top: 6px;
+    right: 6px;
+    gap: 6px;
+  }
+
   .messages {
     padding: 20px 14px 14px;
   }
@@ -1738,5 +1876,13 @@ pre {
 
   .approval-box {
     padding: 20px;
+  }
+}
+
+@media (hover: none) {
+  .bubble-actions {
+    opacity: 0.55;
+    pointer-events: auto;
+    transform: none;
   }
 }

@@ -8,21 +8,13 @@ type ToolResultState = {
 
 type ToolCardProps = {
   name: string
-  toolArguments: unknown
   status: 'running' | 'blocked'
   reason?: string
   result?: ToolResultState
+  compact?: boolean
 }
 
-function stringifyArguments(value: unknown): string {
-  try {
-    return JSON.stringify(value ?? {}, null, 2)
-  } catch {
-    return String(value ?? '')
-  }
-}
-
-function ToolCardBase({ name, toolArguments, status, reason, result }: ToolCardProps) {
+function ToolCardBase({ name, status, reason, result, compact }: ToolCardProps) {
   const footerText = result
     ? result.ok
       ? `✓ 完成 · ${result.summary || '无摘要'} · ${result.durationMs}ms`
@@ -48,15 +40,11 @@ function ToolCardBase({ name, toolArguments, status, reason, result }: ToolCardP
       : '运行中'
 
   return (
-    <article className={`tool-card ${statusClass}`}>
+    <article className={`tool-card ${statusClass}${compact ? ' compact' : ''}`}>
       <div className="tool-card-head">
         <div className="tool-card-name">🔧 {name}</div>
         <span className="tool-card-status">{statusLabel}</span>
       </div>
-      <details className="tool-card-details">
-        <summary>参数 JSON</summary>
-        <pre className="tool-card-json">{stringifyArguments(toolArguments)}</pre>
-      </details>
       <div className="tool-card-footer">{footerText}</div>
     </article>
   )

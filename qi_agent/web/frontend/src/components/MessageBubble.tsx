@@ -30,37 +30,53 @@ function MessageBubbleBase({
     <div className="bubble-wrap">
       {entry.role !== 'system' && (
         <div className={bubbleClassName}>
-          <button
-            type="button"
-            className="copy-btn"
-            onClick={() => onCopy(entry.content)}
-            title={ZH_CN.messageBubble.copyTitle}
-          >
-            {ZH_CN.messageBubble.copyLabel}
-          </button>
+          <div className="bubble-actions" aria-label={ZH_CN.messageBubble.copyTitle}>
+            <button
+              type="button"
+              className="bubble-action-btn copy"
+              onClick={() => onCopy(entry.content)}
+              title={ZH_CN.messageBubble.copyTitle}
+              aria-label={ZH_CN.messageBubble.copyTitle}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="9" y="9" width="10" height="10" rx="2" />
+                <rect x="5" y="5" width="10" height="10" rx="2" />
+              </svg>
+            </button>
+            {(canEdit || canRetry) && (
+              <>
+                {canEdit && (
+                  <button
+                    type="button"
+                    className="bubble-action-btn"
+                    onClick={() => onEdit?.(entry)}
+                    title={ZH_CN.messageBubble.editLabel}
+                    aria-label={ZH_CN.messageBubble.editLabel}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 20h4l11-11-4-4L4 16v4Z" />
+                      <path d="M13.5 6.5 17.5 10.5" />
+                    </svg>
+                  </button>
+                )}
+                {canRetry && (
+                  <button
+                    type="button"
+                    className="bubble-action-btn primary"
+                    onClick={() => onRetry?.(entry)}
+                    title={ZH_CN.messageBubble.retryLabel}
+                    aria-label={ZH_CN.messageBubble.retryLabel}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+                      <path d="M20 4v6h-6" />
+                    </svg>
+                  </button>
+                )}
+              </>
+            )}
+          </div>
           <div className="bubble-content">{entry.content}</div>
-          {(canEdit || canRetry) && (
-            <div className="bubble-actions">
-              {canEdit && (
-                <button
-                  type="button"
-                  className="bubble-action-btn"
-                  onClick={() => onEdit?.(entry)}
-                >
-                  {ZH_CN.messageBubble.editLabel}
-                </button>
-              )}
-              {canRetry && (
-                <button
-                  type="button"
-                  className="bubble-action-btn primary"
-                  onClick={() => onRetry?.(entry)}
-                >
-                  {ZH_CN.messageBubble.retryLabel}
-                </button>
-              )}
-            </div>
-          )}
         </div>
       )}
       {entry.role === 'system' && (

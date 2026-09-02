@@ -30,7 +30,13 @@ export type ToolEntry = {
   time?: string
 }
 
-export type SubTaskStatus = 'running' | 'completed' | 'failed' | 'timed_out'
+export type SubTaskStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'need_more_info'
+  | 'stopped'
+  | 'timed_out'
 
 export type SubTaskProgressEntry = {
   time: string
