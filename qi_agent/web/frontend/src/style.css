@@ -294,9 +294,23 @@ pre {
   flex: 1;
   overflow-y: auto;
   padding: 26px 22px 18px;
+  display: block;
+  min-height: 0;
+}
+
+.message-row {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.message-row:last-child {
+  margin-bottom: 0;
+}
+
+.message-spacer {
+  width: 100%;
+  flex-shrink: 0;
 }
 
 .empty {
@@ -405,8 +419,53 @@ pre {
   box-shadow: var(--shadow-sm);
 }
 
+.bubble.error {
+  border-color: color-mix(in srgb, var(--danger-text) 32%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--danger-bg) 82%, var(--panel-strong)),
+    color-mix(in srgb, var(--danger-bg) 64%, var(--panel-muted))
+  );
+  color: var(--danger-text);
+}
+
 .bubble-content {
   min-width: 0;
+}
+
+.bubble-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.bubble-wrap:hover .bubble-actions,
+.bubble-wrap:focus-within .bubble-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.bubble-action-btn {
+  padding: 6px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: var(--panel-muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.bubble-action-btn.primary {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--brand), var(--brand-3));
 }
 
 .assistant .bubble {
@@ -419,6 +478,17 @@ pre {
   background: linear-gradient(135deg, var(--user-start), var(--user-end));
   border-top-right-radius: 6px;
   box-shadow: 0 12px 24px rgba(79, 70, 229, 0.18);
+}
+
+.user .bubble.error {
+  color: var(--danger-text);
+  border-color: color-mix(in srgb, var(--danger-text) 32%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--danger-bg) 84%, var(--panel-strong)),
+    color-mix(in srgb, var(--danger-bg) 68%, var(--panel-muted))
+  );
+  box-shadow: 0 12px 24px color-mix(in srgb, var(--danger-text) 14%, transparent);
 }
 
 .copy-btn {
@@ -450,6 +520,75 @@ pre {
 .copy-btn:hover {
   color: var(--text);
   border-color: var(--brand);
+}
+
+.message-skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.message-skeleton-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.message-skeleton-avatar {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--panel-muted) 92%, transparent) 25%, color-mix(in srgb, var(--brand-3) 14%, var(--panel-muted)) 50%, color-mix(in srgb, var(--panel-muted) 92%, transparent) 75%);
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.message-skeleton-avatar.ai {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ai-start) 28%, var(--panel-muted)) 25%, color-mix(in srgb, var(--ai-end) 26%, var(--panel-muted)) 50%, color-mix(in srgb, var(--ai-start) 28%, var(--panel-muted)) 75%);
+}
+
+.message-skeleton-avatar.user {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--user-start) 24%, var(--panel-muted)) 25%, color-mix(in srgb, var(--user-end) 22%, var(--panel-muted)) 50%, color-mix(in srgb, var(--user-start) 24%, var(--panel-muted)) 75%);
+}
+
+.message-skeleton-card {
+  flex: 1;
+  min-height: 96px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 82%, transparent), var(--panel-muted));
+  box-shadow: var(--shadow-sm);
+}
+
+.message-skeleton-line {
+  display: block;
+  height: 12px;
+  margin-bottom: 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--panel-muted) 88%, transparent) 25%, color-mix(in srgb, var(--brand-3) 12%, var(--panel-muted)) 50%, color-mix(in srgb, var(--panel-muted) 88%, transparent) 75%);
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.message-skeleton-line.short {
+  width: 42%;
+}
+
+.message-skeleton-line.long {
+  width: 78%;
+  margin-bottom: 0;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 .row.tool {
@@ -656,6 +795,20 @@ pre {
   font-size: 12px;
 }
 
+.subtask-card-status-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.subtask-card-elapsed {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .subtask-card-body {
   overflow: auto;
   max-height: 260px;
@@ -668,6 +821,72 @@ pre {
   font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
   font-size: 12px;
   line-height: 1.65;
+}
+
+.subtask-card-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-muted) 82%, transparent);
+}
+
+.subtask-card-progress-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.subtask-card-progress-time {
+  flex-shrink: 0;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.subtask-card-progress-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.subtask-card-progress-more {
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.subtask-card-progress-fold {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-muted) 76%, transparent);
+}
+
+.subtask-card-progress-fold > summary {
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+
+.subtask-card-progress-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.subtask-card-progress-fold[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.subtask-card-progress-fold .subtask-card-progress {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+  border-radius: 0 0 12px 12px;
 }
 
 .subtask-card-toggle {
@@ -837,6 +1056,13 @@ pre {
   background: color-mix(in srgb, var(--panel-strong) 96%, transparent);
   box-shadow: var(--shadow-lg);
   backdrop-filter: blur(18px);
+}
+
+.command-palette-loading {
+  display: grid;
+  place-items: center;
+  min-height: 96px;
+  color: var(--muted);
 }
 
 .command-palette-head {
@@ -1214,6 +1440,13 @@ pre {
 
 .search-panel.collapsed {
   gap: 0;
+}
+
+.search-panel-loading {
+  display: grid;
+  place-items: center;
+  min-height: 92px;
+  color: var(--muted);
 }
 
 .search-panel-head {

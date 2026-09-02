@@ -1,3 +1,5 @@
+import type { KeyboardEvent } from 'react'
+
 type CommandPaletteItem = {
   name: string
   label: string
@@ -12,8 +14,15 @@ type CommandPaletteProps = {
 }
 
 export function CommandPalette({ commands, query, onSelect, onClose }: CommandPaletteProps) {
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onClose()
+    }
+  }
+
   return (
-    <div className="command-palette" role="dialog" aria-label="命令面板">
+    <div className="command-palette" role="dialog" aria-label="命令面板" onKeyDown={handleKeyDown}>
       <div className="command-palette-head">
         <div>
           <div className="command-palette-title">命令面板</div>

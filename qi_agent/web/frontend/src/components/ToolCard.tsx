@@ -1,3 +1,5 @@
+import { memo } from 'react'
+
 type ToolResultState = {
   ok: boolean
   summary: string
@@ -20,7 +22,7 @@ function stringifyArguments(value: unknown): string {
   }
 }
 
-export function ToolCard({ name, toolArguments, status, reason, result }: ToolCardProps) {
+function ToolCardBase({ name, toolArguments, status, reason, result }: ToolCardProps) {
   const footerText = result
     ? result.ok
       ? `✓ 完成 · ${result.summary || '无摘要'} · ${result.durationMs}ms`
@@ -59,3 +61,5 @@ export function ToolCard({ name, toolArguments, status, reason, result }: ToolCa
     </article>
   )
 }
+
+export const ToolCard = memo(ToolCardBase)

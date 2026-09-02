@@ -1,3 +1,5 @@
+import type { KeyboardEvent } from 'react'
+
 type SearchResult = {
   session_id: string
   title?: string
@@ -54,8 +56,15 @@ export function SearchPanel({
 }: SearchPanelProps) {
   const hasQuery = query.trim().length > 0
 
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onToggle()
+    }
+  }
+
   return (
-    <section className={`search-panel ${open ? 'open' : 'collapsed'}`}>
+    <section className={`search-panel ${open ? 'open' : 'collapsed'}`} onKeyDown={handleKeyDown}>
       <div className="search-panel-head">
         <div>
           <h4>会话搜索</h4>
@@ -74,6 +83,12 @@ export function SearchPanel({
               id="session-search"
               value={query}
               onChange={(event) => onQueryChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  onToggle()
+                }
+              }}
               placeholder="搜索会话标题或消息内容"
               spellCheck={false}
               autoComplete="off"

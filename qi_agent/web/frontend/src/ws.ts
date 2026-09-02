@@ -1,3 +1,5 @@
+import { WS_PROTOCOL_VERSION } from './appModel'
+
 export type RpcResponse = {
   id: number | string | null
   result?: unknown
@@ -9,6 +11,7 @@ export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected'
 type PendingCall = {
   resolve: (resp: RpcResponse) => void
   reject: (error: Error) => void
+  timeoutId: number
 }
 
 type NotifyHandler = (params: Record<string, unknown>) => void
@@ -16,6 +19,7 @@ type StatusHandler = (status: ConnectionStatus) => void
 
 const INITIAL_RECONNECT_DELAY = 1000
 const MAX_RECONNECT_DELAY = 30_000
+const CALL_TIMEOUT_MS = 30_000
 
 export class WsClient {
   private ws: WebSocket | null = null
@@ -40,7 +44,7 @@ export class WsClient {
 
   connect(): Promise<void> {
     if (this.disposed) {
-      return Promise.reject(new Error('WebSocket 客户端已释放'))
+      return Promise.reject(new Error('WebSocket client released'))
     }
     this.shouldReconnect = true
     if (!this.openPromise) {
@@ -64,8 +68,8 @@ export class WsClient {
     this.disposed = true
     this.shouldReconnect = false
     this.clearReconnectTimer()
-    this.rejectOpenPromise(new Error('WebSocket 已断开'))
-    this.rejectPending(new Error('WebSocket 已断开'))
+    this.rejectOpenPromise(new Error('WebSocket closed'))
+    this.rejectPending(new Error('WebSocket closed'))
     if (this.ws) {
       this.generation += 1
       this.ws.close()
@@ -85,11 +89,22 @@ export class WsClient {
 
   call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error('WebSocket 未连接'))
+      return Promise.reject(new Error('WebSocket not connected'))
     }
     return new Promise<T>((resolve, reject) => {
       const id = this.nextId++
+      const timeoutId = window.setTimeout(() => {
+        const pending = this.pending.get(id)
+        if (!pending) {
+          return
+        }
+        this.pending.delete(id)
+        // RPC request cannot hang forever, or session restore loading will never clear.
+        pending.reject(new Error(`RPC call ${method} timed out after 30s`))
+      }, CALL_TIMEOUT_MS)
+
       this.pending.set(id, {
+        timeoutId,
         resolve: (resp) => {
           if (resp.error) {
             reject(new Error(resp.error.message))
@@ -99,8 +114,16 @@ export class WsClient {
         },
         reject,
       })
-      this.ws?.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
+
+      this.ws?.send(JSON.stringify({ jsonrpc: '2.0', id, method, params, v: WS_PROTOCOL_VERSION }))
     })
+  }
+
+  notify(method: string, params: Record<string, unknown> = {}): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return
+    }
+    this.ws.send(JSON.stringify({ jsonrpc: '2.0', method, params, v: WS_PROTOCOL_VERSION }))
   }
 
   private openSocket(): void {
@@ -130,7 +153,7 @@ export class WsClient {
     }
 
     socket.onerror = () => {
-      // 连接错误会在 onclose 里统一转成重连流程，避免重复提示。
+      // 鏉╃偞甯撮柨娆掝嚖缂佺喍绔存禍銈囩舶 onclose 婢跺嫮鎮婇敍宀勪缉閸忓秹鍣告径宥嗗絹缁€鍝勬嫲闁插秴顦查柌宥堢箾閵?
     }
 
     socket.onclose = (event) => {
@@ -140,12 +163,12 @@ export class WsClient {
       this.ws = null
       if (event.code === 4401 || event.code === 4403) {
         this.shouldReconnect = false
-        this.rejectOpenPromise(new Error(event.reason || 'WebSocket 鉴权失败'))
-        this.rejectPending(new Error(event.reason || 'WebSocket 鉴权失败'))
+        this.rejectOpenPromise(new Error(event.reason || 'WebSocket auth failed'))
+        this.rejectPending(new Error(event.reason || 'WebSocket auth failed'))
         this.emitStatus('disconnected')
         return
       }
-      this.rejectPending(new Error('WebSocket 连接已断开'))
+      this.rejectPending(new Error('WebSocket connection closed'))
       if (this.disposed || !this.shouldReconnect) {
         this.emitStatus('disconnected')
         return
@@ -176,6 +199,7 @@ export class WsClient {
 
   private rejectPending(error: Error): void {
     for (const [, pending] of this.pending) {
+      window.clearTimeout(pending.timeoutId)
       pending.reject(error)
     }
     this.pending.clear()
@@ -225,12 +249,18 @@ export class WsClient {
       return
     }
 
+    const protocolVersion = typeof data.v === 'number' ? data.v : WS_PROTOCOL_VERSION
+    if (protocolVersion !== WS_PROTOCOL_VERSION) {
+      return
+    }
+
     if (data.id !== undefined && data.id !== null) {
       const cb = this.pending.get(data.id as number | string)
       if (!cb) {
         return
       }
       this.pending.delete(data.id as number | string)
+      window.clearTimeout(cb.timeoutId)
       cb.resolve(data as RpcResponse)
       return
     }
