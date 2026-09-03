@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import { clearAuthToken } from '../auth'
-import { ConnectionStatus, WsClient } from '../ws'
+import { ConnectionStatus, ReconnectLimitExceededError, WsClient } from '../ws'
 import { getErrorMessage } from '../appModel'
 
 type UseWsClientArgs = {
@@ -14,6 +14,8 @@ type UseWsClientResult = {
   clientRef: MutableRefObject<WsClient | null>
   connectionState: ConnectionStatus
   connectionStateRef: MutableRefObject<ConnectionStatus>
+  hasReconnectExceeded: boolean
+  manualReconnect: () => void
 }
 
 export function useWsClient({
@@ -24,6 +26,7 @@ export function useWsClient({
   const clientRef = useRef<WsClient | null>(null)
   const connectionStateRef = useRef<ConnectionStatus>('disconnected')
   const [connectionState, setConnectionState] = useState<ConnectionStatus>('disconnected')
+  const [hasReconnectExceeded, setHasReconnectExceeded] = useState(false)
 
   useEffect(() => {
     connectionStateRef.current = connectionState
@@ -33,6 +36,7 @@ export function useWsClient({
     if (authToken === null) {
       clientRef.current = null
       setConnectionState('disconnected')
+      setHasReconnectExceeded(false)
       return undefined
     }
 
@@ -44,6 +48,7 @@ export function useWsClient({
     client.onStatus((status) => {
       connectionStateRef.current = status
       setConnectionState(status)
+      setHasReconnectExceeded(client.hasReconnectExceeded)
     })
 
     void client.connect()
@@ -54,6 +59,11 @@ export function useWsClient({
         const message = getErrorMessage(error)
         setAuthBusy(false)
         setConnectionState('disconnected')
+        setHasReconnectExceeded(client.hasReconnectExceeded)
+        if (error instanceof ReconnectLimitExceededError) {
+          setAuthError(null)
+          return
+        }
         setAuthError(message)
         clearAuthToken()
       })
@@ -63,12 +73,24 @@ export function useWsClient({
       clientRef.current = null
       connectionStateRef.current = 'disconnected'
       setConnectionState('disconnected')
+      setHasReconnectExceeded(false)
     }
   }, [authToken, setAuthBusy, setAuthError])
+
+  const manualReconnect = useCallback((): void => {
+    const client = clientRef.current
+    if (!client) {
+      return
+    }
+    setHasReconnectExceeded(false)
+    void client.manualReconnect()
+  }, [clientRef, setHasReconnectExceeded])
 
   return {
     clientRef,
     connectionState,
     connectionStateRef,
+    hasReconnectExceeded,
+    manualReconnect,
   }
 }

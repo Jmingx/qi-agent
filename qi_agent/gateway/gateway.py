@@ -68,6 +68,7 @@ class Gateway:
         )
         self.dispatcher.register("session/list", log_rpc("session/list")(self._list_sessions))
         self.dispatcher.register("session/status", log_rpc("session/status")(self._session_status))
+        self.dispatcher.register("session/trace", log_rpc("session/trace")(self._session_trace))
         self.dispatcher.register("session/delete", log_rpc("session/delete")(self._session_delete))
         self.dispatcher.register("session/search", log_rpc("session/search")(self._session_search))
         self.dispatcher.register("context/info", log_rpc("context/info")(self._context_info))
@@ -182,6 +183,15 @@ class Gateway:
             "result": context.result,
             "error": context.error or getattr(context, "_error", None),
         }
+
+    def _session_trace(self, session_id: str) -> dict:
+        context = self.manager.get_context(session_id)
+        if context is None:
+            raise RpcError(ERROR_SESSION_NOT_FOUND, f"会话不存在: {session_id}")
+        # trace_id 不是 context 的正式字段，而是 telemetry 插件挂在事件总线
+        # 上的附加状态；Gateway 只负责转发，不直接依赖插件实现细节。
+        trace_id = getattr(context.events, "_qi_telemetry_trace_id", None)
+        return {"trace_id": trace_id or None}
 
     def _session_delete(self, session_id: str) -> dict:
         context = self.manager.get_context(session_id)

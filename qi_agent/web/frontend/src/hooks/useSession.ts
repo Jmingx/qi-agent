@@ -28,6 +28,7 @@ type UseSessionResult = {
   setMemoryText: Dispatch<SetStateAction<string>>
   bootstrappedRef: MutableRefObject<boolean>
   bootstrapInFlightRef: MutableRefObject<boolean>
+  bootstrapPromiseRef: MutableRefObject<Promise<string | null> | null>
   loadingSessionRef: MutableRefObject<boolean>
   refreshSessions: () => Promise<void>
 }
@@ -47,6 +48,7 @@ export function useSession({
   const [memoryText, setMemoryText] = useState('')
   const bootstrappedRef = useRef(false)
   const bootstrapInFlightRef = useRef(false)
+  const bootstrapPromiseRef = useRef<Promise<string | null> | null>(null)
   const loadingSessionRef = useRef(false)
 
   useEffect(() => {
@@ -59,7 +61,12 @@ export function useSession({
   }, [sessionId])
 
   const setSessionId = useCallback((value: string | ((current: string) => string)) => {
-    setSessionIdState((current) => (typeof value === 'function' ? value(current) : value))
+    setSessionIdState((current) => {
+      const next = typeof value === 'function' ? value(current) : value
+      // 这里同步更新 ref，避免刚创建/恢复会话时 ref 还停留在旧值，发送兜底误判成“没有会话”。
+      sessionIdRef.current = next
+      return next
+    })
   }, [])
 
   const refreshSessions = useCallback(async (): Promise<void> => {
@@ -95,6 +102,7 @@ export function useSession({
     setMemoryText,
     bootstrappedRef,
     bootstrapInFlightRef,
+    bootstrapPromiseRef,
     loadingSessionRef,
     refreshSessions,
   }

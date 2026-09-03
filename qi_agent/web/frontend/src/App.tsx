@@ -13,6 +13,7 @@ import { useMessages } from './hooks/useMessages'
 import { useSearch } from './hooks/useSearch'
 import { useSession } from './hooks/useSession'
 import { useSessionActions } from './hooks/useSessionActions'
+import { useSessionTrace } from './hooks/useSessionTrace'
 import { useSubtask } from './hooks/useSubtask'
 import { useTheme } from './hooks/useTheme'
 import { useUsage } from './hooks/useUsage'
@@ -39,6 +40,17 @@ export default function App() {
   const session = useSession({
     clientRef: ws.clientRef,
     connectionState: ws.connectionState,
+  })
+  const {
+    traceId,
+    jaegerUrl,
+    clearTrace,
+    refreshTrace,
+    setTraceId,
+  } = useSessionTrace({
+    clientRef: ws.clientRef,
+    connectionState: ws.connectionState,
+    sessionId: session.sessionId,
   })
   const usage = useUsage({
     clientRef: ws.clientRef,
@@ -101,6 +113,8 @@ export default function App() {
     clientRef: ws.clientRef,
     connectionState: ws.connectionState,
     connectionStateRef: ws.connectionStateRef,
+    refreshTrace,
+    setTraceId,
     session,
     messages,
     usage,
@@ -118,6 +132,7 @@ export default function App() {
     setToast(null)
     setCommandPaletteOpen(false)
     window.localStorage.removeItem(DRAFT_STORAGE_KEY)
+    clearTrace()
     session.setSessionId('')
     session.setSessions([])
     session.setSidebarOpen(false)
@@ -137,8 +152,9 @@ export default function App() {
     messages.requestScrollToMessage(null)
     session.bootstrappedRef.current = false
     session.bootstrapInFlightRef.current = false
+    session.bootstrapPromiseRef.current = null
     session.loadingSessionRef.current = false
-  }, [messages, search, session, usage])
+  }, [clearTrace, messages, search, session, usage])
 
   const handleLoginSubmit = useCallback((nextToken: string): void => {
     resetWorkspaceState()
@@ -185,6 +201,12 @@ export default function App() {
   }, [clearToastTimer])
 
   useEffect(() => {
+    if (auth.authToken === null) {
+      clearTrace()
+    }
+  }, [auth.authToken, clearTrace])
+
+  useEffect(() => {
     const draft = window.localStorage.getItem(DRAFT_STORAGE_KEY)
     if (ws.connectionState === 'connected') {
       if (!input && draft) {
@@ -203,6 +225,7 @@ export default function App() {
   }, [input, ws.connectionState])
 
   const connected = ws.connectionState === 'connected'
+  const reconnectExhausted = ws.connectionState === 'disconnected' && ws.hasReconnectExceeded
   const placeholder = session.running
     ? 'AI 正在回复...'
     : ws.connectionState === 'reconnecting'
@@ -263,6 +286,8 @@ export default function App() {
         sessionLabel={buildSessionLabel(session.sessionId)}
         connectionState={ws.connectionState}
         running={session.running}
+        traceId={traceId}
+        jaegerUrl={jaegerUrl}
         usageLabel={usage.usageLabel}
         usageClass={usage.usageClass}
         themeLabel={theme.themeLabel}
@@ -278,10 +303,20 @@ export default function App() {
         onOpenMemory={() => void actions.openMemory()}
       />
 
+      {reconnectExhausted && (
+        <div className="connection-banner" role="status" aria-live="polite">
+          <span>连接已断开，自动重连已停止。</span>
+          <button type="button" onClick={() => void ws.manualReconnect()}>
+            点击重试
+          </button>
+        </div>
+      )}
+
       <MessageList
         entries={messages.entries}
         highlightedMessageId={messages.highlightedMessageId}
         loading={session.loadingSession}
+        jaegerUrl={jaegerUrl}
         scrollTarget={messages.pendingScrollTarget}
         onScrollTargetHandled={() => messages.requestScrollToMessage(null)}
         onHighlightMessage={messages.highlightMessage}

@@ -141,6 +141,36 @@ pre {
   transform: translateX(-50%);
 }
 
+.connection-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 20px;
+  color: var(--warn-text);
+  background: color-mix(in srgb, var(--warn-bg) 78%, var(--panel-strong));
+  border-bottom: 1px solid color-mix(in srgb, var(--warn-text) 18%, transparent);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.connection-banner button {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  border: 1px solid color-mix(in srgb, var(--warn-text) 26%, transparent);
+  border-radius: 999px;
+  color: var(--warn-text);
+  background: var(--panel-strong);
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.connection-banner button:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--warn-text) 38%, transparent);
+  background: var(--warn-bg);
+}
+
 .header {
   position: sticky;
   top: 0;
@@ -480,6 +510,29 @@ pre {
 .bubble-action-btn:hover {
   transform: translateY(-1px);
   border-color: var(--brand);
+}
+
+.bubble-action-btn.trace {
+  color: var(--brand-3);
+  border-color: color-mix(in srgb, var(--brand-3) 28%, var(--border));
+}
+
+/* assistant-turn 聚合回复的调用链入口（工具回合的回复不走 MessageBubble——
+   2026-09-03 消息级跳转，按钮挂在 turn 底部右侧） */
+.turn-trace {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+  opacity: 0.45;
+  transition: opacity 0.15s;
+}
+
+.turn-trace:hover {
+  opacity: 1;
+}
+
+.bubble-action-btn.trace:hover {
+  border-color: var(--brand-3);
 }
 
 .bubble-action-btn.primary {

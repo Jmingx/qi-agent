@@ -19,7 +19,15 @@ type StatusHandler = (status: ConnectionStatus) => void
 
 const INITIAL_RECONNECT_DELAY = 1000
 const MAX_RECONNECT_DELAY = 30_000
+const MAX_RECONNECT_ATTEMPTS = 8
 const CALL_TIMEOUT_MS = 30_000
+
+export class ReconnectLimitExceededError extends Error {
+  constructor() {
+    super('WebSocket reconnect attempts exhausted')
+    this.name = 'ReconnectLimitExceededError'
+  }
+}
 
 export class WsClient {
   private ws: WebSocket | null = null
@@ -29,12 +37,14 @@ export class WsClient {
   private statusHandlers = new Set<StatusHandler>()
   private reconnectTimer: number | null = null
   private reconnectDelayMs = INITIAL_RECONNECT_DELAY
+  private reconnectAttempts = 0
   private openPromise: Promise<void> | null = null
   private openResolve: (() => void) | null = null
   private openReject: ((error: Error) => void) | null = null
   private generation = 0
   private disposed = false
   private shouldReconnect = true
+  private reconnectLimitExceeded = false
   private status: ConnectionStatus = 'disconnected'
 
   constructor(
@@ -47,6 +57,9 @@ export class WsClient {
       return Promise.reject(new Error('WebSocket client released'))
     }
     this.shouldReconnect = true
+    if (this.reconnectLimitExceeded) {
+      this.resetReconnectState()
+    }
     if (!this.openPromise) {
       this.openPromise = new Promise<void>((resolve, reject) => {
         this.openResolve = resolve
@@ -62,6 +75,10 @@ export class WsClient {
       this.resolveOpenPromise()
     }
     return this.openPromise
+  }
+
+  manualReconnect(): Promise<void> {
+    return this.connect()
   }
 
   dispose(): void {
@@ -126,6 +143,10 @@ export class WsClient {
     this.ws.send(JSON.stringify({ jsonrpc: '2.0', method, params, v: WS_PROTOCOL_VERSION }))
   }
 
+  get hasReconnectExceeded(): boolean {
+    return this.reconnectLimitExceeded
+  }
+
   private openSocket(): void {
     if (this.disposed) {
       return
@@ -140,7 +161,7 @@ export class WsClient {
       if (currentGeneration !== this.generation || this.disposed) {
         return
       }
-      this.reconnectDelayMs = INITIAL_RECONNECT_DELAY
+      this.resetReconnectState()
       this.emitStatus('connected')
       this.resolveOpenPromise()
     }
@@ -163,6 +184,7 @@ export class WsClient {
       this.ws = null
       if (event.code === 4401 || event.code === 4403) {
         this.shouldReconnect = false
+        this.resetReconnectState()
         this.rejectOpenPromise(new Error(event.reason || 'WebSocket auth failed'))
         this.rejectPending(new Error(event.reason || 'WebSocket auth failed'))
         this.emitStatus('disconnected')
@@ -173,9 +195,25 @@ export class WsClient {
         this.emitStatus('disconnected')
         return
       }
+      this.reconnectAttempts += 1
+      if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        this.shouldReconnect = false
+        this.reconnectLimitExceeded = true
+        this.clearReconnectTimer()
+        this.rejectOpenPromise(new ReconnectLimitExceededError())
+        this.emitStatus('disconnected')
+        return
+      }
       this.emitStatus('reconnecting')
       this.scheduleReconnect()
     }
+  }
+
+  private resetReconnectState(): void {
+    this.clearReconnectTimer()
+    this.reconnectDelayMs = INITIAL_RECONNECT_DELAY
+    this.reconnectAttempts = 0
+    this.reconnectLimitExceeded = false
   }
 
   private scheduleReconnect(): void {

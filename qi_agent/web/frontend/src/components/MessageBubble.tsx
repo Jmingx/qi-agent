@@ -5,6 +5,7 @@ import { ZH_CN } from '../i18n/zh-CN'
 type MessageBubbleProps = {
   entry: TextEntry
   highlighted: boolean
+  jaegerUrl: string
   onCopy: (text: string) => void
   onEdit?: (entry: TextEntry) => void
   onRetry?: (entry: TextEntry) => void
@@ -13,6 +14,7 @@ type MessageBubbleProps = {
 function MessageBubbleBase({
   entry,
   highlighted,
+  jaegerUrl,
   onCopy,
   onEdit,
   onRetry,
@@ -25,12 +27,32 @@ function MessageBubbleBase({
 
   const canEdit = entry.role === 'user' && Boolean(onEdit)
   const canRetry = entry.role === 'user' && entry.variant === 'error' && Boolean(onRetry)
+  const canOpenTrace = entry.role === 'assistant' && Boolean(entry.traceId)
 
   return (
     <div className="bubble-wrap">
       {entry.role !== 'system' && (
         <div className={bubbleClassName}>
           <div className="bubble-actions" aria-label={ZH_CN.messageBubble.copyTitle}>
+            {canOpenTrace && (
+              <button
+                type="button"
+                className="bubble-action-btn trace"
+                onClick={() => {
+                  if (!entry.traceId) {
+                    return
+                  }
+                  window.open(`${jaegerUrl}/trace/${entry.traceId}`, '_blank', 'noopener,noreferrer')
+                }}
+                title="查看本次调用的调用链"
+                aria-label="查看本次调用的调用链"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M10 13a5 5 0 0 1 0-7l1-1a5 5 0 0 1 7 7l-1 1" />
+                  <path d="M14 11a5 5 0 0 1 0 7l-1 1a5 5 0 0 1-7-7l1-1" />
+                </svg>
+              </button>
+            )}
             <button
               type="button"
               className="bubble-action-btn copy"

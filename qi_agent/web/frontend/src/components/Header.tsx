@@ -3,6 +3,8 @@ type HeaderProps = {
   sessionLabel: string
   connectionState: 'connected' | 'reconnecting' | 'disconnected'
   running: boolean
+  traceId: string | null
+  jaegerUrl: string
   usageLabel: string
   usageClass: 'ok' | 'warn'
   themeLabel: string
@@ -20,6 +22,8 @@ export function Header({
   sessionLabel,
   connectionState,
   running,
+  traceId,
+  jaegerUrl,
   usageLabel,
   usageClass,
   themeLabel,
@@ -62,6 +66,20 @@ export function Header({
         >
           <span className="theme-btn-icon">{themeIcon}</span>
           <span className="theme-btn-text">{themeLabel}</span>
+        </button>
+        <button
+          type="button"
+          className="icon-btn"
+          disabled={!traceId}
+          title={traceId ? '查看调用链（Jaeger）' : '需启用 OTel 遥测'}
+          onClick={() => {
+            if (!traceId) {
+              return
+            }
+            window.open(`${jaegerUrl}/trace/${traceId}`, '_blank', 'noopener,noreferrer')
+          }}
+        >
+          🔗
         </button>
         <span className={`badge ${usageClass} usage-badge`} title="当前会话上下文占用">
           <span className="dot" />

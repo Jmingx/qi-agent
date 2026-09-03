@@ -16,6 +16,7 @@ type MessageListProps = {
   entries: StreamEntry[]
   highlightedMessageId: number | null
   loading: boolean
+  jaegerUrl: string
   scrollTarget: PendingScrollTarget
   onScrollTargetHandled: () => void
   onHighlightMessage: (messageId: number) => void
@@ -259,6 +260,7 @@ export function MessageList({
   entries,
   highlightedMessageId,
   loading,
+  jaegerUrl,
   scrollTarget,
   onScrollTargetHandled,
   onHighlightMessage,
@@ -501,6 +503,27 @@ export function MessageList({
                   ))}
                 </div>
               )}
+              {(item.textEntries[0]?.traceId ?? item.toolEntries[0]?.traceId) && (
+                <div className="turn-trace">
+                  <button
+                    type="button"
+                    className="bubble-action-btn trace"
+                    title="查看本次调用的调用链"
+                    aria-label="查看本次调用的调用链"
+                    onClick={() => {
+                      const traceId = item.textEntries[0]?.traceId ?? item.toolEntries[0]?.traceId
+                      if (traceId) {
+                        window.open(`${jaegerUrl}/trace/${traceId}`, '_blank', 'noopener,noreferrer')
+                      }
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M10 13a5 5 0 0 1 0-7l1-1a5 5 0 0 1 7 7l-1 1" />
+                      <path d="M14 11a5 5 0 0 1 0 7l-1 1a5 5 0 0 1-7-7l1-1" />
+                    </svg>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -547,6 +570,7 @@ export function MessageList({
           <MessageBubble
             entry={item.entry}
             highlighted={highlightedMessageId === item.id}
+            jaegerUrl={jaegerUrl}
             onCopy={onCopyMessage}
             onEdit={onEditMessage}
             onRetry={(message) => onRetryMessage(message.id, message.content)}

@@ -8,6 +8,7 @@ export type TextEntry = {
   kind: 'message'
   role: Role
   content: string
+  traceId?: string | null
   time?: string
   variant?: MessageVariant
 }
@@ -27,6 +28,7 @@ export type ToolEntry = {
   status: 'running' | 'blocked'
   reason?: string
   result?: ToolResultEntry
+  traceId?: string | null
   time?: string
 }
 
@@ -137,6 +139,10 @@ export type SessionStatusResponse = {
   messages?: number
   result?: unknown
   error?: unknown
+}
+
+export type SessionTraceResponse = {
+  trace_id: string | null
 }
 
 export type DelegateAsyncResponse = {

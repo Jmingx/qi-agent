@@ -166,8 +166,6 @@ def test_batch_export_and_redaction(monkeypatch) -> None:
         },
         output="top secret content",
         duration=0.125,
-        turn=1,
-        step=0,
     )
     bus.emit("agent/turn-end", reason="completed")
 
@@ -194,6 +192,9 @@ def test_batch_export_and_redaction(monkeypatch) -> None:
     assert _attrs(llm)["total_tokens"] == 133
     assert _attrs(llm)["status"] == "ok"
     assert _attrs(llm)["latency_ms"] >= 0
+    assert llm.end_time is not None
+    assert llm.start_time is not None
+    assert llm.end_time > llm.start_time
 
     assert turn.parent is not None
     assert turn.parent.span_id == root.context.span_id
@@ -212,6 +213,64 @@ def test_batch_export_and_redaction(monkeypatch) -> None:
     exporter = _FakeExporter.instances[0]
     assert exporter.batches
     assert exporter.shutdown_called == 0
+
+
+def test_tool_results_use_fifo_when_result_payload_lacks_step(monkeypatch) -> None:
+    """真实 tool-result 不带 turn/step 时，也要按调用顺序把 span 收齐。"""
+    from qi_agent.plugins.builtin import telemetry_otel as otel
+
+    _FakeExporter.instances.clear()
+    monkeypatch.setattr(otel, "OTLPSpanExporter", _FakeExporter)
+    plugin = otel.TelemetryOtelPlugin(
+        {"enabled": True, "endpoint": "http://127.0.0.1:4318", "model": "test-model"}
+    )
+    bus = EventBus(context_id="ctx-fifo")
+    plugin.install(bus)
+
+    bus.emit("agent/turn-start", user_input="hi")
+    bus.emit(
+        "agent/pre-llm",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        turn=1,
+        step=0,
+    )
+    bus.bail(
+        "agent/tool-call",
+        name="shell",
+        arguments={"command": "echo 1"},
+        turn=1,
+        step=0,
+    )
+    bus.bail(
+        "agent/tool-call",
+        name="get_time",
+        arguments={},
+        turn=1,
+        step=1,
+    )
+    bus.emit(
+        "agent/tool-result",
+        name="shell",
+        arguments={"command": "echo 1"},
+        output="1",
+        duration=0.01,
+    )
+    bus.emit(
+        "agent/tool-result",
+        name="get_time",
+        arguments={},
+        output="2026-09-03T00:00:00Z",
+        duration=0.01,
+    )
+    bus.emit("agent/turn-end", reason="completed")
+
+    spans = _collect_spans()
+    tool_spans = [span for span in spans if span.name == "agent/tool-call"]
+    assert len(tool_spans) == 2
+    tool_names = [_attrs(span)["tool.name"] for span in tool_spans]
+    assert tool_names == ["shell", "get_time"]
+    assert [_attrs(span)["status"] for span in tool_spans] == ["ok", "ok"]
 
 
 def test_compress_memory_and_approval_spans(monkeypatch) -> None:

@@ -163,12 +163,21 @@ class TelemetryOtelPlugin:
         with self._lock:
             if self._state.root is None:
                 cid = self._context_id()
-                self._state.root = self._start_span(
+                span = self._start_span(
                     _ROOT_NAME,
                     attrs={"session_id": cid, "context_id": cid, "model": self.model},
                     links=self._delegate_link(),
                 )
-                self._state.root_token = self._attach_span(self._state.root)
+                self._state.root = span
+                self._state.root_token = self._attach_span(span)
+                # 事件总线是 context.events 的别名；把 trace_id 记在总线上，
+                # Gateway / Web 都只读这一处，不需要侵入 context 核心结构。
+                if self._bus is not None:
+                    setattr(
+                        self._bus,
+                        "_qi_telemetry_trace_id",
+                        format(span.get_span_context().trace_id, "032x"),
+                    )
             return self._state.root
 
     def _on_register(self, context_id: str, role: str, **_) -> None:
@@ -236,7 +245,17 @@ class TelemetryOtelPlugin:
                     )
                     self._state.turn_token = self._attach_span(self._state.turn)
                     self._state.turn_no = turn
-                self._state.llm_started[(turn, step)] = time.perf_counter()
+                # pre-llm 只开 span，不在这里结束，避免把真实 LLM 延迟压成 0ms。
+                self._state.llm_spans[(turn, step)] = PendingSpan(
+                    turn=turn,
+                    step=step,
+                    span=self._start_span(
+                        _LLM_NAME,
+                        parent=self._turn_context(),
+                        attrs={"model": self.model, "status": "running"},
+                    ),
+                    started_at=time.perf_counter(),
+                )
         except Exception as exc:  # pragma: no cover
             _LOG.debug("OTel pre-llm 失败: %s", exc)
 
@@ -250,21 +269,30 @@ class TelemetryOtelPlugin:
     ) -> None:
         try:
             usage = getattr(result, "usage", None) or {}
-            started = self._state.llm_started.pop((turn, step), None)
+            with self._lock:
+                pending = self._state.llm_spans.pop((turn, step), None)
+            if pending is None:
+                # 兜底：理论上 pre/post 一定成对；缺 pre 时也别直接丢 span。
+                pending = PendingSpan(
+                    turn=turn,
+                    step=step,
+                    span=self._start_span(
+                        _LLM_NAME,
+                        parent=self._turn_context(),
+                        attrs={"model": self.model, "status": "running"},
+                    ),
+                    started_at=time.perf_counter(),
+                )
             self._finish_span(
-                self._start_span(
-                    _LLM_NAME,
-                    parent=self._turn_context(),
-                    attrs={
-                        "model": self.model,
-                        "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
-                        "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
-                        "total_tokens": int(usage.get("total_tokens", 0) or 0),
-                        "latency_ms": int((time.perf_counter() - started) * 1000) if started else 0,
-                        "status": "ok" if usage else "missing_usage",
-                    },
-                ),
-                {},
+                pending.span,
+                {
+                    "model": self.model,
+                    "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+                    "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+                    "total_tokens": int(usage.get("total_tokens", 0) or 0),
+                    "latency_ms": int((time.perf_counter() - pending.started_at) * 1000),
+                    "status": "ok" if usage else "missing_usage",
+                },
             )
             if messages:
                 self._maybe_write_memory(messages)
@@ -311,8 +339,21 @@ class TelemetryOtelPlugin:
                 },
             )
             with self._lock:
-                self._state.tool_spans.setdefault((turn, step), []).append(
-                    PendingSpan(span, time.perf_counter())
+                pending = PendingSpan(
+                    turn=turn,
+                    step=step,
+                    span=span,
+                    started_at=time.perf_counter(),
+                )
+                self._state.tool_spans.setdefault((turn, step), []).append(pending)
+                self._state.tool_queue.setdefault(turn, []).append(pending)
+                _LOG.debug(
+                    "OTel tool-call 进入队列 name=%s turn=%d step=%d exact=%d fifo=%d",
+                    name,
+                    turn,
+                    step,
+                    len(self._state.tool_spans[(turn, step)]),
+                    len(self._state.tool_queue[turn]),
                 )
             if name == "delegate_task":
                 with _GLOBAL_LOCK:
@@ -332,8 +373,35 @@ class TelemetryOtelPlugin:
     ) -> None:
         try:
             with self._lock:
-                pending = self._state.tool_spans.get((turn, step), [])
-                record = pending.pop(0) if pending else None
+                turn_key = turn or self._state.turn_no or 0
+                queue = self._state.tool_queue.get(turn_key, [])
+                record = queue.pop(0) if queue else None
+                if record is None:
+                    pending = self._state.tool_spans.get((turn, step), [])
+                    record = pending.pop(0) if pending else None
+                if record is not None:
+                    exact_key = (record.turn, record.step)
+                    exact_bucket = self._state.tool_spans.get(exact_key, [])
+                    if record in exact_bucket:
+                        exact_bucket.remove(record)
+                    turn_bucket = self._state.tool_queue.get(record.turn, [])
+                    if record in turn_bucket:
+                        turn_bucket.remove(record)
+                    if not turn_bucket:
+                        self._state.tool_queue.pop(record.turn, None)
+                    if not exact_bucket:
+                        self._state.tool_spans.pop(exact_key, None)
+                    _LOG.debug(
+                        (
+                            "OTel tool-result 命中 name=%s result_turn=%d "
+                            "result_step=%d matched_turn=%d matched_step=%d"
+                        ),
+                        name,
+                        turn,
+                        step,
+                        record.turn,
+                        record.step,
+                    )
             if record is None:
                 return
             self._finish_span(
@@ -342,7 +410,7 @@ class TelemetryOtelPlugin:
                     "status": "blocked"
                     if str(output).startswith(_FAIL_PREFIXES)
                     else "ok",
-                    "duration_ms": int(duration * 1000),
+                    "duration_ms": int((time.perf_counter() - record.started_at) * 1000),
                 },
             )
             if name == "delegate_task":

@@ -51,6 +51,8 @@ _GLOBAL_LOCK = threading.RLock()
 class PendingSpan:
     """待结束的 span。"""
 
+    turn: int
+    step: int
     span: Any
     started_at: float
 
@@ -64,8 +66,9 @@ class State:
     turn: Any | None = None
     turn_token: Any | None = None
     turn_no: int | None = None
-    llm_started: dict[tuple[int, int], float] = field(default_factory=dict)
+    llm_spans: dict[tuple[int, int], PendingSpan] = field(default_factory=dict)
     tool_spans: dict[tuple[int, int], list[PendingSpan]] = field(default_factory=dict)
+    tool_queue: dict[int, list[PendingSpan]] = field(default_factory=dict)
     turn_usage: dict[int, dict[str, int]] = field(default_factory=dict)
     pre_steps: dict[tuple[int, int], tuple[int, int]] = field(default_factory=dict)
 

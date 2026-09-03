@@ -146,19 +146,31 @@ class ServeTransport:
     def _make_final_answer_handler(self, context):
         def _handler(**data: Any) -> None:
             parent_id = getattr(context, "parent_id", None)
-            if not parent_id:
+            if parent_id:
+                detail = _summarize_text(
+                    data.get("content")
+                    or data.get("text")
+                    or data.get("answer")
+                    or data.get("message")
+                    or "",
+                    80,
+                )
+                if not detail:
+                    detail = "✍️ 回答"
+                self._notify_subtask_progress(context, "final-answer", detail)
                 return
-            detail = _summarize_text(
-                data.get("content")
-                or data.get("text")
-                or data.get("answer")
-                or data.get("message")
-                or "",
-                80,
-            )
-            if not detail:
-                detail = "✍️ 回答"
-            self._notify_subtask_progress(context, "final-answer", detail)
+            # 主 context 正常完成：agent 循环正常路径只 emit final-answer
+            # （turn-end 事件仅在 stopped/max_turns 发）——这里补发
+            # turn/end(completed) 通知：前端"回合完成 + trace_id 标记"依赖它
+            # （2026-09-03 消息级跳转——曾误挂 turn-end 事件导致正常对话无标记）
+            trace_id = getattr(context.events, "_qi_telemetry_trace_id", None)
+            payload: dict[str, Any] = {
+                "session_id": context.id,
+                "reason": "completed",
+            }
+            if trace_id:
+                payload["trace_id"] = trace_id
+            self._notify("turn/end", **payload)
 
         return _handler
 
@@ -194,6 +206,9 @@ class ServeTransport:
             payload = {"session_id": context.id, "reason": reason}
             if error is not None:
                 payload["error"] = error
+            trace_id = getattr(context.events, "_qi_telemetry_trace_id", None)
+            if trace_id:
+                payload["trace_id"] = trace_id
             self._notify("turn/end", **payload)
 
         return _handler

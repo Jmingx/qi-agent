@@ -39,6 +39,7 @@ type SessionState = {
   setMemoryText: Dispatch<SetStateAction<string>>
   bootstrappedRef: MutableRefObject<boolean>
   bootstrapInFlightRef: MutableRefObject<boolean>
+  bootstrapPromiseRef: MutableRefObject<Promise<string | null> | null>
   loadingSessionRef: MutableRefObject<boolean>
   refreshSessions: () => Promise<void>
 }
@@ -72,6 +73,8 @@ type UseSessionActionsArgs = {
   clientRef: MutableRefObject<WsClient | null>
   connectionState: ConnectionStatus
   connectionStateRef: MutableRefObject<ConnectionStatus>
+  refreshTrace: (targetSessionId?: string) => Promise<string | null>
+  setTraceId: Dispatch<SetStateAction<string | null>>
   session: SessionState
   messages: MessageState
   usage: UsageState
@@ -85,7 +88,7 @@ type UseSessionActionsArgs = {
 }
 
 type UseSessionActionsResult = {
-  bootstrapSession: () => Promise<void>
+  bootstrapSession: () => Promise<string | null>
   newSession: () => Promise<void>
   switchSession: (targetSessionId: string, focusSearch?: { query: string; content: string }) => Promise<void>
   deleteSession: (targetSessionId: string) => Promise<void>
@@ -112,6 +115,8 @@ export function useSessionActions({
   clientRef,
   connectionState,
   connectionStateRef,
+  refreshTrace,
+  setTraceId,
   session,
   messages,
   usage,
@@ -131,6 +136,7 @@ export function useSessionActions({
     setSidebarOpen,
     bootstrappedRef,
     bootstrapInFlightRef,
+    bootstrapPromiseRef,
     loadingSessionRef,
     sessionIdRef,
   } = session
@@ -192,6 +198,7 @@ export function useSessionActions({
 
     const response = await client.call<SessionCreateResponse>('session/create', { goal })
     setSessionId(response.session_id)
+    setTraceId(null)
     bootstrappedRef.current = true
     setRunning(false)
     setLoadingSession(false)
@@ -214,6 +221,7 @@ export function useSessionActions({
     setLoadingSession,
     setRunning,
     setSessionId,
+    setTraceId,
     setSidebarOpen,
   ])
 
@@ -223,14 +231,14 @@ export function useSessionActions({
       allowFallbackToCreate: boolean
       focusSearch?: { query: string; content: string }
     },
-  ): Promise<void> => {
+  ): Promise<string | null> => {
     const client = clientRef.current
     if (!client) {
       throw new Error('Client not initialized')
     }
 
     if (loadingSessionRef.current) {
-      return
+      return null
     }
 
     loadingSessionRef.current = true
@@ -253,6 +261,7 @@ export function useSessionActions({
       await client.call<SessionResumeResponse>('session/resume', { session_id: targetSessionId })
       const history = await loadHistory(targetSessionId)
       setSessionId(targetSessionId)
+      setTraceId(null)
       bootstrappedRef.current = true
       setApproval(null)
       setRunning(false)
@@ -267,6 +276,7 @@ export function useSessionActions({
         : null)
       void refreshSessions()
       void refreshUsage(targetSessionId)
+      return targetSessionId
     } catch (error) {
       console.error('[qi-agent] restoreSession failed', error)
       if (!options.allowFallbackToCreate) {
@@ -274,8 +284,9 @@ export function useSessionActions({
       }
       const message = getErrorMessage(error)
       showToast(`鎭㈠浼氳瘽澶辫触锛屽凡鑷姩鏂板缓锛?{message}`)
-      await replaceSessionWithFresh('web 浼氳瘽')
+      const createdSessionId = await replaceSessionWithFresh('web 浼氳瘽')
       appendSystemMessage(`鎭㈠浼氳瘽澶辫触锛屽凡鑷姩鏂板缓锛?{message}`, 'error')
+      return createdSessionId
     } finally {
       loadingSessionRef.current = false
       setLoadingSession(false)
@@ -294,29 +305,66 @@ export function useSessionActions({
     setLoadingSession,
     setRunning,
     setSessionId,
+    setTraceId,
     setSidebarOpen,
     showToast,
   ])
 
-  const bootstrapSession = useCallback(async (): Promise<void> => {
-    if (bootstrappedRef.current || bootstrapInFlightRef.current) {
-      return
+  const bootstrapSession = useCallback(async (): Promise<string | null> => {
+    if (bootstrappedRef.current) {
+      return sessionIdRef.current || null
     }
+    if (bootstrapPromiseRef.current) {
+      return bootstrapPromiseRef.current
+    }
+
     bootstrapInFlightRef.current = true
-    try {
-      const storedSessionId = readSessionId()
-      if (storedSessionId) {
-        await restoreSession(storedSessionId, { allowFallbackToCreate: true })
-      } else {
-        await replaceSessionWithFresh('web 浼氳瘽')
+    const promise = (async (): Promise<string | null> => {
+      try {
+        const storedSessionId = readSessionId()
+        const bootstrappedSessionId = storedSessionId
+          ? await restoreSession(storedSessionId, { allowFallbackToCreate: true })
+          : await replaceSessionWithFresh('web 浼氳瘽')
+        void refreshSessions()
+        return bootstrappedSessionId
+      } catch (error) {
+        console.error('[qi-agent] bootstrapSession failed', error)
+        return null
+      } finally {
+        bootstrapInFlightRef.current = false
+        bootstrapPromiseRef.current = null
       }
-      void refreshSessions()
-    } catch (error) {
-      console.error('[qi-agent] bootstrapSession failed', error)
-    } finally {
-      bootstrapInFlightRef.current = false
+    })()
+    bootstrapPromiseRef.current = promise
+    return promise
+  }, [
+    bootstrapInFlightRef,
+    bootstrapPromiseRef,
+    bootstrappedRef,
+    refreshSessions,
+    replaceSessionWithFresh,
+    restoreSession,
+    sessionIdRef,
+  ])
+
+  const ensureSession = useCallback(async (): Promise<string> => {
+    if (session.sessionId) {
+      return session.sessionId
     }
-  }, [bootstrapInFlightRef, bootstrappedRef, refreshSessions, replaceSessionWithFresh, restoreSession])
+
+    // 先等待现成的 bootstrap，避免发送链路自己再开一条创建请求。
+    const bootstrappedSessionId = await bootstrapSession()
+    if (bootstrappedSessionId) {
+      return bootstrappedSessionId
+    }
+
+    // bootstrap 失败或被历史恢复逻辑卡住时，发送路径兜底新建一个干净会话。
+    if (connectionStateRef.current !== 'connected') {
+      throw new Error('WebSocket not connected')
+    }
+
+    return replaceSessionWithFresh('web 浼氳瘽')
+  }, [bootstrapSession, connectionStateRef, replaceSessionWithFresh, session.sessionId])
 
   const newSession = useCallback(async (): Promise<void> => {
     if (!ensureConnected('鏂板缓浼氳瘽')) {
@@ -379,6 +427,10 @@ export function useSessionActions({
     try {
       await client.call('session/delete', { session_id: targetSessionId })
       const deletingCurrent = targetSessionId === sessionIdRef.current
+      if (deletingCurrent) {
+        // 当前会话被删除后，链接必须立刻失效；等新会话创建完再重新拉取。
+        setTraceId(null)
+      }
       await refreshSessions()
       if (!deletingCurrent) {
         await refreshUsage(sessionIdRef.current)
@@ -396,7 +448,7 @@ export function useSessionActions({
       showToast(`鍒犻櫎浼氳瘽澶辫触锛?{message}`)
       appendSystemMessage(`鍒犻櫎浼氳瘽澶辫触锛?{message}`, 'error')
     }
-  }, [clientRef, ensureConnected, messages, refreshSessions, refreshUsage, replaceSessionWithFresh, session, showToast, usage])
+  }, [clientRef, ensureConnected, messages, refreshSessions, refreshUsage, replaceSessionWithFresh, session, setTraceId, showToast, usage])
 
   const clearCurrentSession = useCallback(async (): Promise<void> => {
     if (!session.sessionId || !ensureConnected('娓呯┖褰撳墠浼氳瘽')) {
@@ -413,6 +465,7 @@ export function useSessionActions({
       await client.call('context/clear', { session_id: session.sessionId })
       setApproval(null)
       setRunning(false)
+      setTraceId(null)
       messages.currentTurnRef.current += 1
       messages.clearEntries()
       usage.setUsage(null)
@@ -424,7 +477,7 @@ export function useSessionActions({
       showToast(`娓呯┖浼氳瘽澶辫触锛?{message}`)
       appendSystemMessage(`娓呯┖浼氳瘽澶辫触锛?{message}`, 'error')
     }
-  }, [clientRef, ensureConnected, messages, refreshSessions, refreshUsage, session, showToast, usage])
+  }, [clientRef, ensureConnected, messages, refreshSessions, refreshUsage, session, setTraceId, showToast, usage])
 
   const stop = useCallback(async (): Promise<void> => {
     if (!session.sessionId || !ensureConnected('鍋滄杩愯')) {
@@ -612,13 +665,11 @@ export function useSessionActions({
     if (!content) {
       return
     }
-    if (!session.sessionId) {
-      return
-    }
     if (connectionStateRef.current !== 'connected') {
       showToast('Disconnected. Wait for reconnect.')
       return
     }
+    const sessionId = await ensureSession()
     const client = clientRef.current
     if (!client) {
       showToast('Connection unavailable')
@@ -631,7 +682,7 @@ export function useSessionActions({
     logEvent('send', {
       isRetry: options.userMessageId !== undefined,
       length: content.length,
-      sessionId: session.sessionId,
+      sessionId,
     })
 
     if (options.userMessageId !== undefined) {
@@ -647,11 +698,12 @@ export function useSessionActions({
 
     messages.beginTurn()
     const userMessageId = options.userMessageId ?? messages.appendMessage('user', content)
+    messages.trackCurrentTurnEntryId(userMessageId)
     setRunning(true)
 
     try {
       const response = await client.call<{ reply: string }>('message/send', {
-        session_id: session.sessionId,
+        session_id: sessionId,
         text: content,
       })
       if (response.reply) {
@@ -676,14 +728,18 @@ export function useSessionActions({
     } finally {
       setRunning(false)
       messages.turnErrorNotifiedRef.current = false
+      // 用 ref 而非闭包 sessionId（lazy 会话创建后 state 更新有延迟窗口——
+      // 闭包里的 sessionId 可能是旧值，导致 trace 刷新到空会话）
+      void refreshTrace(session.sessionIdRef.current)
       void refreshUsage()
     }
   }, [
     clientRef,
     connectionStateRef,
+    ensureSession,
     messages,
+    refreshTrace,
     refreshUsage,
-    session,
     setCommandPaletteOpen,
     setInput,
     showToast,
@@ -777,6 +833,5 @@ export function useSessionActions({
     handleSearchSelect,
   }
 }
-
 
 

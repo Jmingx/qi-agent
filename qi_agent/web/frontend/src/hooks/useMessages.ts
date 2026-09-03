@@ -44,6 +44,7 @@ type UseMessagesResult = {
   updateSubTaskEntry: (subId: string, updater: (entry: SubTaskEntry) => SubTaskEntry) => void
   appendSubTaskEntry: (entry: Omit<SubTaskEntry, 'id' | 'kind'>) => number
   beginTurn: () => void
+  trackCurrentTurnEntryId: (entryId: number) => void
   currentTurnRef: MutableRefObject<number>
   currentTurnAssistantSeenRef: MutableRefObject<boolean>
   turnErrorNotifiedRef: MutableRefObject<boolean>
@@ -84,6 +85,7 @@ export function useMessages({
   const currentTurnRef = useRef(0)
   const currentTurnAssistantSeenRef = useRef(false)
   const turnErrorNotifiedRef = useRef(false)
+  const currentTurnEntryIdsRef = useRef<Set<number> | null>(null)
   const streamingRef = useRef<{ id: number; turn: number; full: string } | null>(null)
 
   const syncNextId = useCallback((next: StreamEntry[]): void => {
@@ -108,13 +110,49 @@ export function useMessages({
     turnErrorNotifiedRef.current = false
   }, [])
 
+  const clearCurrentTurnEntries = useCallback((): void => {
+    currentTurnEntryIdsRef.current = null
+  }, [])
+
+  const trackCurrentTurnEntryId = useCallback((entryId: number): void => {
+    if (currentTurnEntryIdsRef.current === null) {
+      return
+    }
+    currentTurnEntryIdsRef.current.add(entryId)
+  }, [])
+
+  const applyTraceIdToCurrentTurnEntries = useCallback((traceId: string): void => {
+    const ids = currentTurnEntryIdsRef.current
+    if (!ids || ids.size === 0) {
+      clearCurrentTurnEntries()
+      return
+    }
+
+    const nextEntries = entriesRef.current.map((entry) => {
+      if (!ids.has(entry.id)) {
+        return entry
+      }
+      // turn/end 只在本回合收口时打标，避免把后续新回合的消息串到旧 trace。
+      if (entry.kind === 'message') {
+        return { ...entry, traceId }
+      }
+      if (entry.kind === 'tool') {
+        return { ...entry, traceId }
+      }
+      return entry
+    })
+    commitEntries(nextEntries)
+    clearCurrentTurnEntries()
+  }, [clearCurrentTurnEntries, commitEntries])
+
   const replaceEntries = useCallback((next: StreamEntry[]): void => {
     commitEntries(next)
   }, [commitEntries])
 
   const clearEntries = useCallback((): void => {
+    clearCurrentTurnEntries()
     commitEntries([])
-  }, [commitEntries])
+  }, [clearCurrentTurnEntries, commitEntries])
 
   const appendMessage = useCallback((
     role: Role,
@@ -127,8 +165,11 @@ export function useMessages({
       createMessageEntry(id, role, content, variant),
     ]
     commitEntries(next)
+    if (role !== 'system') {
+      trackCurrentTurnEntryId(id)
+    }
     return id
-  }, [commitEntries, nextId])
+  }, [commitEntries, nextId, trackCurrentTurnEntryId])
 
   const appendSystemMessage = useCallback((
     content: string,
@@ -196,9 +237,10 @@ export function useMessages({
 
   const beginTurn = useCallback((): void => {
     clearStreamingState()
+    clearCurrentTurnEntries()
+    currentTurnEntryIdsRef.current = new Set<number>()
     currentTurnRef.current += 1
-  }, [clearStreamingState])
-
+  }, [clearStreamingState, clearCurrentTurnEntries])
   useEffect(() => {
     const client = clientRef.current
     if (!client) {
@@ -236,6 +278,7 @@ export function useMessages({
         ...entriesRef.current,
         { id, kind: 'message', role: 'assistant', content: delta, time: now() },
       ])
+      trackCurrentTurnEntryId(id)
     })
 
     client.onNotify('item/toolCall', (params) => {
@@ -245,13 +288,14 @@ export function useMessages({
         return
       }
 
+      const entryId = nextId()
       const nextEntries: StreamEntry[] = [
         ...entriesRef.current,
         {
-          id: nextId(),
+          id: entryId,
           kind: 'tool',
           sessionId: targetSessionId,
-          name: String(payload.name ?? '未知工具'),
+          name: String(payload.name ?? '鏈煡宸ュ叿'),
           toolArguments: normalizeToolArguments(payload.arguments),
           status: payload.status === 'blocked' ? 'blocked' : 'running',
           reason: payload.reason ? String(payload.reason) : undefined,
@@ -259,6 +303,7 @@ export function useMessages({
         } satisfies ToolEntry,
       ]
       commitEntries(nextEntries)
+      trackCurrentTurnEntryId(entryId)
     })
 
     client.onNotify('item/toolResult', (params) => {
@@ -268,7 +313,7 @@ export function useMessages({
         return
       }
 
-      const toolName = String(payload.name ?? '未知工具')
+      const toolName = String(payload.name ?? '鏈煡宸ュ叿')
       const result: ToolResultEntry = {
         ok: Boolean(payload.ok),
         summary: String(payload.summary ?? ''),
@@ -293,10 +338,11 @@ export function useMessages({
         }
       }
 
+      const entryId = nextId()
       commitEntries([
         ...entriesRef.current,
         {
-          id: nextId(),
+          id: entryId,
           kind: 'tool',
           sessionId: targetSessionId,
           name: toolName,
@@ -306,15 +352,26 @@ export function useMessages({
           time: now(),
         } satisfies ToolEntry,
       ])
+      trackCurrentTurnEntryId(entryId)
     })
 
     client.onNotify('turn/end', (params) => {
+      const targetSessionId = String((params.session_id as string | undefined) ?? '')
+      if (targetSessionId && targetSessionId !== sessionIdRef.current) {
+        return  // 旧会话迟到的回合收尾不污染当前回合
+      }
       setRunning(false)
       streamingRef.current = null
+      const traceId = String((params.trace_id as string | undefined) ?? '').trim()
+      if (traceId) {
+        applyTraceIdToCurrentTurnEntries(traceId)
+      } else {
+        clearCurrentTurnEntries()
+      }
       const error = String((params.error as string | undefined) ?? '')
       turnErrorNotifiedRef.current = Boolean(error)
       if (error) {
-        appendSystemMessage(`内核错误：${error}`, 'error')
+        appendSystemMessage(`鍐呮牳閿欒锛?{error}`, 'error')
       }
       void refreshSessions()
     })
@@ -326,6 +383,8 @@ export function useMessages({
     return undefined
   }, [
     appendSystemMessage,
+    applyTraceIdToCurrentTurnEntries,
+    clearCurrentTurnEntries,
     clientRef,
     commitEntries,
     nextId,
@@ -333,7 +392,9 @@ export function useMessages({
     refreshSessions,
     sessionIdRef,
     setRunning,
+    trackCurrentTurnEntryId,
   ])
+
 
   useEffect(() => {
     if (connectionState !== 'connected') {
@@ -370,6 +431,7 @@ export function useMessages({
     updateSubTaskEntry,
     appendSubTaskEntry,
     beginTurn,
+    trackCurrentTurnEntryId,
     currentTurnRef,
     currentTurnAssistantSeenRef,
     turnErrorNotifiedRef,
