@@ -1,0 +1,3 @@
+{"id":"time_tool","prompt":"请先调用 get_time 工具，再用一句话告诉我现在的时间。","must_use_tools":["get_time"],"must_not_use_tools":["list_dir"],"reply_contains_any":["当前时间","现在是","今天是"],"max_turns":2}
+{"id":"math_direct","prompt":"只回答结果：7+5=？","must_use_tools":[],"must_not_use_tools":["get_time","list_dir"],"reply_regex":"\\b12\\b","max_turns":1}
+{"id":"list_dir_tool","prompt":"请调用 list_dir 工具查看当前目录，回答里要提到你看到了 README.md。只用一句话。","must_use_tools":["list_dir"],"must_not_use_tools":["get_time"],"reply_contains_any":["README.md"],"max_turns":2}

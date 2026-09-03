@@ -5,6 +5,7 @@ type HeaderProps = {
   running: boolean
   traceId: string | null
   jaegerUrl: string
+  opikUrl: string
   usageLabel: string
   usageClass: 'ok' | 'warn'
   themeLabel: string
@@ -24,6 +25,7 @@ export function Header({
   running,
   traceId,
   jaegerUrl,
+  opikUrl,
   usageLabel,
   usageClass,
   themeLabel,
@@ -49,7 +51,7 @@ export function Header({
 
   return (
     <header className="header">
-      <button className="icon-btn menu-btn" onClick={onOpenSidebar}>☰</button>
+      <button className="icon-btn menu-btn" onClick={onOpenSidebar} type="button" title="打开侧栏">☰</button>
       <div className="brand">
         <div className="logo">qi</div>
         <div className="brand-text">
@@ -81,15 +83,26 @@ export function Header({
         >
           🔗
         </button>
+        <button
+          type="button"
+          className="icon-btn"
+          title="评测平台（Opik）"
+          onClick={() => {
+            // 评测平台不依赖 traceId，常显入口直接打开即可。
+            window.open(opikUrl, '_blank', 'noopener,noreferrer')
+          }}
+        >
+          🧪
+        </button>
         <span className={`badge ${usageClass} usage-badge`} title="当前会话上下文占用">
           <span className="dot" />
           {usageLabel}
         </span>
         {running && <span className="badge running-badge"><span className="spinner" />运行中</span>}
-        <button className="icon-btn" onClick={onStop} disabled={!running} title="停止">⏹</button>
-        <button className="icon-btn" onClick={onClear} disabled={!sessionId} title="清空当前会话">🧹</button>
-        <button className="icon-btn" onClick={onCompact} disabled={!sessionId} title="压缩上下文">🗜</button>
-        <button className="icon-btn" onClick={onOpenMemory} title="记忆">🧠</button>
+        <button className="icon-btn" onClick={onStop} disabled={!running} title="停止" type="button">⏹</button>
+        <button className="icon-btn" onClick={onClear} disabled={!sessionId} title="清空当前会话" type="button">🧹</button>
+        <button className="icon-btn" onClick={onCompact} disabled={!sessionId} title="压缩上下文" type="button">🗜</button>
+        <button className="icon-btn" onClick={onOpenMemory} title="记忆" type="button">🧠</button>
         <span className={`badge ${statusClass}`}>
           <span className="dot" />
           {statusText}

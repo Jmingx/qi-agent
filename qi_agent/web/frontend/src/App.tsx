@@ -7,6 +7,7 @@ import { Sidebar } from './components/Sidebar'
 import { COMMANDS } from './commands'
 import { ZH_CN } from './i18n/zh-CN'
 import { type SessionSearchResult, type TextEntry } from './appModel'
+import { readOpikUrl } from './opikUrl'
 import { logEvent } from './utils/eventLog'
 import { useAuth } from './hooks/useAuth'
 import { useMessages } from './hooks/useMessages'
@@ -32,6 +33,7 @@ function buildSessionLabel(sessionId: string): string {
 export default function App() {
   const auth = useAuth()
   const theme = useTheme()
+  const [opikUrl] = useState<string>(() => readOpikUrl())
   const ws = useWsClient({
     authToken: auth.authToken,
     setAuthBusy: auth.setAuthBusy,
@@ -288,6 +290,7 @@ export default function App() {
         running={session.running}
         traceId={traceId}
         jaegerUrl={jaegerUrl}
+        opikUrl={opikUrl}
         usageLabel={usage.usageLabel}
         usageClass={usage.usageClass}
         themeLabel={theme.themeLabel}
