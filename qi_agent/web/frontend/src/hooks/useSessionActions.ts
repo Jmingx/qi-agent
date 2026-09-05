@@ -152,7 +152,7 @@ export function useSessionActions({
     if (connectionStateRef.current === 'connected') {
       return true
     }
-    showToast(`${actionName} 闇€瑕佸厛杩炴帴 WebSocket`)
+    showToast(`${actionName} 需要先连接 WebSocket`)
     return false
   }, [connectionStateRef, showToast])
 
@@ -190,7 +190,7 @@ export function useSessionActions({
     return collected
   }, [clientRef])
 
-  const replaceSessionWithFresh = useCallback(async (goal = 'web 浼氳瘽'): Promise<string> => {
+  const replaceSessionWithFresh = useCallback(async (goal = 'web 会话'): Promise<string> => {
     const client = clientRef.current
     if (!client) {
       throw new Error('WebSocket not connected')
@@ -245,8 +245,8 @@ export function useSessionActions({
     setLoadingSession(true)
     try {
       const loadingNote = targetSessionId
-        ? `姝ｅ湪鎭㈠浼氳瘽 ${targetSessionId.slice(0, 8)}...`
-        : '姝ｅ湪鎭㈠浼氳瘽...'
+        ? `正在恢复会话 ${targetSessionId.slice(0, 8)}...`
+        : '正在恢复会话...'
       replaceEntries([
         {
           id: 1,
@@ -283,9 +283,9 @@ export function useSessionActions({
         throw error
       }
       const message = getErrorMessage(error)
-      showToast(`鎭㈠浼氳瘽澶辫触锛屽凡鑷姩鏂板缓锛?{message}`)
-      const createdSessionId = await replaceSessionWithFresh('web 浼氳瘽')
-      appendSystemMessage(`鎭㈠浼氳瘽澶辫触锛屽凡鑷姩鏂板缓锛?{message}`, 'error')
+      showToast(`恢复会话失败，已自动新建：${message}`)
+      const createdSessionId = await replaceSessionWithFresh('web 会话')
+      appendSystemMessage(`恢复会话失败，已自动新建：${message}`, 'error')
       return createdSessionId
     } finally {
       loadingSessionRef.current = false
@@ -324,7 +324,7 @@ export function useSessionActions({
         const storedSessionId = readSessionId()
         const bootstrappedSessionId = storedSessionId
           ? await restoreSession(storedSessionId, { allowFallbackToCreate: true })
-          : await replaceSessionWithFresh('web 浼氳瘽')
+          : await replaceSessionWithFresh('web 会话')
         void refreshSessions()
         return bootstrappedSessionId
       } catch (error) {
@@ -363,21 +363,21 @@ export function useSessionActions({
       throw new Error('WebSocket not connected')
     }
 
-    return replaceSessionWithFresh('web 浼氳瘽')
+    return replaceSessionWithFresh('web 会话')
   }, [bootstrapSession, connectionStateRef, replaceSessionWithFresh, session.sessionId])
 
   const newSession = useCallback(async (): Promise<void> => {
-    if (!ensureConnected('鏂板缓浼氳瘽')) {
+    if (!ensureConnected('新建会话')) {
       return
     }
     setSidebarOpen(false)
     try {
-      await replaceSessionWithFresh('web 浼氳瘽')
+      await replaceSessionWithFresh('web 会话')
       showToast('New session created')
     } catch (error) {
       const message = getErrorMessage(error)
-      showToast(`鏂板缓浼氳瘽澶辫触锛?{message}`)
-      appendSystemMessage(`鏂板缓浼氳瘽澶辫触锛?{message}`, 'error')
+      showToast(`新建会话失败：${message}`)
+      appendSystemMessage(`新建会话失败：${message}`, 'error')
     }
   }, [ensureConnected, messages, replaceSessionWithFresh, session, showToast])
 
@@ -388,7 +388,7 @@ export function useSessionActions({
     if (!targetSessionId || session.running) {
       return
     }
-    if (!ensureConnected('鍒囨崲浼氳瘽')) {
+    if (!ensureConnected('切换会话')) {
       return
     }
     logEvent('switch_session', {
@@ -403,13 +403,13 @@ export function useSessionActions({
       })
     } catch (error) {
       const message = getErrorMessage(error)
-      showToast(`鍒囨崲浼氳瘽澶辫触锛?{message}`)
-      appendSystemMessage(`鍒囨崲浼氳瘽澶辫触锛?{message}`, 'error')
+      showToast(`切换会话失败：${message}`)
+      appendSystemMessage(`切换会话失败：${message}`, 'error')
     }
   }, [ensureConnected, messages, restoreSession, session, showToast])
 
   const deleteSession = useCallback(async (targetSessionId: string): Promise<void> => {
-    if (!targetSessionId || !ensureConnected('鍒犻櫎浼氳瘽')) {
+    if (!targetSessionId || !ensureConnected('删除会话')) {
       return
     }
     const label = session.sessions.find((item) => item.id === targetSessionId)?.title || targetSessionId
@@ -440,18 +440,18 @@ export function useSessionActions({
         setRunning(false)
         messages.clearEntries()
         usage.setUsage(null)
-        await replaceSessionWithFresh('web 浼氳瘽')
+        await replaceSessionWithFresh('web 会话')
       }
       showToast('Session deleted')
     } catch (error) {
       const message = getErrorMessage(error)
-      showToast(`鍒犻櫎浼氳瘽澶辫触锛?{message}`)
-      appendSystemMessage(`鍒犻櫎浼氳瘽澶辫触锛?{message}`, 'error')
+      showToast(`删除会话失败：${message}`)
+      appendSystemMessage(`删除会话失败：${message}`, 'error')
     }
   }, [clientRef, ensureConnected, messages, refreshSessions, refreshUsage, replaceSessionWithFresh, session, setTraceId, showToast, usage])
 
   const clearCurrentSession = useCallback(async (): Promise<void> => {
-    if (!session.sessionId || !ensureConnected('娓呯┖褰撳墠浼氳瘽')) {
+    if (!session.sessionId || !ensureConnected('清空当前会话')) {
       return
     }
     if (!window.confirm('Clear the current session? This removes the current context.')) {
@@ -474,13 +474,13 @@ export function useSessionActions({
       await refreshUsage(session.sessionId)
     } catch (error) {
       const message = getErrorMessage(error)
-      showToast(`娓呯┖浼氳瘽澶辫触锛?{message}`)
-      appendSystemMessage(`娓呯┖浼氳瘽澶辫触锛?{message}`, 'error')
+      showToast(`清空会话失败：${message}`)
+      appendSystemMessage(`清空会话失败：${message}`, 'error')
     }
   }, [clientRef, ensureConnected, messages, refreshSessions, refreshUsage, session, setTraceId, showToast, usage])
 
   const stop = useCallback(async (): Promise<void> => {
-    if (!session.sessionId || !ensureConnected('鍋滄杩愯')) {
+    if (!session.sessionId || !ensureConnected('停止运行')) {
       return
     }
     const client = clientRef.current
@@ -493,13 +493,13 @@ export function useSessionActions({
       setRunning(false)
     } catch (error) {
       const message = getErrorMessage(error)
-      showToast(`鍋滄澶辫触锛?{message}`)
-      appendSystemMessage(`鍋滄澶辫触锛?{message}`, 'error')
+      showToast(`停止失败：${message}`)
+      appendSystemMessage(`停止失败：${message}`, 'error')
     }
   }, [clientRef, ensureConnected, messages, session, showToast])
 
   const openMemory = useCallback(async (): Promise<void> => {
-    if (!ensureConnected('鎵撳紑璁板繂闈㈡澘')) {
+    if (!ensureConnected('打开记忆面板')) {
       return
     }
     const client = clientRef.current
@@ -508,12 +508,12 @@ export function useSessionActions({
     }
     try {
       const response = await client.call<{ memory: string }>('memory/get')
-      session.setMemoryText(response.memory || '(绌?')
+      session.setMemoryText(response.memory || '(空)')
     } catch (error) {
       const message = getErrorMessage(error)
-      session.setMemoryText(`璇诲彇澶辫触锛?{message}`)
-      showToast(`璁板繂璇诲彇澶辫触锛?{message}`)
-      appendSystemMessage(`璁板繂璇诲彇澶辫触锛?{message}`, 'error')
+      session.setMemoryText(`读取失败：${message}`)
+      showToast(`记忆读取失败：${message}`)
+      appendSystemMessage(`记忆读取失败：${message}`, 'error')
     } finally {
       session.setMemoryOpen(true)
     }
@@ -533,17 +533,17 @@ export function useSessionActions({
         { session_id: session.sessionId },
       )
       appendSystemMessage(
-        `鍘嬬缉瀹屾垚锛?{response.before ?? 0} 鏉℃秷鎭級锛?{response.summary || ''}`,
+        `压缩完成（${response.before ?? 0} 条消息）：${response.summary || ''}`,
       )
     } catch (error) {
       const message = getErrorMessage(error)
-      showToast(`鍘嬬缉澶辫触锛?{message}`)
-      appendSystemMessage(`鍘嬬缉澶辫触锛?{message}`, 'error')
+      showToast(`压缩失败：${message}`)
+      appendSystemMessage(`压缩失败：${message}`, 'error')
     }
   }, [clientRef, ensureConnected, messages, session, showToast])
 
   const respondApproval = useCallback(async (decision: 'approve' | 'deny'): Promise<void> => {
-    if (!session.approval || !session.sessionId || !ensureConnected('澶勭悊瀹℃壒')) {
+    if (!session.approval || !session.sessionId || !ensureConnected('处理审批')) {
       return
     }
     const client = clientRef.current
@@ -559,8 +559,8 @@ export function useSessionActions({
       setApproval(null)
     } catch (error) {
       const message = getErrorMessage(error)
-      showToast(`瀹℃壒鍝嶅簲澶辫触锛?{message}`)
-      appendSystemMessage(`瀹℃壒鍝嶅簲澶辫触锛?{message}`, 'error')
+      showToast(`审批响应失败：${message}`)
+      appendSystemMessage(`审批响应失败：${message}`, 'error')
     }
   }, [clientRef, ensureConnected, messages, session, showToast])
 
@@ -589,18 +589,18 @@ export function useSessionActions({
       })
       appendSystemMessage(
         [
-          `浼氳瘽鐘舵€侊細${response.status || 'unknown'}`,
-          `浼氳瘽 ID锛?{response.session_id || session.sessionId}`,
-          `娑堟伅鏁帮細${entriesRef.current.length}`,
-          response.result ? `缁撴灉锛?{JSON.stringify(response.result).slice(0, 300)}` : '缁撴灉锛氭棤',
-          response.error ? `閿欒锛?{JSON.stringify(response.error).slice(0, 300)}` : '閿欒锛氭棤',
+          `会话状态：${response.status || 'unknown'}`,
+          `会话 ID：${response.session_id || session.sessionId}`,
+          `消息数：${entriesRef.current.length}`,
+          response.result ? `结果：${JSON.stringify(response.result).slice(0, 300)}` : '结果：无',
+          response.error ? `错误：${JSON.stringify(response.error).slice(0, 300)}` : '错误：无',
         ].join('\n'),
         'info',
       )
     } catch (error) {
       const message = getErrorMessage(error)
-      showToast(`鏌ョ湅鐘舵€佸け璐ワ細${message}`)
-      appendSystemMessage(`鏌ョ湅鐘舵€佸け璐ワ細${message}`, 'error')
+      showToast(`查看状态失败：${message}`)
+      appendSystemMessage(`查看状态失败：${message}`, 'error')
     }
   }, [clientRef, ensureConnected, messages, session, showToast])
 
@@ -613,8 +613,8 @@ export function useSessionActions({
     const command = `/${parsed.name}` as CommandName
     const definition = getCommandDefinition(command)
     if (!definition) {
-      showToast(`鏈煡鍛戒护锛?{commandText}`)
-      appendSystemMessage(`鏈煡鍛戒护锛?{commandText}`, 'error')
+      showToast(`未知命令：${commandText}`)
+      appendSystemMessage(`未知命令：${commandText}`, 'error')
       return true
     }
     await definition.run({
@@ -716,14 +716,14 @@ export function useSessionActions({
       }
     } catch (error) {
       const message = getErrorMessage(error)
-      showToast(`娑堟伅鍙戦€佸け璐ワ細${message}`)
+      showToast(`消息发送失败：${message}`)
       messages.updateEntriesById(userMessageId, (entry) => (
         entry.kind === 'message'
           ? { ...entry, variant: 'error' }
           : entry
       ))
       if (!messages.turnErrorNotifiedRef.current) {
-        appendSystemMessage(`RPC 璋冪敤澶辫触锛?{message}`, 'error')
+        appendSystemMessage(`RPC 调用失败：${message}`, 'error')
       }
     } finally {
       setRunning(false)
