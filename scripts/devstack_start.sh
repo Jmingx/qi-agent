@@ -293,7 +293,7 @@ case "${1:-}" in
     ok "调用链 Jaeger:  $JAEGER_UI（trace 经 web 同源反代 /jaeger 也可达）"
     ok "内核 serve:     ws://127.0.0.1:$SERVE_PORT"
     ok "Web 前端:       http://127.0.0.1:$WEB_PORT（token: $(cat "$WEB_TOKEN_FILE" 2>/dev/null | head -c 12)…）"
-    ok "评测运行:       cd $REPO/scripts/eval && PYTHONPATH= uv run python run_eval.py"
+    ok "评测运行:       PYTHONPATH= uv run python -m evaluation.run --suite smoke"
     echo
     say "日志目录: $LOGS_DIR  |  停止: scripts/devstack_stop.sh（--all 连容器一起停）"
     ;;

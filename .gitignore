@@ -33,7 +33,6 @@ tmp/
 
 # 发布 worktree（release-push 脚本用，本地-only）
 .release-wt/
-user_profile.md
 evaluation/eval_runs/
 
 # codex-dev 开发流程工具（用户定位：非 qi-agent 内容，完全不进 git）
