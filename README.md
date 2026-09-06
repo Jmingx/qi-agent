@@ -69,11 +69,6 @@ uv run python -m evaluation.run
 # Run one JSONL suite (real LLM)
 uv run python -m evaluation.run --suite smoke
 
-# Other suites use the same Gateway runner
-uv run python -m evaluation.run --suite regression
-uv run python -m evaluation.run --suite long_context
-uv run python -m evaluation.run --suite subagent
-
 # Run every JSONL suite
 uv run python -m evaluation.run --suite all
 
