@@ -38,6 +38,24 @@ uv run python -m qi_agent.cli
 uv run python -m qi_agent.cli --debug
 ```
 
+## Evaluation
+
+```bash
+# Show available suites
+uv run python -m evaluation.run
+
+# Run one JSONL suite (real LLM)
+uv run python -m evaluation.run --suite smoke
+
+# Run every JSONL suite
+uv run python -m evaluation.run --suite all
+
+# Run one case for debugging
+uv run python -m evaluation.run --case-id time_tool
+```
+
+Every run is archived forever (`eval_runs/`), scored (LLM-as-judge with per-task rubrics), cost-tracked, and trended — regressions are caught by sliding-window comparison, not guesswork.
+
 ## Slash Commands
 
 | Command | Description |

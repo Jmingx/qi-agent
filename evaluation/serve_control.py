@@ -1,8 +1,9 @@
-"""qi-agent serve 的最小 WS JSON-RPC 客户端。"""
+"""评测服务启动与最小 WS JSON-RPC 客户端公共逻辑。"""
 
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -13,7 +14,9 @@ from typing import Any
 import websockets
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# evaluation/serve_control.py 位于仓库根目录的下一层，parents[1] 才是仓库根。
+# 这里必须准确，否则自动启动评测 Gateway 时会找不到项目依赖或配置。
+REPO_ROOT = Path(__file__).resolve().parents[1]
 SAFE_APPROVAL_COMMANDS = {"get_time", "list_dir", "read_file"}
 
 
@@ -25,19 +28,28 @@ def _socket_ready(host: str, port: int) -> bool:
         return False
 
 
-def start_serve_if_needed(host: str, port: int) -> subprocess.Popen[str] | None:
-    """若 serve 未运行，则在后台启动它。"""
+def start_serve_if_needed(
+    host: str,
+    port: int,
+    module: str = "qi_agent.serve",
+) -> subprocess.Popen[str] | None:
+    """若指定的 Gateway 未运行，则在后台启动它。"""
 
     if _socket_ready(host, port):
         return None
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    # Windows 子进程可能继承 GBK stdout；工具注册日志包含 Unicode 符号，
+    # 必须显式继承 UTF-8 模式，否则 Gateway 会在 import 阶段直接退出。
+    child_env = os.environ.copy()
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
     proc = subprocess.Popen(
-        [sys.executable, "-m", "qi_agent.serve", "--port", str(port)],
+        [sys.executable, "-m", module, "--port", str(port)],
         cwd=str(REPO_ROOT),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=creationflags,
         text=True,
+        env=child_env,
     )
     deadline = time.time() + 180.0
     while time.time() < deadline:

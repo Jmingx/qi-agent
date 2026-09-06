@@ -217,7 +217,12 @@ def test_parallel_blocked_call_still_emits() -> None:
     ])
     agent = Agent(client, events=bus)
     agent.chat("执行")
-    assert emitted[0].startswith("C:") or emitted[0].startswith("/")  # pwd 输出
+    # Unix shell 会返回路径；Windows cmd 不认识 pwd，但仍必须广播 tool-result。
+    assert (
+        emitted[0].startswith("C:")
+        or emitted[0].startswith("/")
+        or emitted[0].startswith("'pwd'")
+    )
     assert emitted[1].startswith("[工具")  # 未知工具错误也广播
 
 

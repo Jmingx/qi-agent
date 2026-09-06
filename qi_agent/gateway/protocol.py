@@ -31,7 +31,10 @@ ERROR_SESSION_NOT_FOUND = -32001
 ERROR_CONCURRENT_RUN = -32002
 
 # ── RPC 日志（写本地文件——~/.qi-agent/logs/rpc.log）───────────────────
-_RPC_LOG_DIR = os.path.join(os.path.expanduser("~"), ".qi-agent", "logs")
+_RPC_LOG_DIR = os.getenv(
+    "QI_AGENT_LOG_DIR",
+    os.path.join(os.path.expanduser("~"), ".qi-agent", "logs"),
+)
 
 
 def _get_rpc_logger() -> logging.Logger:

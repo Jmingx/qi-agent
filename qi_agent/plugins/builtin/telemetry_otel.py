@@ -260,6 +260,16 @@ class TelemetryOtelPlugin:
                     )
                     self._state.turn_token = self._attach_span(self._state.turn)
                     self._state.turn_no = turn
+                self._add_event(
+                    self._state.turn,
+                    "agent.step",
+                    {
+                        "turn": turn,
+                        "step": step,
+                        "messages": len(messages),
+                        "estimated_tokens": estimate_tokens(messages),
+                    },
+                )
                 # pre-llm 只开 span，不在这里结束，避免把真实 LLM 延迟压成 0ms。
                 self._state.llm_spans[(turn, step)] = PendingSpan(
                     turn=turn,
@@ -426,6 +436,18 @@ class TelemetryOtelPlugin:
                     if str(output).startswith(_FAIL_PREFIXES)
                     else "ok",
                     "duration_ms": int((time.perf_counter() - record.started_at) * 1000),
+                    "tool.result_summary": str(output)[:200],
+                },
+            )
+            self._add_event(
+                self._state.turn,
+                "tool.result",
+                {
+                    "tool.name": name,
+                    "status": "blocked"
+                    if str(output).startswith(_FAIL_PREFIXES)
+                    else "ok",
+                    "result_length": len(str(output)),
                 },
             )
             if name == "delegate_task":
@@ -434,13 +456,28 @@ class TelemetryOtelPlugin:
         except Exception as exc:  # pragma: no cover
             _LOG.debug("OTel tool-result 失败: %s", exc)
 
-    def _on_turn_end(self, reason: str = "completed", error: str | None = None, **_) -> None:
+    def _on_turn_end(
+        self,
+        reason: str = "completed",
+        error: str | None = None,
+        content: str | None = None,
+        **_,
+    ) -> None:
         try:
             with self._lock:
                 turn_no = self._state.turn_no if self._state.turn_no is not None else -1
                 usage = self._state.turn_usage.get(turn_no, {})
                 turn_span = self._state.turn
                 root_span = self._state.root
+                self._add_event(
+                    root_span,
+                    "agent.final_answer",
+                    {
+                        "status": reason,
+                        "answer_length": len(str(content or "")),
+                        "has_error": bool(error),
+                    },
+                )
             if turn_span is not None:
                 self._finish_span(turn_span, usage)
             if root_span is not None:
@@ -479,6 +516,19 @@ class TelemetryOtelPlugin:
             span.end()
         except Exception as exc:  # pragma: no cover
             _LOG.debug("OTel span finish 失败: %s", exc)
+
+    def _add_event(
+        self,
+        span: Any,
+        name: str,
+        attributes: dict[str, Any],
+    ) -> None:
+        if isinstance(span, NullSpan) or not hasattr(span, "add_event"):
+            return
+        try:
+            span.add_event(name, attributes=attributes)
+        except Exception as exc:  # pragma: no cover
+            _LOG.debug("OTel span event 失败: %s", exc)
 
     def _flush(self) -> None:
         if self._provider is None:

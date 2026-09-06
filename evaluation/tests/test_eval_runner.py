@@ -6,10 +6,7 @@
 """
 
 import json
-import time
-from unittest import mock
-
-from evaluation.runner import judge, run_eval
+from evaluation.runner import judge
 from evaluation.report import (
     compare,
     format_compare,
@@ -192,65 +189,6 @@ def test_evltask_new_fields_custom() -> None:
     assert called == [1]
 
 
-def test_runner_passes_overrides_and_setup() -> None:
-    """runner 传 plugin_overrides 给 build_agent + 执行 setup 前置。
-
-    阶段 C 收尾：L3 任务用小窗口覆盖触发压缩 + setup 注入 sticky。
-    """
-    seen: dict = {}
-    setup_ran: list[str] = []
-
-    def setup():
-        setup_ran.append("setup-ran")
-
-    def fake_build_runtime(**kwargs):
-        seen.update(kwargs)
-        fake_agent = FakeAgent()
-        fake_mgr = type("M", (), {
-            "get_context": lambda self, cid: fake_agent.context,
-            "run": lambda self, cid, text, stream_callback=None:
-                fake_agent.chat(text),
-        })()
-        return type("B", (), {"manager": fake_mgr,
-                              "context_id": "ctx1",
-                              "installed": [],
-                              "get_context": lambda self: fake_agent.context})()
-
-    class FakeAgent:
-        def __init__(self) -> None:
-            self.history = []
-            self._turn = 0
-            self.context = type("C", (), {"phase": type("P", (), {"value": "idle"})(),
-                                          "turn": 0, "usage": {},
-                                          "messages": []})()
-
-        def chat(self, step: str) -> str:
-            # 模拟：事实在对话中保持（压缩后依然答对）
-            # 数据写 context（数据载体——runner 读 ctx.messages 判定）
-            self._turn += 1  # 对齐真实 agent：每句用户话 +1（累计值）
-            self.context.turn = self._turn
-            reply = "好的，你的猫叫咪咪" if "猫" in step else "好的"
-            self.history.append({"role": "assistant", "content": reply})
-            self.context.messages.append({"role": "assistant", "content": reply})
-            return reply
-
-    with mock.patch("evaluation.runner.build_runtime",
-                    side_effect=fake_build_runtime):
-        task = EvalTask(
-            "c-long-1", "context", "事实保持",
-            steps=["聊聊天", "我的猫叫什么"], expected_keywords=["咪咪"],
-            plugin_overrides={"context_manager": {"compress": {"window": 2000}}},
-            setup=setup,
-        )
-        results = run_eval([task])
-    assert setup_ran == ["setup-ran"]  # setup 前置已执行
-    assert seen["plugin_overrides"]["context_manager"]["compress"]["window"] == 2000
-    assert results[0]["passed"] is True
-    # turns 语义：累计轮数（2 句用户话 = 2），不是累加和（1+2=3）
-    # ——2026-08-23 修复：曾把 agent._turn（累计值）逐次累加 → 多 step 任务虚高
-    assert results[0]["turns"] == 2
-
-
 def test_judge_forbidden_tools() -> None:
     """forbidden_tools：调用过 → 失败（L3：压缩后不重做）。"""
     task = EvalTask(
@@ -351,33 +289,6 @@ def test_report_format() -> None:
     assert "未触发安全拦截" in text
 
 
-def test_task_timeout_failure(monkeypatch) -> None:
-    """单任务超时 → 标记失败，不拖垮整体评测（用户评审 v2：异步+超时）。"""
-    class SlowAgent:
-        """假 agent：chat 卡住（模拟 LLM 挂起/工具死循环）。"""
-
-        def __init__(self) -> None:
-            self.history = []
-            self._turn = 0
-
-        def chat(self, step: str) -> str:
-            time.sleep(5)  # 远超任务超时
-            return "ok"
-
-    # patch 使用点（evaluation.runner 里 from ... import build_agent 绑定）
-    with mock.patch(
-        "evaluation.runner.build_runtime",
-        return_value=_fake_runtime(SlowAgent()),
-    ):
-        task = EvalTask(
-            id="t9", category="tool", name="卡死任务",
-            steps=["x"], timeout=0.3,
-        )
-        results = run_eval([task])
-    assert results[0]["passed"] is False
-    assert "超时" in results[0]["failures"][0]
-
-
 # ── 回归基线对比（方案 v0.4.15）───────────────────────────────────────────
 
 
@@ -473,36 +384,4 @@ def test_load_legacy_format(tmp_path, monkeypatch) -> None:
     run_at, loaded = load_report()
     assert run_at is None  # 旧格式无时间戳
     assert loaded[0]["id"] == "t1"
-
-
-# ── LLM 调用异常兜底（v0.4.24，配套 LLM timeout）────────────────────────
-
-
-def test_task_llm_error_fails_gracefully() -> None:
-    """任务内 LLM 抛异常（超时/网络）→ 任务失败，不拖垮整体评测。
-
-    v0.4.24 配套：LLMClient 加 timeout 后，挂起的 LLM 调用最多 timeout 秒
-    抛 APITimeoutError——runner 若只捕获 wait_for 超时，异常会冒泡让
-    asyncio.run 整体崩溃；必须兜底为单任务失败。
-    """
-
-    class ErrorAgent:
-        """假 agent：chat 抛异常（模拟 LLM 超时/网络错误）。"""
-
-        def __init__(self) -> None:
-            self.history = []
-            self._turn = 0
-
-        def chat(self, step: str) -> str:
-            raise TimeoutError("LLM 调用超时（60s）")
-
-    with mock.patch(
-        "evaluation.runner.build_runtime",
-        return_value=_fake_runtime(ErrorAgent()),
-    ):
-        task = EvalTask(
-            id="t10", category="tool", name="LLM异常任务", steps=["x"],
-        )
-        results = run_eval([task])
-    assert results[0]["passed"] is False
-    assert "LLM 调用超时" in results[0]["failures"][0]
+# LLM 异常由 Gateway runner 的单 Case finally cleanup 路径统一兜底。

@@ -16,7 +16,7 @@ OUTPUT_COST_PER_M = 2.0
 
 @dataclass(frozen=True)
 class EvalCase:
-    """单条验证用例。"""
+    """统一评测用例，兼容 smoke 的旧字段和 EvalTask 的全部字段。"""
 
     case_id: str
     prompt: str
@@ -27,6 +27,31 @@ class EvalCase:
     max_turns: int
     expect_tool_calls: tuple[Any, ...] = ()
     no_tool: bool = False
+    preconditions: dict[str, Any] | None = None
+    suite: str = ""
+    category: str = ""
+    name: str = ""
+    steps: tuple[str, ...] = ()
+    expected_tools: tuple[str, ...] = ()
+    expected_tools_any: tuple[str, ...] = ()
+    forbidden_tools: tuple[str, ...] = ()
+    expected_keywords: tuple[str, ...] = ()
+    expected_keyword_min_count: int = 1
+    expect_blocked: bool = False
+    expected_memory: str | None = None
+    memory_target: str = "memory"
+    expected_rubric: str | None = None
+    timeout: float = 60.0
+    plugin_overrides: dict[str, Any] | None = None
+
+    @property
+    def id(self) -> str:
+        """EvalTask 兼容别名。"""
+        return self.case_id
+
+    def conversation_steps(self) -> tuple[str, ...]:
+        """统一 smoke prompt 与多步任务的输入表示。"""
+        return self.steps or ((self.prompt,) if self.prompt else ())
 
 
 @dataclass
@@ -138,7 +163,42 @@ def _arguments_subset(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     return True
 
 
+def case_from_payload(payload: dict[str, Any], *, suite: str = "") -> EvalCase:
+    """从已解析 JSON 构造统一用例。严格结构检查由 suite_loader 负责。"""
+    steps = tuple(str(item) for item in payload.get("steps", []))
+    prompt = str(payload.get("prompt", steps[0] if steps else ""))
+    expected_tools = tuple(payload.get("expected_tools", payload.get("must_use_tools", [])))
+    forbidden_tools = tuple(
+        payload.get("forbidden_tools", payload.get("must_not_use_tools", []))
+    )
+    expected_keywords = tuple(
+        payload.get("expected_keywords", payload.get("reply_contains_any", []))
+    )
+    return EvalCase(
+        case_id=str(payload["id"]), prompt=prompt,
+        must_use_tools=tuple(payload.get("must_use_tools", expected_tools)),
+        must_not_use_tools=tuple(payload.get("must_not_use_tools", forbidden_tools)),
+        reply_contains_any=tuple(payload.get("reply_contains_any", expected_keywords)),
+        reply_regex=str(payload.get("reply_regex", "")),
+        max_turns=int(payload.get("max_turns", 2)),
+        expect_tool_calls=_load_expect_tool_calls(payload.get("expect_tool_calls")),
+        no_tool=bool(payload.get("no_tool", False)),
+        preconditions=payload.get("preconditions"), suite=str(payload.get("suite", suite)),
+        category=str(payload.get("category", "")), name=str(payload.get("name", prompt)),
+        steps=steps, expected_tools=expected_tools,
+        expected_tools_any=tuple(payload.get("expected_tools_any", [])),
+        forbidden_tools=forbidden_tools, expected_keywords=expected_keywords,
+        expected_keyword_min_count=int(payload.get("expected_keyword_min_count", 1)),
+        expect_blocked=bool(payload.get("expect_blocked", False)),
+        expected_memory=payload.get("expected_memory"),
+        memory_target=str(payload.get("memory_target", "memory")),
+        expected_rubric=payload.get("expected_rubric"), timeout=float(payload.get("timeout", 60.0)),
+        plugin_overrides=payload.get("plugin_overrides"),
+    )
+
+
 def load_cases(path: Path) -> list[EvalCase]:
+    """兼容旧调用；正式 suite 读取请使用 evaluation.suite_loader。"""
     cases: list[EvalCase] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -146,19 +206,7 @@ def load_cases(path: Path) -> list[EvalCase]:
             if not raw:
                 continue
             payload = json.loads(raw)
-            cases.append(
-                EvalCase(
-                    case_id=str(payload["id"]),
-                    prompt=str(payload["prompt"]),
-                    must_use_tools=tuple(payload.get("must_use_tools", [])),
-                    must_not_use_tools=tuple(payload.get("must_not_use_tools", [])),
-                    reply_contains_any=tuple(payload.get("reply_contains_any", [])),
-                    reply_regex=str(payload.get("reply_regex", "")),
-                    max_turns=int(payload.get("max_turns", 2)),
-                    expect_tool_calls=_load_expect_tool_calls(payload.get("expect_tool_calls")),
-                    no_tool=bool(payload.get("no_tool", False)),
-                )
-            )
+            cases.append(case_from_payload(payload, suite=path.stem))
     return cases
 
 

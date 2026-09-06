@@ -3,6 +3,9 @@
 跑固定任务集（真实 LLM + 真实装配），输出报告 + 自动对比上次基线（回归告警）。
 """
 
+import argparse
+import datetime as dt
+
 from evaluation.report import (
     compare,
     format_compare,
@@ -11,29 +14,48 @@ from evaluation.report import (
     save_report,
 )
 from evaluation.runner import run_eval
-from evaluation.tasks import LONG_TASKS, SUBAGENT_TASKS, TASKS
+from evaluation.suite_loader import available_suite_names, load_suites
+
+
+def _filter_case_id(tasks: list, case_id: str) -> list:
+    """按 ID 缩小调试范围，并拒绝不存在或不唯一的 ID。"""
+    matches = [task for task in tasks if task.id == case_id]
+    if len(matches) != 1:
+        if not matches:
+            raise ValueError(f"找不到 case_id={case_id!r}")
+        raise ValueError(f"case_id={case_id!r} 不唯一，匹配到 {len(matches)} 条用例")
+    return matches
 
 
 def main() -> None:
-    # 任务集选择（阶段 C 收尾，方案 2026-08-23）：默认快速集 TASKS；
-    # --long 跑长对话评测（L3/L4 事实保持，真实 LLM ~5 分钟）；
-    # --all 跑全部（TASKS + LONG_TASKS）
-    import argparse
-
+    # suite 名称来自 evaluation/suites/*.jsonl，避免新增数据文件还要改 CLI。
+    suite_names = available_suite_names()
     parser = argparse.ArgumentParser(description="qi-agent 评测")
-    parser.add_argument("--long", action="store_true",
-                        help="跑长对话事实保持评测（L3/L4，真实 LLM ~5 分钟）")
-    parser.add_argument("--subagent", action="store_true",
-                        help="跑 subagent 委派评测（主 agent 主动用 delegate_task）")
-    parser.add_argument("--all", action="store_true", help="跑全部任务")
-    args = parser.parse_args()
-    tasks = TASKS
-    if args.long:
-        tasks = LONG_TASKS
-    if args.subagent:
-        tasks = SUBAGENT_TASKS
-    if args.all:
-        tasks = TASKS + LONG_TASKS + SUBAGENT_TASKS
+    parser.add_argument(
+        "--suite",
+        choices=(*suite_names, "all"),
+        help="选择 evaluation/suites 下同名 JSONL；all=执行全部套件",
+    )
+    parser.add_argument(
+        "--case-id",
+        help="只执行指定 case_id；不传 --suite 时在全部 JSONL 套件中查找",
+    )
+    args, remaining = parser.parse_known_args()
+    if remaining:
+        parser.error(f"unrecognized arguments: {' '.join(remaining)}")
+    if args.suite is None and args.case_id is None:
+        parser.print_help()
+        return
+    if args.suite is None or args.suite == "all":
+        selected_suites = suite_names
+    else:
+        selected_suites = (args.suite,)
+    tasks = load_suites(selected_suites)
+    if args.case_id is not None:
+        try:
+            tasks = _filter_case_id(tasks, args.case_id)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     # 提示评测性质：真实 API 调用，需要 DEEPSEEK_API_KEY（.env）
     print(f"开始评测（真实 LLM API，{len(tasks)} 个任务，预计 1-3 分钟）...", flush=True)
@@ -42,7 +64,42 @@ def main() -> None:
     for r in results:
         mark = "✅" if r["passed"] else "❌"
         detail = "; ".join(r["failures"]) if r["failures"] else ""
-        print(f"[评测] {r['id']} {r['name']}: {mark} {detail}（{r['elapsed']}s）", flush=True)
+        trace = r.get("jaeger_trace_id") or "-"
+        jaeger = r.get("jaeger_url") or "-"
+        print(
+            f"[评测] {r['id']} {r['name']}: {mark} {detail}"
+            f"（{r['elapsed']}s） trace_id={trace} jaeger_url={jaeger}",
+            flush=True,
+        )
+    run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    try:
+        from evaluation.opik_reporter import upload_results
+
+        opik_summary = upload_results(
+            results, run_id, project="qi-agent-evaluation"
+        )
+        print(
+            f"[opik] project=qi-agent-evaluation "
+            f"datasets={opik_summary['experiments']} "
+            f"dataset_items={opik_summary['dataset_items']} "
+            f"experiments={opik_summary['experiments']} "
+            f"traces={opik_summary['traces']}",
+            flush=True,
+        )
+        for suite in opik_summary["suites"]:
+            print(
+                f"  [opik] suite={suite['suite']} dataset={suite['dataset']} "
+                f"experiment={suite['experiment']}",
+                flush=True,
+            )
+        for result in results:
+            if result.get("opik_trace_id"):
+                print(
+                    f"  [case:{result['id']}] opik_trace_id={result['opik_trace_id']}",
+                    flush=True,
+                )
+    except Exception as exc:
+        print(f"[opik] 上传失败（不影响规则评测结果）: {exc}", flush=True)
     report = format_report(results)
     print()
     print(report, flush=True)

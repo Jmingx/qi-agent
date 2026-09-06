@@ -17,7 +17,10 @@
 import logging
 import os
 
-_LOG_DIR = os.path.join(os.path.expanduser("~"), ".qi-agent", "logs")
+_LOG_DIR = os.getenv(
+    "QI_AGENT_LOG_DIR",
+    os.path.join(os.path.expanduser("~"), ".qi-agent", "logs"),
+)
 
 
 def get_logger(name: str, filename: str) -> logging.Logger:
