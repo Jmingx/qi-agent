@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as dt
 import json
 import sys
+import time
 import weakref
+from pathlib import Path
 from typing import Any
 
 from qi_agent.gateway.gateway import Gateway
@@ -47,6 +50,30 @@ def _summarize_text(value: Any, limit: int) -> str:
     return _truncate_text(text, limit)
 
 
+def _last_user_prompt(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            return str(message["content"])
+    return ""
+
+
+def _tool_outcome(output: str) -> str | None:
+    if output.startswith(("[安全拦截]", "[审批拒绝]")):
+        return "blocked"
+    if output.startswith(("[参数错误]", "[工具错误]")):
+        return "error"
+    return None
+
+
+def _contains_weak_signal(text: str) -> bool:
+    weak_terms = ("抱歉", "无法", "不能", "不确定", "可能", "建议", "大概", "暂时")
+    return any(term in text for term in weak_terms)
+
+
+def _eval_feed_path() -> Path:
+    return Path.home() / ".qi-agent" / "eval_feed" / f"{dt.date.today().isoformat()}.jsonl"
+
+
 class ServeTransport:
     """把 Gateway 事件转成 WebSocket 通知。"""
 
@@ -61,6 +88,9 @@ class ServeTransport:
         self._send_queues: dict[Any, asyncio.Queue[str]] = {}
         self._workers: set[Any] = set()
         self._plugin_config = load_plugin_config()
+        self._feed_stats: weakref.WeakKeyDictionary[Any, dict[str, Any]] = (
+            weakref.WeakKeyDictionary()
+        )
         # 以对象身份去重（WeakSet）：避免同一个 session_id 的新 context 被误判为
         # “已附加”，也避免 int id() 复用导致长跑进程里新对象撞上历史 id 被跳过。
         self._attached_contexts: weakref.WeakSet[Any] = weakref.WeakSet()
@@ -82,6 +112,12 @@ class ServeTransport:
         if context in self._attached_contexts:
             return
         self._attached_contexts.add(context)
+        # 插件通过事件总线读取这份非业务元数据，避免让插件反向依赖 Gateway。
+        setattr(
+            context.events,
+            "_qi_observability_metadata",
+            getattr(context, "metadata", {}),
+        )
         load_plugins(context.events, self._plugin_config)
         self._wrap_tool_call_bail(context)
         context.events.on(
@@ -92,6 +128,8 @@ class ServeTransport:
             "agent/pre-llm",
             self._make_subtask_progress_handler(context, "pre-llm", "🤖 调用 LLM"),
         )
+        context.events.on("agent/turn-start", self._make_feed_turn_start_handler(context))
+        context.events.on("agent/pre-llm", self._make_feed_pre_llm_handler(context))
         context.events.on("agent/final-answer", self._make_final_answer_handler(context))
         context.events.on("agent/tool-result", self._make_tool_result_handler(context))
         context.events.on("agent/turn-end", self._make_turn_end_handler(context))
@@ -143,6 +181,78 @@ class ServeTransport:
 
         return _handler
 
+    def _feed_state(self, context) -> dict[str, Any]:
+        state = self._feed_stats.get(context)
+        if state is None:
+            state = {
+                "started_at": time.perf_counter(),
+                "tools_used": [],
+                "tool_errors": 0,
+                "blocked_count": 0,
+                "llm_calls": 0,
+            }
+            self._feed_stats[context] = state
+        return state
+
+    def _make_feed_turn_start_handler(self, context):
+        def _handler(**_: Any) -> None:
+            self._feed_stats[context] = {
+                "started_at": time.perf_counter(),
+                "tools_used": [],
+                "tool_errors": 0,
+                "blocked_count": 0,
+                "llm_calls": 0,
+            }
+
+        return _handler
+
+    def _make_feed_pre_llm_handler(self, context):
+        def _handler(**_: Any) -> None:
+            self._feed_state(context)["llm_calls"] += 1
+
+        return _handler
+
+    def _append_eval_feed(self, context, reply: str, trace_id: str | None) -> None:
+        try:
+            state = self._feed_state(context)
+            payload = {
+                "session_id": context.id,
+                "ts": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+                "prompt": _truncate_text(
+                    _last_user_prompt(getattr(context, "messages", []))
+                    or getattr(context, "goal", ""),
+                    200,
+                ),
+                "reply_excerpt": _truncate_text(reply, 200),
+                "turns": int(getattr(context, "turn", 0) or 0),
+                "tools_used": list(dict.fromkeys(state["tools_used"])),
+                "tool_errors": int(state["tool_errors"]),
+                "blocked_count": int(state["blocked_count"]),
+                "llm_calls": int(state["llm_calls"]),
+                "total_tokens": int(getattr(context, "usage", {}).get("total_tokens", 0) or 0),
+                "elapsed_s": round(time.perf_counter() - float(state["started_at"]), 3),
+                "trace_id": trace_id or "",
+            }
+            payload["signals"] = {
+                "auto_error": bool(
+                    payload["tool_errors"] >= 1
+                    or payload["blocked_count"] >= 3
+                    or payload["turns"] > 8
+                ),
+                "weak_flag": _contains_weak_signal(reply),
+            }
+            payload["verdict"] = (
+                "error"
+                if payload["signals"]["auto_error"]
+                else ("flagged" if payload["signals"]["weak_flag"] else "ok")
+            )
+            feed_path = _eval_feed_path()
+            feed_path.parent.mkdir(parents=True, exist_ok=True)
+            with feed_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception as exc:  # pragma: no cover
+            print(f"[eval_feed] 落盘失败（静默）: {exc!r}")
+
     def _make_final_answer_handler(self, context):
         def _handler(**data: Any) -> None:
             parent_id = getattr(context, "parent_id", None)
@@ -171,6 +281,15 @@ class ServeTransport:
             if trace_id:
                 payload["trace_id"] = trace_id
             self._notify("turn/end", **payload)
+            reply = _summarize_text(
+                data.get("content")
+                or data.get("text")
+                or data.get("answer")
+                or data.get("message")
+                or "",
+                200,
+            )
+            self._append_eval_feed(context, reply, trace_id)
 
         return _handler
 
@@ -186,6 +305,14 @@ class ServeTransport:
             if parent_id:
                 self._notify_subtask_progress(context, "tool-result", "✓ 完成")
                 return
+            state = self._feed_state(context)
+            outcome = _tool_outcome(str(output))
+            if outcome == "blocked":
+                state["blocked_count"] += 1
+            elif outcome == "error":
+                state["tool_errors"] += 1
+            if name and name not in state["tools_used"]:
+                state["tools_used"].append(name)
             self._notify(
                 "item/toolResult",
                 session_id=context.id,

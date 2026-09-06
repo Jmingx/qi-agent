@@ -85,6 +85,7 @@ class AgentContext:
         max_turns: int = 8,
         events: EventBus | None = None,
         context_id: str | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> None:
         self.id = context_id or generate_id("ctx")
         # id 前缀（方案 2026-08-24-执行权归还Manager与ID规范化）：
@@ -92,6 +93,8 @@ class AgentContext:
         # agent 用 agt_（执行者身份，在 Agent 上，不在 context）
         # 格式：<前缀>_<YYYYMMDD_HHMMSS>_<6位随机>（时间戳可读 + 随机防冲突）
         self.goal = goal
+        # 外部关联元数据（例如评测 case_id）。不进入 prompt，避免污染模型上下文。
+        self.metadata = dict(metadata or {})
         self.parent = parent
         self.persist = persist
         self.max_turns = max_turns

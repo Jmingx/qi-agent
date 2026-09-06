@@ -215,6 +215,33 @@ def test_batch_export_and_redaction(monkeypatch) -> None:
     assert exporter.shutdown_called == 0
 
 
+def test_root_span_contains_evaluation_metadata(monkeypatch) -> None:
+    """评测元数据进入根 span，但不进入模型消息。"""
+    from qi_agent.plugins.builtin import telemetry_otel as otel
+
+    _FakeExporter.instances.clear()
+    monkeypatch.setattr(otel, "OTLPSpanExporter", _FakeExporter)
+    plugin = otel.TelemetryOtelPlugin(
+        {"enabled": True, "endpoint": "http://127.0.0.1:4318"}
+    )
+    bus = EventBus(context_id="ctx-eval")
+    bus._qi_observability_metadata = {
+        "eval_case_id": "time_tool",
+        "eval_run_id": "run-1",
+        "prompt": "不得进入 span",
+    }
+    plugin.install(bus)
+
+    bus.emit("agent/turn-start", user_input="hi")
+    bus.emit("agent/turn-end", reason="completed")
+
+    root = _span_by_name(_collect_spans(), "agent/run-start")
+    attrs = _attrs(root)
+    assert attrs["eval.case_id"] == "time_tool"
+    assert attrs["eval.run_id"] == "run-1"
+    assert "prompt" not in attrs
+
+
 def test_tool_results_use_fifo_when_result_payload_lacks_step(monkeypatch) -> None:
     """真实 tool-result 不带 turn/step 时，也要按调用顺序把 span 收齐。"""
     from qi_agent.plugins.builtin import telemetry_otel as otel

@@ -58,6 +58,7 @@ class WsRpcClient:
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._next_id = 1
         self.tool_calls: list[str] = []
+        self.tool_call_details: list[dict[str, Any]] = []
         self._delta_parts: list[str] = []
 
     async def __aenter__(self) -> "WsRpcClient":
@@ -101,6 +102,14 @@ class WsRpcClient:
             name = str(params.get("name") or "")
             if name:
                 self.tool_calls.append(name)
+                self.tool_call_details.append(
+                    {
+                        "name": name,
+                        "arguments": params.get("arguments") or {},
+                        "status": params.get("status"),
+                        "reason": params.get("reason"),
+                    }
+                )
             return
         if method == "item/agentMessage/delta":
             text = str(params.get("text") or "")

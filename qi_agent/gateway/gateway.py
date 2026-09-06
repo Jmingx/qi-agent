@@ -19,6 +19,7 @@ from qi_agent.gateway.protocol import (
 
 APPROVAL_TIMEOUT = 60.0
 _CONTEXT_LIMIT = 64_000
+_SESSION_METADATA_KEYS = frozenset({"eval_case_id", "eval_run_id"})
 
 
 def _estimate_message_tokens(messages: list[dict]) -> int:
@@ -92,8 +93,17 @@ class Gateway:
         storage = getattr(self.manager, "storage", None)
         return storage or get_storage()
 
-    def _create_session(self, goal: str = "") -> dict:
-        context = AgentContext(persist=True)
+    def _create_session(
+        self,
+        goal: str = "",
+        metadata: dict[str, str] | None = None,
+    ) -> dict:
+        safe_metadata = {
+            key: str(value)[:128]
+            for key, value in (metadata or {}).items()
+            if key in _SESSION_METADATA_KEYS and value
+        }
+        context = AgentContext(persist=True, metadata=safe_metadata)
         context.goal = goal
         context._persisted_count = 0
         self.manager.register(context, role="main")

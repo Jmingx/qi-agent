@@ -58,3 +58,14 @@ python scripts/eval/run_eval.py
 4. 脚本收集 tool call、回复文本、turn、token 和耗时。
 5. 用纯规则断言是否通过，然后把结果写进 Opik dataset / experiment。
 6. 最后再用 Opik API 复查 dataset / experiment 里是否能看到 3 条结果。
+
+每次默认运行会生成独立的 Experiment 名称（带本次 run-id），避免同一天重复运行时把历史结果追加到当前实验。每条 case 还会创建一条 Opik 原生 Trace；Trace metadata 中保留 `case_id`、`session_id` 和 Jaeger `trace_id`，Experiment item 中保留 `latency_ms`、`opik_trace_id` 和 `jaeger_trace_id`。
+
+评测 runner 会把 `eval_case_id` 和 `eval_run_id` 通过 `session/create.metadata` 传入 serve。OTel 根 Span 因此可以用 Jaeger Tag `eval.case_id=<case_id>` 直接搜索对应调用链。
+
+## 评测表模板
+
+| 日期 | 数据集 | 基线 | 候选 | 通过率 | 回归数 | 改善数 | token | 成本 | 备注 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-04 | `qi-agent-live` | `baseline.jsonl` | `candidate.jsonl` | `--` | `--` | `--` | `--` | `--` | `--` |
+| 2026-09-04 | `bfcl_subset_50` | `baseline.jsonl` | `candidate.jsonl` | `--` | `--` | `--` | `--` | `--` | `--` |

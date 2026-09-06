@@ -49,6 +49,27 @@ def test_create_and_send() -> None:
     assert "reply" in resp["result"]
 
 
+def test_create_session_preserves_optional_metadata() -> None:
+    """session/create 的评测元数据只附着 Context，不进入 goal。"""
+    gw = _make_gateway()
+    sess = gw._create_session(
+        goal="测试",
+        metadata={"eval_case_id": "case-1", "eval_run_id": "run-1"},
+    )
+    context = gw.manager.get_context(sess["session_id"])
+    assert context is not None
+    assert context.metadata == {
+        "eval_case_id": "case-1",
+        "eval_run_id": "run-1",
+    }
+    assert context.goal == "测试"
+
+    unsafe = gw._create_session(metadata={"prompt": "不要进入 metadata"})
+    unsafe_context = gw.manager.get_context(unsafe["session_id"])
+    assert unsafe_context is not None
+    assert unsafe_context.metadata == {}
+
+
 def test_send_unknown_session_error() -> None:
     """未知会话 → 错误码 -32001（会话不存在）。"""
     gw = _make_gateway()

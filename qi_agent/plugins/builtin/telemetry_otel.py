@@ -54,6 +54,10 @@ _TOOL_NAME = "agent/tool-call"
 _APPROVAL_NAME = "agent/tool-approval"
 _COMPRESS_NAME = "context/compress"
 _MEMORY_NAME = "memory/write"
+_OBSERVABILITY_KEYS = {
+    "eval_case_id": "eval.case_id",
+    "eval_run_id": "eval.run_id",
+}
 
 
 class TelemetryOtelPlugin:
@@ -163,9 +167,20 @@ class TelemetryOtelPlugin:
         with self._lock:
             if self._state.root is None:
                 cid = self._context_id()
+                metadata = getattr(self._bus, "_qi_observability_metadata", {}) or {}
+                eval_attrs = {
+                    attr_name: str(metadata[key])[:128]
+                    for key, attr_name in _OBSERVABILITY_KEYS.items()
+                    if metadata.get(key)
+                }
                 span = self._start_span(
                     _ROOT_NAME,
-                    attrs={"session_id": cid, "context_id": cid, "model": self.model},
+                    attrs={
+                        "session_id": cid,
+                        "context_id": cid,
+                        "model": self.model,
+                        **eval_attrs,
+                    },
                     links=self._delegate_link(),
                 )
                 self._state.root = span
