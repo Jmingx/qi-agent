@@ -69,6 +69,11 @@ uv run python -m evaluation.run
 # Run one JSONL suite (real LLM)
 uv run python -m evaluation.run --suite smoke
 
+# Other suites use the same Gateway runner
+uv run python -m evaluation.run --suite regression
+uv run python -m evaluation.run --suite long_context
+uv run python -m evaluation.run --suite subagent
+
 # Run every JSONL suite
 uv run python -m evaluation.run --suite all
 
@@ -86,6 +91,53 @@ debugging, use `--case-id`:
 uv run python -m evaluation.run --suite smoke --case-id time_tool
 uv run python -m evaluation.run --case-id time_tool
 ```
+
+Each run uses the isolated evaluation Gateway and records its results in the Opik
+project `qi-agent-evaluation`: one Dataset per suite, one Experiment per run, and one
+Trace per case. The console prints the Dataset, Experiment, Opik trace ID, and Jaeger
+URL so a case can be located from either system.
+
+## Web Shell
+
+```bash
+# Terminal 1 — start the kernel serve process (WebSocket port 8765)
+uv run python -m qi_agent.serve --port 8765
+
+# Terminal 2 — start the web application (FastAPI, port 9000)
+uv run python -m qi_agent.web.server --port 9000
+
+# Open http://127.0.0.1:9000 in a browser
+```
+
+The web application and kernel run as **separate processes**. The browser connects to
+the web WebSocket, and the web server forwards JSON-RPC requests to the kernel serve
+process; the web layer does not import the core directly.
+
+### Frontend development (HMR)
+
+```bash
+cd qi_agent/web/frontend
+npm install
+npm run dev        # Vite dev server at http://127.0.0.1:5173
+npm run build      # production build -> dist/
+```
+
+## RPC Methods
+
+| Method | Description |
+|--------|-------------|
+| `session/create` | Create a session |
+| `session/resume` | Resume a session |
+| `session/list` | List active and historical sessions |
+| `session/status` | Query session state and result |
+| `session/stop` | Stop the current task |
+| `session/delegate` | Start a subagent |
+| `message/send` | Send a message with streaming callbacks |
+| `approval/respond` | Respond to an approval request |
+| `context/info` | Inspect context composition |
+| `context/compact` | Trigger context compression |
+| `memory/get` | Read cross-session memory |
+| `memory/save` | Save a memory entry |
 
 Each run uses the isolated evaluation Gateway and records its results in the Opik
 project `qi-agent-evaluation`: one Dataset per suite, one Experiment per run, and one
