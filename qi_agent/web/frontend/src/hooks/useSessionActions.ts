@@ -751,13 +751,73 @@ export function useSessionActions({
       return
     }
     if (text.startsWith('/')) {
+      const parsed = commandFromInput(text)
+      const builtIn = parsed ? getCommandDefinition(\`/\${parsed.name}\` as CommandName) : undefined
+      // 未占用的 /{skill_name} <任务> 是用户显式指定工作方法，
+      // 不走前端本地命令，也不依赖模型先想到 skill_view。
+      if (parsed && !builtIn && parsed.args.trim()) {
+        if (connectionStateRef.current !== 'connected' || session.running) {
+          return
+        }
+        const sessionId = await ensureSession()
+        const client = clientRef.current
+        if (!client) {
+          showToast('Connection unavailable')
+          return
+        }
+        setInput('')
+        setCommandPaletteOpen(false)
+        messages.beginTurn()
+        const userMessageId = messages.appendMessage('user', text)
+        messages.trackCurrentTurnEntryId(userMessageId)
+        setRunning(true)
+        try {
+          const response = await client.call<{ reply: string }>('skill/activate', {
+            session_id: sessionId,
+            skill_id: parsed.name,
+            text: parsed.args,
+          })
+          if (response.reply && !messages.currentTurnAssistantSeenRef.current) {
+            messages.appendMessage('assistant', response.reply)
+            messages.currentTurnAssistantSeenRef.current = true
+          }
+        } catch (error) {
+          const message = getErrorMessage(error)
+          showToast(\`Skill 调用失败：\${message}\`)
+          messages.updateEntriesById(userMessageId, (entry) => (
+            entry.kind === 'message' ? { ...entry, variant: 'error' } : entry
+          ))
+          appendSystemMessage(\`Skill 调用失败：\${message}\`, 'error')
+        } finally {
+          setRunning(false)
+          void refreshTrace(session.sessionIdRef.current)
+          void refreshUsage()
+        }
+        return
+      }
       setInput('')
       setCommandPaletteOpen(false)
       await executeCommand(text)
       return
     }
     await dispatchMessage(text)
-  }, [dispatchMessage, executeCommand, input, setCommandPaletteOpen, setInput])
+  }, [
+    appendSystemMessage,
+    clientRef,
+    connectionStateRef,
+    dispatchMessage,
+    ensureSession,
+    executeCommand,
+    input,
+    messages,
+    refreshTrace,
+    refreshUsage,
+    session,
+    setCommandPaletteOpen,
+    setInput,
+    setRunning,
+    showToast,
+  ])
 
   const retryMessage = useCallback(async (messageId: number, text: string): Promise<void> => {
     await dispatchMessage(text, {
@@ -833,5 +893,4 @@ export function useSessionActions({
     handleSearchSelect,
   }
 }
-
 

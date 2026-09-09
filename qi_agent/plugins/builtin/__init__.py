@@ -17,5 +17,6 @@ from qi_agent.plugins.builtin import (  # noqa: F401  导入即注册
     telemetry_otel,
     resource_monitor,
     security_guard,
+    skill_index,
     tool_stats,
 )

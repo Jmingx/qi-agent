@@ -86,6 +86,12 @@ class Gateway:
         self.dispatcher.register("memory/get", log_rpc("memory/get")(self._memory_get))
         self.dispatcher.register("memory/save", log_rpc("memory/save")(self._memory_save))
         self.dispatcher.register("memory/remove", log_rpc("memory/remove")(self._memory_remove))
+        self.dispatcher.register("skill/list", log_rpc("skill/list")(self._skill_list))
+        self.dispatcher.register("skill/view", log_rpc("skill/view")(self._skill_view))
+        self.dispatcher.register(
+            "skill/activate", log_rpc("skill/activate")(self._skill_activate)
+        )
+        self.dispatcher.register("skill/status", log_rpc("skill/status")(self._skill_status))
 
     def _storage(self):
         from qi_agent.storage import get_storage
@@ -104,6 +110,7 @@ class Gateway:
             if key in _SESSION_METADATA_KEYS and value
         }
         context = AgentContext(persist=True, metadata=safe_metadata)
+        self._attach_skill_plugin(context)
         context.goal = goal
         context._persisted_count = 0
         self.manager.register(context, role="main")
@@ -115,6 +122,7 @@ class Gateway:
         if loaded is None:
             raise RpcError(ERROR_SESSION_NOT_FOUND, f"会话不存在: {session_id}")
         context = AgentContext(persist=True, context_id=session_id)
+        self._attach_skill_plugin(context)
         context.messages = loaded["messages"]
         context.turn = loaded["turn"]
         context.usage = loaded["usage"]
@@ -311,6 +319,77 @@ class Gateway:
 
         MemoryStore().remove_memory(text, target=target)
         return {"ok": True}
+
+    def _skill_list(self) -> dict:
+        """列出当前注册表的 Skill；分组来自元数据而非目录层级。"""
+        from qi_agent.skills.registry import get_skill_registry
+
+        registry = get_skill_registry()
+        registry.refresh()
+        return {
+            "skills": [
+                {
+                    "name": item.name,
+                    "description": item.description,
+                    "categories": list(item.categories),
+                    "tags": list(item.tags),
+                    "scope": item.scope,
+                    "version": item.version,
+                }
+                for item in registry.list()
+            ]
+        }
+
+    def _skill_view(self, skill_id: str, resource_path: str = "") -> dict:
+        from qi_agent.skills.registry import get_skill_registry
+
+        return {
+            "skill_id": skill_id,
+            "content": get_skill_registry().view(skill_id, resource_path),
+        }
+
+    def _skill_activate(self, session_id: str, skill_id: str, text: str) -> dict:
+        """用户显式指定本轮 Skill：注入 L2 后马上执行剩余任务。"""
+        if not text.strip():
+            raise RpcError(ERROR_INVALID_PARAMS, "text 不能为空")
+        context = self._get_context(session_id)
+        from qi_agent.skills.registry import get_skill_registry
+
+        registry = get_skill_registry()
+        record = registry.get(skill_id)
+        if record is None:
+            raise RpcError(ERROR_INVALID_PARAMS, f"未注册的 Skill: {skill_id}")
+        content = registry.view(skill_id)
+        if content.startswith("[Skill"):
+            raise RpcError(ERROR_INVALID_PARAMS, content)
+        # Agent.chat 将在本轮开始时把 context.turn 加一。
+        context.events._qi_active_skill = {
+            "name": skill_id,
+            "content": content,
+            "turn": context.turn + 1,
+        }
+        reply = self._send_message(session_id, text)
+        return {"skill_id": skill_id, "scope": record.scope, **reply}
+
+    def _skill_status(self, session_id: str) -> dict:
+        context = self._get_context(session_id)
+        active = getattr(context.events, "_qi_active_skill", None)
+        if active and active.get("turn", 0) < context.turn:
+            active = None
+        return {
+            "session_id": session_id,
+            "active": {"skill_id": active["name"]} if active else None,
+        }
+
+    @staticmethod
+    def _attach_skill_plugin(context: AgentContext) -> None:
+        """Gateway 创建/恢复的会话也要有 Skill 注入，不能只依赖 CLI runtime。"""
+        if getattr(context.events, "_qi_skill_plugin_installed", False):
+            return
+        from qi_agent.plugins.builtin.skill_index import SkillIndexPlugin
+
+        SkillIndexPlugin().install(context.events)
+        context.events._qi_skill_plugin_installed = True
 
     def _get_context(self, session_id: str) -> AgentContext:
         context = self.manager.contexts.get(session_id)

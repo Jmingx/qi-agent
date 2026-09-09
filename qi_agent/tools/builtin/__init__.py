@@ -19,6 +19,7 @@ from qi_agent.tools.builtin import (  # noqa: F401  导入即注册
     run_python,
     search_files,
     shell,
+    skill_view,
     todo,
     web_extract,
     web_search,
