@@ -149,16 +149,56 @@ opik_missing_images() {  # 输出缺失镜像名（多行；空 = 齐全）。�
   done
 }
 
+opik_clone_issues() {  # <compose 目录> 输出 clone 完整性问题（多行；空 = 正常）
+  # 背景（2026-09-13 实测）：Temp 下的 opik-selfhost 是临时 clone（无 .git），
+  # 文件可能被清掉/替换成空目录；docker compose up 会为缺失的 bind 源**自动创建
+  # 空目录**，把"文件变目录"固化，之后 clickhouse-init 的 cp -r 必然失败、
+  # frontend 的 nginx 模板失效（listen 80 而非 5173）——表现为"Opik 起不来"但
+  # compose 只报中间层错误（zookeeper 依赖 / clickhouse-init exit 1）。
+  # 这里在拉起前把这类损坏挡在前面，避免 compose 拉一半留一堆 Created 容器。
+  local dir="$1"
+  [ -d "$dir" ] || { echo "$dir（compose 目录不存在）"; return 0; }
+  # 1) 本应是文件、却成了目录的 bind 源（下面第 2 步已单列的两条不重复报）
+  find "$dir" -maxdepth 1 -type d -name 'nginx_*_local.conf' \
+    ! -name 'nginx_default_local.conf' 2>/dev/null
+  find "$dir/clickhouse_config" -type d -empty -name '*.*' \
+    ! -name '*.d' ! -name 'enable_time_type.xml' 2>/dev/null
+  # 2) compose 依赖的关键文件缺失/类型不对（同一路径只报一次）
+  local f
+  for f in "$dir/nginx_default_local.conf" \
+           "$dir/clickhouse_config/users.d/enable_time_type.xml"; do
+    if [ -d "$f" ]; then
+      echo "$f（被换成目录）"
+    elif [ ! -e "$f" ]; then
+      echo "$f（缺失）"
+    fi
+  done
+}
+
 start_opik() {
   if is_up "$OPIK_UI"; then
     ok "Opik 已在运行 ($OPIK_UI)"
     return 0
   fi
-  step "Opik 评测平台（docker compose：镜像预检，缺则提示）"
+  step "Opik 评测平台（docker compose：镜像与 clone 预检）"
   start_docker || { fail "Docker daemon 不可用——无法启动 Opik"; return 1; }
   if [ ! -d "$OPIK_COMPOSE" ]; then
     fail "未找到 Opik compose 文件：$OPIK_COMPOSE"
     say "  准备（Temp 缓存被清后需重建）：git clone --depth 1 $OPIK_REPO_URL \"$OPIK_SELFHOST_DIR\""
+    return 1
+  fi
+  local clone_issues
+  clone_issues="$(opik_clone_issues "$OPIK_COMPOSE")"
+  if [ -n "$clone_issues" ]; then
+    fail "Opik 临时 clone 已损坏（$(echo "$clone_issues" | wc -l | tr -d ' ') 处）——不拉起半栈容器："
+    echo "$clone_issues" | sed 's/^/    - /'
+    say "  常见原因：Docker 为缺失的 bind 源自动建了空目录（文件被清/被替换）"
+    say "  修复：把 compose 用到的 bind 源恢复成文件后重跑本脚本"
+    say "        nginx 模板：curl -sSL -o \"$OPIK_COMPOSE/nginx_default_local.conf\" \\"
+    say "          https://raw.githubusercontent.com/comet-ml/opik/main/deployment/docker-compose/nginx_default_local.conf"
+    say "        clickhouse 配置可先从卷里取回：docker run --rm -v opik_clickhouse-config:/config \\"
+    say "          -v \"$OPIK_COMPOSE/clickhouse_config:/out\" alpine sh -c 'cp -a /config/. /out/'"
+    say "  改完文件后容器 mount 类型已被固化 → 需 --force-recreate（docker restart 修不了）"
     return 1
   fi
   local missing
