@@ -20,6 +20,8 @@ from qi_agent.gateway.protocol import (
 APPROVAL_TIMEOUT = 60.0
 _CONTEXT_LIMIT = 64_000
 _SESSION_METADATA_KEYS = frozenset({"eval_case_id", "eval_run_id"})
+# 压缩摘要的注入标记（compressor.assemble 写入）——用于上下文分项归类
+_SUMMARY_MARKER = "[早期对话已压缩为摘要]"
 
 
 def _estimate_message_tokens(messages: list[dict]) -> int:
@@ -33,6 +35,78 @@ def _estimate_message_tokens(messages: list[dict]) -> int:
         if tool_calls:
             tokens += max(1, len(str(tool_calls)) // 8)
     return tokens
+
+
+def _estimate_tool_schemas_tokens() -> int:
+    """工具 schema 占用的 token 估算（JSON 序列化后 char/4）。"""
+    try:
+        import json
+
+        from qi_agent.tools.registry import get_tool_schemas
+
+        schemas = get_tool_schemas()
+    except Exception:
+        return 0
+    if not schemas:
+        return 0
+    try:
+        return max(1, len(json.dumps(schemas, ensure_ascii=False)) // 4)
+    except Exception:
+        return 0
+
+
+def _message_tokens(message: dict) -> int:
+    """单条消息的 token 估算（content + tool_calls）。"""
+    tokens = 0
+    content = message.get("content")
+    if content:
+        tokens += max(1, len(str(content)) // 4)
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        tokens += max(1, len(str(tool_calls)) // 8)
+    return tokens
+
+
+def _estimate_context_breakdown(messages: list[dict], tool_tokens: int) -> dict[str, int]:
+    """上下文分项估算：系统提示 / 工具 schema / 对话历史 / 工具输出 / 压缩摘要 / 当前输入。
+
+    语义说明（UI v3 §9）：这是**当前占用**的构成，不是会话累计消耗。
+    分项用途是回答「上下文窗口被谁吃掉了」——因此必须按消息角色归位，
+    并且把压缩摘要单独列出（否则用户会以为历史还在、额度却没了）。
+    估算用 char/4（对齐 context/estimator），真实 usage 到达时以 prompt_tokens 校准总量。
+    """
+    buckets = {
+        "system": 0,       # 系统提示（含 env_info 等注入的 system 消息）
+        "tools": int(tool_tokens),  # 工具 schema（不在 messages 里，需单独估算）
+        "history": 0,      # 普通历史消息（user/assistant）
+        "tool_output": 0,  # 工具返回（role=tool）
+        "summary": 0,      # 压缩摘要
+        "input": 0,        # 当前这轮的用户输入
+    }
+    last_user_index = -1
+    for index, message in enumerate(messages):
+        if str(message.get("role") or "") != "user":
+            continue
+        content = str(message.get("content") or "")
+        if content.startswith(_SUMMARY_MARKER):
+            continue
+        last_user_index = index
+
+    for index, message in enumerate(messages):
+        role = str(message.get("role") or "")
+        content = str(message.get("content") or "")
+        tokens = _message_tokens(message)
+        if role == "system":
+            buckets["system"] += tokens
+        elif role == "tool":
+            buckets["tool_output"] += tokens
+        elif content.startswith(_SUMMARY_MARKER):
+            buckets["summary"] += tokens
+        elif index == last_user_index:
+            buckets["input"] += tokens
+        else:
+            buckets["history"] += tokens
+    return buckets
 
 
 def _truncate_text(text: str, limit: int) -> str:
@@ -143,14 +217,23 @@ class Gateway:
                 text,
                 stream_callback=self._make_stream_callback(session_id),
             )
-            return {"reply": reply}
+            context = self._get_context(session_id)
+            return {"reply": reply, "turn": context.turn}
         except RuntimeError as exc:
             if "正在运行" in str(exc):
                 raise RpcError(ERROR_CONCURRENT_RUN, f"context 正在运行: {session_id}") from exc
-            self._notify("turn/end", session_id=session_id, reason="error", error=str(exc))
+            context = self._get_context(session_id)
+            self._notify(
+                "turn/end", session_id=session_id, turn=context.turn,
+                reason="error", error=str(exc),
+            )
             raise
         except Exception as exc:
-            self._notify("turn/end", session_id=session_id, reason="error", error=str(exc))
+            context = self._get_context(session_id)
+            self._notify(
+                "turn/end", session_id=session_id, turn=context.turn,
+                reason="error", error=str(exc),
+            )
             raise
 
     def _respond_approval(self, session_id: str, approval_id: str, decision: str) -> dict:
@@ -270,28 +353,51 @@ class Gateway:
         return {"ok": True, "messages": len(context.messages)}
 
     def _context_usage(self, session_id: str) -> dict:
+        """上下文用量：**占用（context_tokens）与会话累计（session_tokens）分开**。
+
+        历史缺陷（UI v3 §9.1）：老实现把两者塞进同一个 total_tokens——有真实 usage 时
+        给的是会话累计（agent.py 把每轮 usage 累加进 context.usage），没有真实 usage 时
+        （DeepSeek 流式通常不返回 usage）给的是当前占用估算。同一字段两种语义，
+        header 的「x / 64k」既不表示窗口占用也不表示花费，用户无法据此判断该不该压缩。
+
+        现在：
+        - context_tokens：**当前窗口占用**（估算 = 消息 + 工具 schema，永远标注 estimated 语义）
+        - session_tokens：**会话累计消耗**（有真实 usage 用真实值，否则 0 + estimated）
+        - breakdown：占用由谁构成（系统提示/工具 schema/历史/工具输出/摘要/当前输入）
+        旧字段全部保留（前端与 CLI 兼容），语义与 context_tokens 对齐。
+        """
         context = self._get_context(session_id)
         usage = dict(context.usage or {})
-        actual = any(
-            int(usage.get(key, 0) or 0) > 0
-            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-        )
-        if actual:
-            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-            completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-            total_tokens = int(
-                usage.get("total_tokens", prompt_tokens + completion_tokens)
-                or (prompt_tokens + completion_tokens)
-            )
-        else:
-            prompt_tokens = _estimate_message_tokens(context.messages)
-            completion_tokens = 0
-            total_tokens = prompt_tokens
+        real_prompt = int(usage.get("prompt_tokens", 0) or 0)
+        real_completion = int(usage.get("completion_tokens", 0) or 0)
+        real_total = int(usage.get("total_tokens", 0) or 0) or (real_prompt + real_completion)
+        session_estimated = real_total <= 0
+
+        tool_tokens = _estimate_tool_schemas_tokens()
+        breakdown = _estimate_context_breakdown(context.messages, tool_tokens)
+        estimated_context = sum(breakdown.values())
+        # 占用优先用估算（它算的是「当前消息 + schema」，语义正确）；
+        # 真实 usage 只在单轮单调用时等于占用，多轮累加后不能当占用用。
+        context_tokens = estimated_context
+        session_tokens = real_total if real_total > 0 else 0
+        percent = min(100, round(context_tokens / _CONTEXT_LIMIT * 100))
+
         return {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-            "est_ratio": round(total_tokens / _CONTEXT_LIMIT, 4),
+            # ── UI v3 新字段（语义唯一） ──
+            "context_tokens": context_tokens,
+            "context_estimated": True,
+            "session_tokens": session_tokens,
+            "session_completion_tokens": real_completion,
+            "session_estimated": session_estimated,
+            "breakdown": breakdown,
+            "percent": percent,
+            "warn_at": int(_CONTEXT_LIMIT * 0.8),
+            "compact_at": int(_CONTEXT_LIMIT * 0.7),
+            # ── 旧字段（兼容保留，与 context_tokens 对齐） ──
+            "prompt_tokens": real_prompt if real_prompt > 0 else context_tokens,
+            "completion_tokens": real_completion,
+            "total_tokens": real_total if real_total > 0 else context_tokens,
+            "est_ratio": round(context_tokens / _CONTEXT_LIMIT, 4),
             "context_limit": _CONTEXT_LIMIT,
         }
 

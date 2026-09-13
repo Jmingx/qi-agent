@@ -17,19 +17,59 @@ export type ToolResultEntry = {
   ok: boolean
   summary: string
   durationMs: number
+  /** 可展开的输出预览（后端 output_preview，≤2000 字符） */
+  outputPreview?: string
+  outputBytes?: number
+  truncated?: boolean
+}
+
+/** 一轮的 token 消耗（后端在 turn/end 里给出增量）。 */
+export type TurnUsage = {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  /** true = 模型没返回 usage，前端按估算展示（加 "~" 前缀） */
+  estimated?: boolean
 }
 
 export type ToolEntry = {
   id: number
   kind: 'tool'
   sessionId: string
+  toolCallId: string
   name: string
   toolArguments: unknown
   status: 'running' | 'blocked'
   reason?: string
   result?: ToolResultEntry
+  progress: ToolProgressEntry[]
   traceId?: string | null
   time?: string
+}
+
+export type ToolProgressEntry = {
+  time: string
+  text: string
+}
+
+/** 一个服务端 agent 回合的唯一 UI 容器，禁止再靠相邻消息猜测归属。 */
+export type AssistantTurnEntry = {
+  id: number
+  kind: 'assistant-turn'
+  sessionId: string
+  turn: number
+  body: string
+  bodyState: 'streaming' | 'completed' | 'error'
+  tools: ToolEntry[]
+  traceId?: string | null
+  error?: string
+  time?: string
+  /** 回合耗时（turn/end.elapsed_ms） */
+  elapsedMs?: number
+  /** 本轮 token 消耗（turn/end.usage） */
+  usage?: TurnUsage
+  /** 本轮 LLM 调用次数（turn/end.llm_calls） */
+  llmCalls?: number
 }
 
 export type SubTaskStatus =
@@ -61,12 +101,16 @@ export type SubTaskEntry = {
   time?: string
 }
 
-export type StreamEntry = TextEntry | ToolEntry | SubTaskEntry
+export type StreamEntry = TextEntry | ToolEntry | AssistantTurnEntry | SubTaskEntry
 
 export type SessionItem = {
   id: string
   title?: string
   updated_at?: number
+  /** 会话轮数（空壳会话判断依据之一） */
+  turn?: number
+  /** 持久化消息数（0 = 空壳会话） */
+  message_count?: number
 }
 
 export type HistoryMessage = {
@@ -105,11 +149,38 @@ export type SessionSearchResponse = {
 }
 
 export type ContextUsageResponse = {
+  /** 当前上下文窗口占用（消息 + 工具 schema 估算） */
+  context_tokens?: number
+  context_estimated?: boolean
+  /** 会话累计消耗（真实 usage，无则为 0） */
+  session_tokens?: number
+  session_estimated?: boolean
+  session_completion_tokens?: number
+  /** 占用构成：系统提示 / 工具 schema / 历史 / 工具输出 / 压缩摘要 / 当前输入 */
+  breakdown?: Record<string, number>
+  percent?: number
+  warn_at?: number
+  compact_at?: number
+  // ── 旧字段（兼容） ──
   prompt_tokens: number
   completion_tokens: number
   total_tokens?: number
   est_ratio?: number | boolean
   context_limit: number
+}
+
+export type TurnEndPayload = {
+  session_id?: string
+  turn?: number
+  reason?: string
+  error?: string
+  trace_id?: string
+  elapsed_ms?: number
+  tool_calls?: number
+  tool_errors?: number
+  blocked_count?: number
+  llm_calls?: number
+  usage?: TurnUsage
 }
 
 export type ErrorLike = {
@@ -118,6 +189,8 @@ export type ErrorLike = {
 
 export type ToolCallPayload = {
   session_id?: string
+  turn?: number
+  tool_call_id?: string
   name?: string
   arguments?: unknown
   status?: 'running' | 'blocked'
@@ -126,10 +199,23 @@ export type ToolCallPayload = {
 
 export type ToolResultPayload = {
   session_id?: string
+  turn?: number
+  tool_call_id?: string
   name?: string
   ok?: boolean
   summary?: string
   duration_ms?: number
+  output_preview?: string
+  output_bytes?: number
+  truncated?: boolean
+  trace_id?: string
+}
+
+export type ToolProgressPayload = {
+  session_id?: string
+  turn?: number
+  tool_call_id?: string
+  text?: string
 }
 
 export type SessionStatusResponse = {

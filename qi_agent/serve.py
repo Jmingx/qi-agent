@@ -131,6 +131,7 @@ class ServeTransport:
         context.events.on("agent/turn-start", self._make_feed_turn_start_handler(context))
         context.events.on("agent/pre-llm", self._make_feed_pre_llm_handler(context))
         context.events.on("agent/final-answer", self._make_final_answer_handler(context))
+        context.events.on("tool/start", self._make_tool_progress_handler(context))
         context.events.on("agent/tool-result", self._make_tool_result_handler(context))
         context.events.on("agent/turn-end", self._make_turn_end_handler(context))
 
@@ -152,6 +153,8 @@ class ServeTransport:
                 else:
                     payload = {
                         "session_id": context.id,
+                        "turn": data.get("turn", getattr(context, "turn", 0)),
+                        "tool_call_id": data.get("tool_call_id", ""),
                         "name": data.get("name", ""),
                         "arguments": data.get("arguments") or {},
                         "status": status,
@@ -187,9 +190,12 @@ class ServeTransport:
             state = {
                 "started_at": time.perf_counter(),
                 "tools_used": [],
+                "tool_calls": 0,
                 "tool_errors": 0,
                 "blocked_count": 0,
                 "llm_calls": 0,
+                # 本轮开始时的会话累计用量快照——turn/end 用它做差得到"本轮消耗"
+                "usage_start": dict(getattr(context, "usage", {}) or {}),
             }
             self._feed_stats[context] = state
         return state
@@ -199,12 +205,52 @@ class ServeTransport:
             self._feed_stats[context] = {
                 "started_at": time.perf_counter(),
                 "tools_used": [],
+                "tool_calls": 0,
                 "tool_errors": 0,
                 "blocked_count": 0,
                 "llm_calls": 0,
+                "usage_start": dict(getattr(context, "usage", {}) or {}),
             }
 
         return _handler
+
+    def _turn_usage(self, context) -> dict[str, Any]:
+        """本轮 token 增量（会话累计做差）——Web 回合摘要行与上下文面板用。"""
+        current = dict(getattr(context, "usage", {}) or {})
+        start = self._feed_state(context).get("usage_start") or {}
+        usage = {
+            key: max(0, int(current.get(key, 0) or 0) - int(start.get(key, 0) or 0))
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        }
+        # DeepSeek 流式常常没有 usage：这里如实标注 estimated 语义，前端加 "~" 前缀
+        usage["estimated"] = usage["total_tokens"] <= 0
+        return usage
+
+    def _turn_end_payload(self, context, reason: str, error: str | None = None) -> dict[str, Any]:
+        """回合结束通知的统一载荷（正常完成 / 异常结束两条路径共用）。
+
+        为什么把统计放进通知：前端以前只能 10s 轮询 context/usage，
+        回合结束后数字最多滞后 10s（UI v3 §9.3）。这里随通知直接带上
+        本轮耗时、工具次数与 token，前端即时更新。
+        """
+        state = self._feed_state(context)
+        payload: dict[str, Any] = {
+            "session_id": context.id,
+            "turn": getattr(context, "turn", 0),
+            "reason": reason,
+            "elapsed_ms": int((time.perf_counter() - float(state["started_at"])) * 1000),
+            "tool_calls": int(state["tool_calls"]),
+            "tool_errors": int(state["tool_errors"]),
+            "blocked_count": int(state["blocked_count"]),
+            "llm_calls": int(state["llm_calls"]),
+            "usage": self._turn_usage(context),
+        }
+        if error is not None:
+            payload["error"] = error
+        trace_id = getattr(context.events, "_qi_telemetry_trace_id", None)
+        if trace_id:
+            payload["trace_id"] = trace_id
+        return payload
 
     def _make_feed_pre_llm_handler(self, context):
         def _handler(**_: Any) -> None:
@@ -274,12 +320,7 @@ class ServeTransport:
             # turn/end(completed) 通知：前端"回合完成 + trace_id 标记"依赖它
             # （2026-09-03 消息级跳转——曾误挂 turn-end 事件导致正常对话无标记）
             trace_id = getattr(context.events, "_qi_telemetry_trace_id", None)
-            payload: dict[str, Any] = {
-                "session_id": context.id,
-                "reason": "completed",
-            }
-            if trace_id:
-                payload["trace_id"] = trace_id
+            payload = self._turn_end_payload(context, "completed")
             self._notify("turn/end", **payload)
             reply = _summarize_text(
                 data.get("content")
@@ -293,12 +334,28 @@ class ServeTransport:
 
         return _handler
 
+    def _make_tool_progress_handler(self, context):
+        """把执行开始事件转成 Web 增量进度；真实 stdout 流由工具适配器后续补充。"""
+        def _handler(name: str, tool_call_id: str = "", turn: int = 0, **_: Any) -> None:
+            if getattr(context, "parent_id", None):
+                return
+            self._notify(
+                "item/toolProgress",
+                session_id=context.id,
+                turn=turn or getattr(context, "turn", 0),
+                tool_call_id=tool_call_id,
+                text=f"正在执行 {name}",
+            )
+        return _handler
+
     def _make_tool_result_handler(self, context):
         def _handler(
             name: str,
             arguments: dict,
             output: str,
             duration: float,
+            tool_call_id: str = "",
+            turn: int = 0,
             **_: Any,
         ) -> None:
             parent_id = getattr(context, "parent_id", None)
@@ -307,20 +364,34 @@ class ServeTransport:
                 return
             state = self._feed_state(context)
             outcome = _tool_outcome(str(output))
+            state["tool_calls"] += 1
             if outcome == "blocked":
                 state["blocked_count"] += 1
             elif outcome == "error":
                 state["tool_errors"] += 1
             if name and name not in state["tools_used"]:
                 state["tools_used"].append(name)
-            self._notify(
-                "item/toolResult",
-                session_id=context.id,
-                name=name,
-                ok=_tool_result_ok(str(output)),
-                summary=_truncate_text(str(output), 120),
-                duration_ms=int(duration * 1000),
-            )
+            # 输出预览：摘要 120 字符不足以回答"agent 干了什么"（UI v3 §5.3），
+            # 这里给前端一份可展开的预览（脱敏/截断边界仍由前端 + 内核规则负责）。
+            output_text = str(output)
+            preview_limit = 2000
+            preview = output_text if len(output_text) <= preview_limit else output_text[:preview_limit]
+            payload = {
+                "session_id": context.id,
+                "turn": turn or getattr(context, "turn", 0),
+                "tool_call_id": tool_call_id,
+                "name": name,
+                "ok": _tool_result_ok(output_text),
+                "summary": _truncate_text(output_text, 120),
+                "output_preview": preview,
+                "output_bytes": len(output_text.encode("utf-8", errors="replace")),
+                "truncated": len(output_text) > preview_limit,
+                "duration_ms": round(duration * 1000, 2),
+            }
+            trace_id = getattr(context.events, "_qi_telemetry_trace_id", None)
+            if trace_id:
+                payload["trace_id"] = trace_id
+            self._notify("item/toolResult", **payload)
 
         return _handler
 
@@ -330,13 +401,7 @@ class ServeTransport:
             if parent_id:
                 self._notify_subtask_progress(context, "turn-end", "🏁")
                 return
-            payload = {"session_id": context.id, "reason": reason}
-            if error is not None:
-                payload["error"] = error
-            trace_id = getattr(context.events, "_qi_telemetry_trace_id", None)
-            if trace_id:
-                payload["trace_id"] = trace_id
-            self._notify("turn/end", **payload)
+            self._notify("turn/end", **self._turn_end_payload(context, reason, error))
 
         return _handler
 

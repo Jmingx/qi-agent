@@ -1,6 +1,9 @@
 import { memo } from 'react'
 import { type TextEntry } from '../appModel'
 import { ZH_CN } from '../i18n/zh-CN'
+import { MarkdownView } from './MarkdownView'
+import { Icon } from './ui/Icon'
+import { formatClock } from '../utils/format'
 
 type MessageBubbleProps = {
   entry: TextEntry
@@ -11,6 +14,10 @@ type MessageBubbleProps = {
   onRetry?: (entry: TextEntry) => void
 }
 
+/**
+ * 单条消息（用户 / 助手 / 系统）。
+ * 视觉（UI v3 §5.2）：用户消息是浅底块（不再是紫渐变实心），助手消息走 markdown 文档流。
+ */
 function MessageBubbleBase({
   entry,
   highlighted,
@@ -19,94 +26,88 @@ function MessageBubbleBase({
   onEdit,
   onRetry,
 }: MessageBubbleProps) {
-  const bubbleClassName = [
-    'bubble',
-    highlighted ? 'highlighted' : '',
-    entry.variant === 'error' ? 'error' : '',
-  ].filter(Boolean).join(' ')
-
   const canEdit = entry.role === 'user' && Boolean(onEdit)
   const canRetry = entry.role === 'user' && entry.variant === 'error' && Boolean(onRetry)
   const canOpenTrace = entry.role === 'assistant' && Boolean(entry.traceId)
+  const time = formatClock(entry.time)
+
+  if (entry.role === 'system') {
+    return (
+      <div className={`msg msg--system${highlighted ? ' highlighted' : ''}`}>
+        <div className={`sys-note${entry.variant === 'error' ? ' is-error' : ''}`}>{entry.content}</div>
+      </div>
+    )
+  }
+
+  const isUser = entry.role === 'user'
 
   return (
-    <div className="bubble-wrap">
-      {entry.role !== 'system' && (
-        <div className={bubbleClassName}>
-          <div className="bubble-actions" aria-label={ZH_CN.messageBubble.copyTitle}>
-            {canOpenTrace && (
-              <button
-                type="button"
-                className="bubble-action-btn trace"
-                onClick={() => {
-                  if (!entry.traceId) {
-                    return
-                  }
-                  window.open(`${jaegerUrl}/trace/${entry.traceId}`, '_blank', 'noopener,noreferrer')
-                }}
-                title="查看本次调用的调用链"
-                aria-label="查看本次调用的调用链"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M10 13a5 5 0 0 1 0-7l1-1a5 5 0 0 1 7 7l-1 1" />
-                  <path d="M14 11a5 5 0 0 1 0 7l-1 1a5 5 0 0 1-7-7l1-1" />
-                </svg>
-              </button>
-            )}
-            <button
-              type="button"
-              className="bubble-action-btn copy"
-              onClick={() => onCopy(entry.content)}
-              title={ZH_CN.messageBubble.copyTitle}
-              aria-label={ZH_CN.messageBubble.copyTitle}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="9" y="9" width="10" height="10" rx="2" />
-                <rect x="5" y="5" width="10" height="10" rx="2" />
-              </svg>
-            </button>
-            {(canEdit || canRetry) && (
-              <>
-                {canEdit && (
-                  <button
-                    type="button"
-                    className="bubble-action-btn"
-                    onClick={() => onEdit?.(entry)}
-                    title={ZH_CN.messageBubble.editLabel}
-                    aria-label={ZH_CN.messageBubble.editLabel}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 20h4l11-11-4-4L4 16v4Z" />
-                      <path d="M13.5 6.5 17.5 10.5" />
-                    </svg>
-                  </button>
-                )}
-                {canRetry && (
-                  <button
-                    type="button"
-                    className="bubble-action-btn primary"
-                    onClick={() => onRetry?.(entry)}
-                    title={ZH_CN.messageBubble.retryLabel}
-                    aria-label={ZH_CN.messageBubble.retryLabel}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
-                      <path d="M20 4v6h-6" />
-                    </svg>
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-          <div className="bubble-content">{entry.content}</div>
-        </div>
-      )}
-      {entry.role === 'system' && (
-        <div className={`sys-note ${entry.variant === 'error' ? 'error' : ''}`}>
+    <div className={`msg ${isUser ? 'msg--user' : 'msg--assistant'}${highlighted ? ' highlighted' : ''}`}>
+      {isUser ? (
+        <div className={`user-bubble${entry.variant === 'error' ? ' is-error' : ''}`}>
+          {entry.variant === 'error' && (
+            <span className="chip chip--danger" style={{ marginRight: 6 }}>
+              <Icon name="alert" size={11} /> 失败
+            </span>
+          )}
           {entry.content}
         </div>
+      ) : (
+        <div className="turn-body">
+          <MarkdownView content={entry.content} />
+        </div>
       )}
-      {entry.role !== 'system' && entry.time && <div className="time">{entry.time}</div>}
+
+      <div className="msg-actions">
+        <button
+          type="button"
+          className="icon-action"
+          onClick={() => onCopy(entry.content)}
+          title={ZH_CN.messageBubble.copyTitle}
+          aria-label={ZH_CN.messageBubble.copyTitle}
+        >
+          <Icon name="copy" size={13} />
+        </button>
+        {canEdit && (
+          <button
+            type="button"
+            className="icon-action"
+            onClick={() => onEdit?.(entry)}
+            title={`${ZH_CN.messageBubble.editLabel}并重发`}
+            aria-label={`${ZH_CN.messageBubble.editLabel}并重发`}
+          >
+            <Icon name="pencil" size={13} />
+          </button>
+        )}
+        {canRetry && (
+          <button
+            type="button"
+            className="icon-action"
+            onClick={() => onRetry?.(entry)}
+            title="重试这条消息"
+            aria-label="重试这条消息"
+          >
+            <Icon name="regenerate" size={13} />
+          </button>
+        )}
+        {canOpenTrace && (
+          <button
+            type="button"
+            className="icon-action"
+            title="在 Jaeger 中查看本次调用链"
+            aria-label="在 Jaeger 中查看本次调用链"
+            onClick={() => {
+              if (!entry.traceId) {
+                return
+              }
+              window.open(`${jaegerUrl}/trace/${entry.traceId}`, '_blank', 'noopener,noreferrer')
+            }}
+          >
+            <Icon name="link" size={13} />
+          </button>
+        )}
+        {time && <span className="msg-time">{time}</span>}
+      </div>
     </div>
   )
 }

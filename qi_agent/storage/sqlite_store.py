@@ -184,13 +184,27 @@ class SQLiteStore(Storage):
                     msg["tool_call_id"] = f"call_repair_{len(messages)}"
 
     def list_sessions(self) -> list[dict]:
+        """列出会话（附带消息数，供 Web 侧折叠空壳会话）。
+
+        message_count 用 LEFT JOIN 一次查出——UI 需要用它区分「有内容的会话」与
+        「打开页面时惰性创建的空壳会话」（空壳会淹没列表，见 UI v3 方案 §4.4）。
+        """
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, title, updated_at, snapshot_at FROM sessions"
-                " ORDER BY updated_at DESC",
+                "SELECT s.id, s.title, s.updated_at, s.turn,"
+                " COUNT(m.id) AS message_count"
+                " FROM sessions s LEFT JOIN messages m ON m.session_id = s.id"
+                " GROUP BY s.id, s.title, s.updated_at, s.turn"
+                " ORDER BY s.updated_at DESC",
             ).fetchall()
         return [
-            {"id": row["id"], "title": row["title"], "updated_at": row["updated_at"]}
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "updated_at": row["updated_at"],
+                "turn": row["turn"],
+                "message_count": row["message_count"],
+            }
             for row in rows
         ]
 

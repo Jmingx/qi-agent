@@ -9,16 +9,32 @@ type UseUsageArgs = {
   sessionId: string
 }
 
+export type UsageLevel = 'ok' | 'warn' | 'danger'
+
 type UseUsageResult = {
   usage: ContextUsageResponse | null
   setUsage: (value: ContextUsageResponse | null) => void
   refreshUsage: (targetSessionId?: string) => Promise<void>
-  usageTotalTokens: number
-  usagePercent: number
+  /** 当前上下文窗口占用（语义见 gateway._context_usage：占用 ≠ 累计） */
+  contextTokens: number
+  /** 会话累计消耗 */
+  sessionTokens: number
+  sessionEstimated: boolean
+  percent: number
+  compactAt: number
   usageLabel: string
-  usageClass: 'ok' | 'warn'
+  usageLevel: UsageLevel
+  breakdown: Record<string, number>
 }
 
+const DEFAULT_COMPACT_AT = 0.7
+const DEFAULT_WARN_AT = 0.8
+
+/**
+ * 上下文用量：口径修复后的读取层（UI v3 §9）。
+ * - contextTokens = 当前窗口占用（消息 + 工具 schema 估算）
+ * - sessionTokens = 会话累计消耗（真实 usage，缺失时前端不显示假数）
+ */
 export function useUsage({
   clientRef,
   connectionState,
@@ -43,24 +59,33 @@ export function useUsage({
     }
   }, [clientRef, connectionState, sessionId])
 
-  const usageTotalTokens = usage
-    ? usage.total_tokens ?? (usage.prompt_tokens + usage.completion_tokens)
+  const contextLimit = usage?.context_limit ?? 64_000
+  const contextTokens = usage
+    ? (usage.context_tokens ?? usage.total_tokens ?? usage.prompt_tokens)
     : 0
-  const usagePercent = usage && usage.context_limit > 0
-    ? Math.min(100, Math.round((usageTotalTokens / usage.context_limit) * 100))
+  const sessionTokens = usage?.session_tokens ?? 0
+  const sessionEstimated = Boolean(usage?.session_estimated ?? true)
+  const percent = usage
+    ? (usage.percent ?? Math.min(100, Math.round((contextTokens / contextLimit) * 100)))
     : 0
+  const compactAt = usage?.compact_at ?? Math.round(contextLimit * DEFAULT_COMPACT_AT)
+  const warnAt = usage?.warn_at ?? Math.round(contextLimit * DEFAULT_WARN_AT)
+  const usageLevel: UsageLevel = contextTokens >= warnAt ? 'danger' : contextTokens >= compactAt ? 'warn' : 'ok'
   const usageLabel = usage
-    ? `${Boolean(usage.est_ratio ?? false) ? '~' : ''}${formatTokenCount(usageTotalTokens)} / ${formatTokenCount(usage.context_limit)} tokens (${usagePercent}%)`
-    : '— / — tokens'
-  const usageClass = usagePercent >= 80 ? 'warn' : 'ok'
+    ? `~${formatTokenCount(contextTokens)} / ${formatTokenCount(contextLimit)} (${percent}%)`
+    : '— / —'
 
   return {
     usage,
     setUsage,
     refreshUsage,
-    usageTotalTokens,
-    usagePercent,
+    contextTokens,
+    sessionTokens,
+    sessionEstimated,
+    percent,
+    compactAt,
     usageLabel,
-    usageClass,
+    usageLevel,
+    breakdown: usage?.breakdown ?? {},
   }
 }

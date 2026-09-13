@@ -51,10 +51,9 @@ type MessageState = {
   appendMessage: (role: 'user' | 'assistant' | 'system', content: string, variant?: 'default' | 'error' | 'info') => number
   appendSystemMessage: (content: string, variant?: 'default' | 'error' | 'info') => number
   requestScrollToMessage: (target: { sessionId: string; query: string; content: string } | null) => void
-  currentTurnRef: MutableRefObject<number>
-  currentTurnAssistantSeenRef: MutableRefObject<boolean>
   turnErrorNotifiedRef: MutableRefObject<boolean>
   beginTurn: () => void
+  applyReplyFallback: (sessionId: string, turn: number | undefined, reply: string) => void
   updateSubTaskEntry: (subId: string, updater: (entry: { expanded: boolean }) => { expanded: boolean }) => void
   updateEntriesById: (entryId: number, updater: (entry: StreamEntry) => StreamEntry) => void
 }
@@ -82,7 +81,7 @@ type UseSessionActionsArgs = {
   input: string
   setInput: Dispatch<SetStateAction<string>>
   setCommandPaletteOpen: Dispatch<SetStateAction<boolean>>
-  inputRef: MutableRefObject<HTMLInputElement | null>
+  inputRef: MutableRefObject<HTMLInputElement | HTMLTextAreaElement | null>
   showToast: (message: string) => void
   toggleTheme: () => void
 }
@@ -466,7 +465,6 @@ export function useSessionActions({
       setApproval(null)
       setRunning(false)
       setTraceId(null)
-      messages.currentTurnRef.current += 1
       messages.clearEntries()
       usage.setUsage(null)
       showToast('Current session cleared')
@@ -702,18 +700,11 @@ export function useSessionActions({
     setRunning(true)
 
     try {
-      const response = await client.call<{ reply: string }>('message/send', {
+      const response = await client.call<{ reply: string; turn?: number }>('message/send', {
         session_id: sessionId,
         text: content,
       })
-      if (response.reply) {
-        window.setTimeout(() => {
-          if (!messages.currentTurnAssistantSeenRef.current) {
-            messages.appendMessage('assistant', response.reply)
-            messages.currentTurnAssistantSeenRef.current = true
-          }
-        }, 250)
-      }
+      messages.applyReplyFallback(sessionId, response.turn, response.reply)
     } catch (error) {
       const message = getErrorMessage(error)
       showToast(`消息发送失败：${message}`)
@@ -752,7 +743,7 @@ export function useSessionActions({
     }
     if (text.startsWith('/')) {
       const parsed = commandFromInput(text)
-      const builtIn = parsed ? getCommandDefinition(\`/\${parsed.name}\` as CommandName) : undefined
+      const builtIn = parsed ? getCommandDefinition(`/${parsed.name}` as CommandName) : undefined
       // 未占用的 /{skill_name} <任务> 是用户显式指定工作方法，
       // 不走前端本地命令，也不依赖模型先想到 skill_view。
       if (parsed && !builtIn && parsed.args.trim()) {
@@ -772,22 +763,19 @@ export function useSessionActions({
         messages.trackCurrentTurnEntryId(userMessageId)
         setRunning(true)
         try {
-          const response = await client.call<{ reply: string }>('skill/activate', {
+          const response = await client.call<{ reply: string; turn?: number }>('skill/activate', {
             session_id: sessionId,
             skill_id: parsed.name,
             text: parsed.args,
           })
-          if (response.reply && !messages.currentTurnAssistantSeenRef.current) {
-            messages.appendMessage('assistant', response.reply)
-            messages.currentTurnAssistantSeenRef.current = true
-          }
+          messages.applyReplyFallback(sessionId, response.turn, response.reply)
         } catch (error) {
           const message = getErrorMessage(error)
-          showToast(\`Skill 调用失败：\${message}\`)
+          showToast(`Skill 调用失败：${message}`)
           messages.updateEntriesById(userMessageId, (entry) => (
             entry.kind === 'message' ? { ...entry, variant: 'error' } : entry
           ))
-          appendSystemMessage(\`Skill 调用失败：\${message}\`, 'error')
+          appendSystemMessage(`Skill 调用失败：${message}`, 'error')
         } finally {
           setRunning(false)
           void refreshTrace(session.sessionIdRef.current)
@@ -893,4 +881,3 @@ export function useSessionActions({
     handleSearchSelect,
   }
 }
-

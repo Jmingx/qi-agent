@@ -1,439 +1,72 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { type ConnectionStatus, type WsClient } from '../ws'
-import {
-  now,
-  normalizeToolArguments,
-  type MessageVariant,
-  type PendingScrollTarget,
-  type Role,
-  type StreamEntry,
-  type SubTaskEntry,
-  type TextEntry,
-  type ToolCallPayload,
-  type ToolEntry,
-  type ToolResultEntry,
-  type ToolResultPayload,
-} from '../appModel'
+import { now, normalizeToolArguments, type AssistantTurnEntry, type MessageVariant, type PendingScrollTarget, type Role, type StreamEntry, type SubTaskEntry, type TextEntry, type ToolCallPayload, type ToolEntry, type ToolProgressPayload, type ToolResultEntry, type ToolResultPayload, type TurnEndPayload } from '../appModel'
 
-type UseMessagesArgs = {
-  clientRef: MutableRefObject<WsClient | null>
-  connectionState: ConnectionStatus
-  sessionIdRef: MutableRefObject<string>
-  setRunning: Dispatch<SetStateAction<boolean>>
-  refreshSessions: () => Promise<void>
-  onApprovalChange: Dispatch<SetStateAction<Record<string, unknown> | null>>
-}
-
+type UseMessagesArgs = { clientRef: MutableRefObject<WsClient | null>; connectionState: ConnectionStatus; sessionIdRef: MutableRefObject<string>; setRunning: Dispatch<SetStateAction<boolean>>; refreshSessions: () => Promise<void>; onApprovalChange: Dispatch<SetStateAction<Record<string, unknown> | null>> }
 type UseMessagesResult = {
-  entries: StreamEntry[]
-  entriesRef: MutableRefObject<StreamEntry[]>
-  highlightedMessageId: number | null
-  setHighlightedMessageId: Dispatch<SetStateAction<number | null>>
-  highlightMessage: (messageId: number) => void
-  pendingScrollTarget: PendingScrollTarget
-  messagesEndRef: MutableRefObject<HTMLDivElement | null>
-  messageNodeRefs: MutableRefObject<Map<number, HTMLDivElement | null>>
-  registerMessageNode: (messageId: number) => (node: HTMLDivElement | null) => void
-  requestScrollToMessage: (target: PendingScrollTarget) => void
-  appendMessage: (role: Role, content: string, variant?: MessageVariant) => number
-  appendSystemMessage: (content: string, variant?: MessageVariant) => number
-  clearEntries: () => void
-  replaceEntries: (next: StreamEntry[]) => void
-  updateEntriesById: (entryId: number, updater: (entry: StreamEntry) => StreamEntry) => void
-  updateSubTaskEntry: (subId: string, updater: (entry: SubTaskEntry) => SubTaskEntry) => void
-  appendSubTaskEntry: (entry: Omit<SubTaskEntry, 'id' | 'kind'>) => number
-  beginTurn: () => void
-  trackCurrentTurnEntryId: (entryId: number) => void
-  currentTurnRef: MutableRefObject<number>
-  currentTurnAssistantSeenRef: MutableRefObject<boolean>
-  turnErrorNotifiedRef: MutableRefObject<boolean>
+  entries: StreamEntry[]; entriesRef: MutableRefObject<StreamEntry[]>; highlightedMessageId: number | null; setHighlightedMessageId: Dispatch<SetStateAction<number | null>>; highlightMessage: (messageId: number) => void; pendingScrollTarget: PendingScrollTarget; messagesEndRef: MutableRefObject<HTMLDivElement | null>; messageNodeRefs: MutableRefObject<Map<number, HTMLDivElement | null>>; registerMessageNode: (messageId: number) => (node: HTMLDivElement | null) => void; requestScrollToMessage: (target: PendingScrollTarget) => void; appendMessage: (role: Role, content: string, variant?: MessageVariant) => number; appendSystemMessage: (content: string, variant?: MessageVariant) => number; clearEntries: () => void; replaceEntries: (next: StreamEntry[]) => void; updateEntriesById: (entryId: number, updater: (entry: StreamEntry) => StreamEntry) => void; updateSubTaskEntry: (subId: string, updater: (entry: SubTaskEntry) => SubTaskEntry) => void; appendSubTaskEntry: (entry: Omit<SubTaskEntry, 'id' | 'kind'>) => number; beginTurn: () => void; trackCurrentTurnEntryId: (_entryId: number) => void; applyReplyFallback: (sessionId: string, turn: number | undefined, reply: string) => void; turnErrorNotifiedRef: MutableRefObject<boolean>; turnStats: TurnStat[]
 }
 
-function createMessageEntry(
-  id: number,
-  role: Role,
-  content: string,
-  variant: MessageVariant = 'default',
-): TextEntry {
-  return {
-    id,
-    kind: 'message',
-    role,
-    content,
-    time: now(),
-    variant,
-  }
+/** 单轮统计（turn/end 通知里带来的增量，用于上下文面板的「每轮明细」）。 */
+export type TurnStat = {
+  turn: number
+  totalTokens: number
+  promptTokens: number
+  completionTokens: number
+  estimated: boolean
+  elapsedMs: number
+  toolCalls: number
+  llmCalls: number
+  time: string
 }
 
-export function useMessages({
-  clientRef,
-  connectionState,
-  sessionIdRef,
-  setRunning,
-  refreshSessions,
-  onApprovalChange,
-}: UseMessagesArgs): UseMessagesResult {
+const keyFor = (sessionId: string, turn: number): string => `${sessionId}:${turn}`
+const createMessage = (id: number, role: Role, content: string, variant: MessageVariant = 'default'): TextEntry => ({ id, kind: 'message', role, content, time: now(), variant })
+
+export function useMessages({ clientRef, connectionState, sessionIdRef, setRunning, refreshSessions, onApprovalChange }: UseMessagesArgs): UseMessagesResult {
   const [entries, setEntries] = useState<StreamEntry[]>([])
   const entriesRef = useRef<StreamEntry[]>([])
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null)
   const [pendingScrollTarget, setPendingScrollTarget] = useState<PendingScrollTarget>(null)
+  const [turnStats, setTurnStats] = useState<TurnStat[]>([])
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const messageNodeRefs = useRef(new Map<number, HTMLDivElement | null>())
   const highlightTimerRef = useRef<number | null>(null)
   const nextIdRef = useRef(0)
-  const currentTurnRef = useRef(0)
-  const currentTurnAssistantSeenRef = useRef(false)
+  const turnEntryIdsRef = useRef(new Map<string, number>())
   const turnErrorNotifiedRef = useRef(false)
-  const currentTurnEntryIdsRef = useRef<Set<number> | null>(null)
-  const streamingRef = useRef<{ id: number; turn: number; full: string } | null>(null)
+  const commit = useCallback((next: StreamEntry[]): void => { entriesRef.current = next; nextIdRef.current = Math.max(nextIdRef.current, ...next.map((entry) => entry.id), 0); setEntries(next) }, [])
+  const nextId = useCallback((): number => { nextIdRef.current += 1; return nextIdRef.current }, [])
+  const findTurn = useCallback((sessionId: string, turn: number, source: StreamEntry[]): AssistantTurnEntry | undefined => { const id = turnEntryIdsRef.current.get(keyFor(sessionId, turn)); return source.find((entry): entry is AssistantTurnEntry => entry.kind === 'assistant-turn' && entry.id === id) }, [])
+  const ensureTurn = useCallback((sessionId: string, turn: number, source: StreamEntry[]): [AssistantTurnEntry, StreamEntry[]] => { const existing = findTurn(sessionId, turn, source); if (existing) return [existing, source]; const entry: AssistantTurnEntry = { id: nextId(), kind: 'assistant-turn', sessionId, turn, body: '', bodyState: 'streaming', tools: [], time: now() }; turnEntryIdsRef.current.set(keyFor(sessionId, turn), entry.id); return [entry, [...source, entry]] }, [findTurn, nextId])
+  const replaceTurn = useCallback((entry: AssistantTurnEntry, source: StreamEntry[]): void => commit(source.map((candidate) => candidate.id === entry.id ? entry : candidate)), [commit])
+  const appendMessage = useCallback((role: Role, content: string, variant: MessageVariant = 'default'): number => { const id = nextId(); commit([...entriesRef.current, createMessage(id, role, content, variant)]); return id }, [commit, nextId])
+  const appendSystemMessage = useCallback((content: string, variant: MessageVariant = 'default'): number => appendMessage('system', content, variant), [appendMessage])
+  const replaceEntries = useCallback((next: StreamEntry[]): void => { turnEntryIdsRef.current.clear(); next.forEach((entry) => { if (entry.kind === 'assistant-turn') turnEntryIdsRef.current.set(keyFor(entry.sessionId, entry.turn), entry.id) }); setTurnStats([]); commit(next) }, [commit])
+  const clearEntries = useCallback((): void => { turnEntryIdsRef.current.clear(); setTurnStats([]); commit([]) }, [commit])
+  const updateEntriesById = useCallback((id: number, updater: (entry: StreamEntry) => StreamEntry): void => commit(entriesRef.current.map((entry) => entry.id === id ? updater(entry) : entry)), [commit])
+  const updateSubTaskEntry = useCallback((subId: string, updater: (entry: SubTaskEntry) => SubTaskEntry): void => commit(entriesRef.current.map((entry) => entry.kind === 'subtask' && entry.subId === subId ? updater(entry) : entry)), [commit])
+  const appendSubTaskEntry = useCallback((entry: Omit<SubTaskEntry, 'id' | 'kind'>): number => { const id = nextId(); commit([...entriesRef.current, { id, kind: 'subtask', ...entry }]); return id }, [commit, nextId])
+  const beginTurn = useCallback((): void => { turnErrorNotifiedRef.current = false }, [])
+  const trackCurrentTurnEntryId = useCallback((_entryId: number): void => {}, [])
+  const requestScrollToMessage = useCallback((target: PendingScrollTarget): void => setPendingScrollTarget(target), [])
+  const registerMessageNode = useCallback((id: number) => (node: HTMLDivElement | null): void => { if (node) messageNodeRefs.current.set(id, node); else messageNodeRefs.current.delete(id) }, [])
+  const highlightMessage = useCallback((id: number): void => { setHighlightedMessageId(id); if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current); highlightTimerRef.current = window.setTimeout(() => { setHighlightedMessageId((current) => current === id ? null : current); highlightTimerRef.current = null }, 1800) }, [])
+  const applyReplyFallback = useCallback((sessionId: string, turn: number | undefined, reply: string): void => { const resolvedTurn = Number(turn ?? 0); if (!reply || !resolvedTurn) return; const source = entriesRef.current.slice(); const [entry, next] = ensureTurn(sessionId, resolvedTurn, source); if (!entry.body) replaceTurn({ ...entry, body: reply, bodyState: 'completed' }, next) }, [ensureTurn, replaceTurn])
 
-  const syncNextId = useCallback((next: StreamEntry[]): void => {
-    const maxId = next.reduce((accumulator, entry) => Math.max(accumulator, entry.id), 0)
-    nextIdRef.current = Math.max(nextIdRef.current, maxId)
-  }, [])
-
-  const commitEntries = useCallback((next: StreamEntry[]): void => {
-    entriesRef.current = next
-    syncNextId(next)
-    setEntries(next)
-  }, [syncNextId])
-
-  const nextId = useCallback((): number => {
-    nextIdRef.current += 1
-    return nextIdRef.current
-  }, [])
-
-  const clearStreamingState = useCallback((): void => {
-    streamingRef.current = null
-    currentTurnAssistantSeenRef.current = false
-    turnErrorNotifiedRef.current = false
-  }, [])
-
-  const clearCurrentTurnEntries = useCallback((): void => {
-    currentTurnEntryIdsRef.current = null
-  }, [])
-
-  const trackCurrentTurnEntryId = useCallback((entryId: number): void => {
-    if (currentTurnEntryIdsRef.current === null) {
-      return
-    }
-    currentTurnEntryIdsRef.current.add(entryId)
-  }, [])
-
-  const applyTraceIdToCurrentTurnEntries = useCallback((traceId: string): void => {
-    const ids = currentTurnEntryIdsRef.current
-    if (!ids || ids.size === 0) {
-      clearCurrentTurnEntries()
-      return
-    }
-
-    const nextEntries = entriesRef.current.map((entry) => {
-      if (!ids.has(entry.id)) {
-        return entry
-      }
-      // turn/end 只在本回合收口时打标，避免把后续新回合的消息串到旧 trace。
-      if (entry.kind === 'message') {
-        return { ...entry, traceId }
-      }
-      if (entry.kind === 'tool') {
-        return { ...entry, traceId }
-      }
-      return entry
-    })
-    commitEntries(nextEntries)
-    clearCurrentTurnEntries()
-  }, [clearCurrentTurnEntries, commitEntries])
-
-  const replaceEntries = useCallback((next: StreamEntry[]): void => {
-    commitEntries(next)
-  }, [commitEntries])
-
-  const clearEntries = useCallback((): void => {
-    clearCurrentTurnEntries()
-    commitEntries([])
-  }, [clearCurrentTurnEntries, commitEntries])
-
-  const appendMessage = useCallback((
-    role: Role,
-    content: string,
-    variant: MessageVariant = 'default',
-  ): number => {
-    const id = nextId()
-    const next = [
-      ...entriesRef.current,
-      createMessageEntry(id, role, content, variant),
-    ]
-    commitEntries(next)
-    if (role !== 'system') {
-      trackCurrentTurnEntryId(id)
-    }
-    return id
-  }, [commitEntries, nextId, trackCurrentTurnEntryId])
-
-  const appendSystemMessage = useCallback((
-    content: string,
-    variant: MessageVariant = 'default',
-  ): number => appendMessage('system', content, variant), [appendMessage])
-
-  const updateEntriesById = useCallback((
-    entryId: number,
-    updater: (entry: StreamEntry) => StreamEntry,
-  ): void => {
-    const nextEntries = entriesRef.current.map((entry) => (
-      entry.id === entryId ? updater(entry) : entry
-    ))
-    commitEntries(nextEntries)
-  }, [commitEntries])
-
-  const updateSubTaskEntry = useCallback((
-    subId: string,
-    updater: (entry: SubTaskEntry) => SubTaskEntry,
-  ): void => {
-    const nextEntries = entriesRef.current.map((entry) => (
-      entry.kind === 'subtask' && entry.subId === subId ? updater(entry) : entry
-    ))
-    commitEntries(nextEntries)
-  }, [commitEntries])
-
-  const appendSubTaskEntry = useCallback((entry: Omit<SubTaskEntry, 'id' | 'kind'>): number => {
-    const entryId = nextId()
-    const nextEntries: StreamEntry[] = [
-      ...entriesRef.current,
-      {
-        id: entryId,
-        kind: 'subtask',
-        ...entry,
-      },
-    ]
-    commitEntries(nextEntries)
-    return entryId
-  }, [commitEntries, nextId])
-
-  const requestScrollToMessage = useCallback((target: PendingScrollTarget): void => {
-    setPendingScrollTarget(target)
-  }, [])
-
-  const registerMessageNode = useCallback((messageId: number) => {
-    return (node: HTMLDivElement | null): void => {
-      if (node) {
-        messageNodeRefs.current.set(messageId, node)
-      } else {
-        messageNodeRefs.current.delete(messageId)
-      }
-    }
-  }, [])
-
-  const highlightMessage = useCallback((messageId: number): void => {
-    setHighlightedMessageId(messageId)
-    if (highlightTimerRef.current !== null) {
-      window.clearTimeout(highlightTimerRef.current)
-    }
-    highlightTimerRef.current = window.setTimeout(() => {
-      setHighlightedMessageId((current) => (current === messageId ? null : current))
-      highlightTimerRef.current = null
-    }, 1800)
-  }, [])
-
-  const beginTurn = useCallback((): void => {
-    clearStreamingState()
-    clearCurrentTurnEntries()
-    currentTurnEntryIdsRef.current = new Set<number>()
-    currentTurnRef.current += 1
-  }, [clearStreamingState, clearCurrentTurnEntries])
   useEffect(() => {
     const client = clientRef.current
-    if (!client) {
-      return undefined
-    }
-
-    client.onNotify('item/agentMessage/delta', (params) => {
-      const delta = String((params.text as string | undefined) ?? (params.delta as string | undefined) ?? '')
-      if (!delta) {
-        return
-      }
-
-      const turn = Number(params.turn ?? 0)
-      if (turn !== currentTurnRef.current) {
-        return
-      }
-
-      currentTurnAssistantSeenRef.current = true
-
-      const existing = streamingRef.current
-      if (existing && existing.turn === turn) {
-        existing.full += delta
-        const nextEntries = entriesRef.current.map((entry) => (
-          entry.kind === 'message' && entry.id === existing.id
-            ? { ...entry, content: existing.full }
-            : entry
-        ))
-        commitEntries(nextEntries)
-        return
-      }
-
-      const id = nextId()
-      streamingRef.current = { id, turn, full: delta }
-      commitEntries([
-        ...entriesRef.current,
-        { id, kind: 'message', role: 'assistant', content: delta, time: now() },
-      ])
-      trackCurrentTurnEntryId(id)
-    })
-
-    client.onNotify('item/toolCall', (params) => {
-      const payload = params as ToolCallPayload
-      const targetSessionId = String(payload.session_id ?? '')
-      if (!targetSessionId || targetSessionId !== sessionIdRef.current) {
-        return
-      }
-
-      const entryId = nextId()
-      const nextEntries: StreamEntry[] = [
-        ...entriesRef.current,
-        {
-          id: entryId,
-          kind: 'tool',
-          sessionId: targetSessionId,
-          name: String(payload.name ?? '鏈煡宸ュ叿'),
-          toolArguments: normalizeToolArguments(payload.arguments),
-          status: payload.status === 'blocked' ? 'blocked' : 'running',
-          reason: payload.reason ? String(payload.reason) : undefined,
-          time: now(),
-        } satisfies ToolEntry,
-      ]
-      commitEntries(nextEntries)
-      trackCurrentTurnEntryId(entryId)
-    })
-
-    client.onNotify('item/toolResult', (params) => {
-      const payload = params as ToolResultPayload
-      const targetSessionId = String(payload.session_id ?? '')
-      if (!targetSessionId || targetSessionId !== sessionIdRef.current) {
-        return
-      }
-
-      const toolName = String(payload.name ?? '鏈煡宸ュ叿')
-      const result: ToolResultEntry = {
-        ok: Boolean(payload.ok),
-        summary: String(payload.summary ?? ''),
-        durationMs: Number(payload.duration_ms ?? 0),
-      }
-
-      const nextEntries = entriesRef.current.slice()
-      for (let index = nextEntries.length - 1; index >= 0; index -= 1) {
-        const entry = nextEntries[index]
-        if (
-          entry.kind === 'tool'
-          && entry.sessionId === targetSessionId
-          && entry.name === toolName
-          && !entry.result
-        ) {
-          nextEntries[index] = {
-            ...entry,
-            result,
-          }
-          commitEntries(nextEntries)
-          return
-        }
-      }
-
-      const entryId = nextId()
-      commitEntries([
-        ...entriesRef.current,
-        {
-          id: entryId,
-          kind: 'tool',
-          sessionId: targetSessionId,
-          name: toolName,
-          toolArguments: {},
-          status: 'running',
-          result,
-          time: now(),
-        } satisfies ToolEntry,
-      ])
-      trackCurrentTurnEntryId(entryId)
-    })
-
-    client.onNotify('turn/end', (params) => {
-      const targetSessionId = String((params.session_id as string | undefined) ?? '')
-      if (targetSessionId && targetSessionId !== sessionIdRef.current) {
-        return  // 旧会话迟到的回合收尾不污染当前回合
-      }
-      setRunning(false)
-      streamingRef.current = null
-      const traceId = String((params.trace_id as string | undefined) ?? '').trim()
-      if (traceId) {
-        applyTraceIdToCurrentTurnEntries(traceId)
-      } else {
-        clearCurrentTurnEntries()
-      }
-      const error = String((params.error as string | undefined) ?? '')
-      turnErrorNotifiedRef.current = Boolean(error)
-      if (error) {
-        appendSystemMessage(`鍐呮牳閿欒锛?{error}`, 'error')
-      }
-      void refreshSessions()
-    })
-
-    client.onNotify('serverRequest/approval', (params) => {
-      onApprovalChange(params)
-    })
-
+    if (!client) return undefined
+    client.onNotify('item/agentMessage/delta', (params) => { const sessionId = String(params.session_id ?? ''); const turn = Number(params.turn ?? 0); const delta = String(params.text ?? params.delta ?? ''); if (!sessionId || sessionId !== sessionIdRef.current || !turn || !delta) return; const source = entriesRef.current.slice(); const [entry, next] = ensureTurn(sessionId, turn, source); replaceTurn({ ...entry, body: entry.body + delta, bodyState: 'streaming' }, next) })
+    client.onNotify('item/toolCall', (params) => { const payload = params as ToolCallPayload; const sessionId = String(payload.session_id ?? ''); const turn = Number(payload.turn ?? 0); if (!sessionId || sessionId !== sessionIdRef.current || !turn) return; const source = entriesRef.current.slice(); const [entry, next] = ensureTurn(sessionId, turn, source); const toolCallId = String(payload.tool_call_id ?? `${payload.name ?? 'tool'}:${entry.tools.length}`); if (entry.tools.some((tool) => tool.toolCallId === toolCallId)) return; const tool: ToolEntry = { id: nextId(), kind: 'tool', sessionId, toolCallId, name: String(payload.name ?? '未知工具'), toolArguments: normalizeToolArguments(payload.arguments), status: payload.status === 'blocked' ? 'blocked' : 'running', reason: payload.reason ? String(payload.reason) : undefined, progress: [{ time: now(), text: payload.status === 'blocked' ? '已被安全策略拦截' : '已开始执行' }], time: now() }; replaceTurn({ ...entry, tools: [...entry.tools, tool] }, next) })
+    client.onNotify('item/toolProgress', (params) => { const payload = params as ToolProgressPayload; const sessionId = String(payload.session_id ?? ''); const turn = Number(payload.turn ?? 0); const toolCallId = String(payload.tool_call_id ?? ''); const text = String(payload.text ?? '').trim(); if (!sessionId || sessionId !== sessionIdRef.current || !turn || !toolCallId || !text) return; const entry = findTurn(sessionId, turn, entriesRef.current); if (!entry) return; replaceTurn({ ...entry, tools: entry.tools.map((tool) => tool.toolCallId === toolCallId ? { ...tool, progress: [...tool.progress, { time: now(), text }] } : tool) }, entriesRef.current) })
+    client.onNotify('item/toolResult', (params) => { const payload = params as ToolResultPayload; const sessionId = String(payload.session_id ?? ''); const turn = Number(payload.turn ?? 0); if (!sessionId || sessionId !== sessionIdRef.current || !turn) return; const source = entriesRef.current.slice(); const [entry, next] = ensureTurn(sessionId, turn, source); const toolCallId = String(payload.tool_call_id ?? ''); const result: ToolResultEntry = { ok: Boolean(payload.ok), summary: String(payload.summary ?? ''), durationMs: Number(payload.duration_ms ?? 0), outputPreview: payload.output_preview === undefined ? undefined : String(payload.output_preview), outputBytes: payload.output_bytes === undefined ? undefined : Number(payload.output_bytes), truncated: Boolean(payload.truncated) }; const found = entry.tools.some((tool) => tool.toolCallId === toolCallId); const tools = found ? entry.tools.map((tool) => tool.toolCallId === toolCallId ? { ...tool, result } : tool) : [...entry.tools, { id: nextId(), kind: 'tool', sessionId, toolCallId: toolCallId || `unknown:${entry.tools.length}`, name: String(payload.name ?? '未知工具'), toolArguments: {}, status: 'running', result, progress: [], time: now() }]; replaceTurn({ ...entry, tools }, next) })
+    client.onNotify('turn/end', (params) => { const payload = params as TurnEndPayload; const sessionId = String(payload.session_id ?? ''); const turn = Number(payload.turn ?? 0); if (sessionId && sessionId !== sessionIdRef.current) return; setRunning(false); const entry = sessionId && turn ? findTurn(sessionId, turn, entriesRef.current) : undefined; const error = String(payload.error ?? ''); if (entry) replaceTurn({ ...entry, bodyState: error ? 'error' : 'completed', traceId: String(payload.trace_id ?? '').trim() || undefined, error: error || undefined, elapsedMs: payload.elapsed_ms === undefined ? entry.elapsedMs : Number(payload.elapsed_ms), usage: payload.usage ?? entry.usage, llmCalls: payload.llm_calls === undefined ? entry.llmCalls : Number(payload.llm_calls) }, entriesRef.current); turnErrorNotifiedRef.current = Boolean(error); if (error) appendSystemMessage(`内核错误：${error}`, 'error'); if (turn) setTurnStats((current) => [...current.filter((item) => item.turn !== turn), { turn, totalTokens: Number(payload.usage?.total_tokens ?? 0), promptTokens: Number(payload.usage?.prompt_tokens ?? 0), completionTokens: Number(payload.usage?.completion_tokens ?? 0), estimated: Boolean(payload.usage?.estimated ?? true), elapsedMs: Number(payload.elapsed_ms ?? 0), toolCalls: Number(payload.tool_calls ?? 0), llmCalls: Number(payload.llm_calls ?? 0), time: now() }].sort((a, b) => a.turn - b.turn)); void refreshSessions() })
+    client.onNotify('serverRequest/approval', (params) => { const sessionId = String(params.session_id ?? ''); if (!sessionId || sessionId === sessionIdRef.current) onApprovalChange(params) })
     return undefined
-  }, [
-    appendSystemMessage,
-    applyTraceIdToCurrentTurnEntries,
-    clearCurrentTurnEntries,
-    clientRef,
-    commitEntries,
-    nextId,
-    onApprovalChange,
-    refreshSessions,
-    sessionIdRef,
-    setRunning,
-    trackCurrentTurnEntryId,
-  ])
-
-
-  useEffect(() => {
-    if (connectionState !== 'connected') {
-      setRunning(false)
-      streamingRef.current = null
-    }
-  }, [connectionState, setRunning])
-
-  useEffect(() => {
-    return () => {
-      if (highlightTimerRef.current !== null) {
-        window.clearTimeout(highlightTimerRef.current)
-        highlightTimerRef.current = null
-      }
-    }
-  }, [])
-
-  return {
-    entries,
-    entriesRef,
-    highlightedMessageId,
-    setHighlightedMessageId,
-    highlightMessage,
-    pendingScrollTarget,
-    messagesEndRef,
-    messageNodeRefs,
-    registerMessageNode,
-    requestScrollToMessage,
-    appendMessage,
-    appendSystemMessage,
-    clearEntries,
-    replaceEntries,
-    updateEntriesById,
-    updateSubTaskEntry,
-    appendSubTaskEntry,
-    beginTurn,
-    trackCurrentTurnEntryId,
-    currentTurnRef,
-    currentTurnAssistantSeenRef,
-    turnErrorNotifiedRef,
-  }
+  }, [appendSystemMessage, clientRef, ensureTurn, findTurn, nextId, onApprovalChange, refreshSessions, replaceTurn, sessionIdRef, setRunning])
+  useEffect(() => { if (connectionState !== 'connected') setRunning(false) }, [connectionState, setRunning])
+  useEffect(() => () => { if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current) }, [])
+  return { entries, entriesRef, highlightedMessageId, setHighlightedMessageId, highlightMessage, pendingScrollTarget, messagesEndRef, messageNodeRefs, registerMessageNode, requestScrollToMessage, appendMessage, appendSystemMessage, clearEntries, replaceEntries, updateEntriesById, updateSubTaskEntry, appendSubTaskEntry, beginTurn, trackCurrentTurnEntryId, applyReplyFallback, turnErrorNotifiedRef, turnStats }
 }

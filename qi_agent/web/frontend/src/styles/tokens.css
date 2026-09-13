@@ -1,0 +1,119 @@
+/* 设计 token（唯一变量源）——UI v3
+   规则：中性灰阶 + 单一强调色；渐变/玻璃只允许出现在 logo（默认不用）。
+   字号 4 档、圆角 4 档、阴影 2 档；亮暗同变量名覆盖，不做两套设计。 */
+
+:root {
+  color-scheme: light;
+
+  /* 底色与前景 */
+  --bg: #ffffff;
+  --bg-subtle: #f7f8fa;
+  --bg-muted: #eef0f3;
+  --fg: #16181d;
+  --fg-muted: #5c6470;
+  --fg-subtle: #6b7280;
+
+  /* 描边 */
+  --border: #e6e8eb;
+  --border-strong: #d5d9de;
+
+  /* 强调（仅交互态：链接/主按钮/焦点环/选中底） */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-subtle: rgba(79, 70, 229, 0.08);
+  --accent-contrast: #ffffff;
+
+  /* 语义状态 */
+  --ok: #0f7b57;
+  --ok-bg: rgba(15, 123, 87, 0.10);
+  --warn: #a15c07;
+  --warn-bg: rgba(161, 92, 7, 0.10);
+  --danger: #b42318;
+  --danger-bg: rgba(180, 35, 24, 0.08);
+
+  /* 代码 */
+  --code-bg: #f6f8fa;
+  --code-border: #e6e8eb;
+  --code-fg: #1f2328;
+
+  /* 浮层 */
+  --overlay: rgba(16, 24, 40, 0.45);
+  --toast-bg: #16181d;
+  --toast-fg: #f8fafc;
+
+  /* 形状 */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-full: 999px;
+
+  /* 阴影（只两档） */
+  --shadow-pop: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.10);
+  --shadow-focus: 0 0 0 3px rgba(79, 70, 229, 0.28);
+
+  /* 间距（4px 栅格） */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* 排版 */
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --lh-base: 1.6;
+  --lh-code: 1.55;
+  --font-sans: ui-sans-serif, -apple-system, 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei',
+    'PingFang SC', 'Noto Sans SC', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
+
+  /* 动效 */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* 布局尺寸 */
+  --sidebar-w: 264px;
+  --panel-w: 344px;
+  --content-max: 720px;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #0e1116;
+  --bg-subtle: #14181f;
+  --bg-muted: #1b2027;
+  --fg: #e6e8eb;
+  --fg-muted: #9aa3af;
+  --fg-subtle: #8b95a3;
+
+  --border: #252b33;
+  --border-strong: #333a44;
+
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-subtle: rgba(129, 140, 248, 0.14);
+  --accent-contrast: #0e1116;
+
+  --ok: #4ade80;
+  --ok-bg: rgba(74, 222, 128, 0.12);
+  --warn: #fbbf24;
+  --warn-bg: rgba(251, 191, 36, 0.12);
+  --danger: #f87171;
+  --danger-bg: rgba(248, 113, 113, 0.12);
+
+  --code-bg: #151a21;
+  --code-border: #252b33;
+  --code-fg: #d7dde5;
+
+  --overlay: rgba(2, 6, 16, 0.6);
+  --toast-bg: #1b2027;
+  --toast-fg: #f1f5f9;
+
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.45);
+  --shadow-focus: 0 0 0 3px rgba(129, 140, 248, 0.35);
+}

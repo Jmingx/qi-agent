@@ -1,46 +1,45 @@
+import type { IconName } from './components/ui/Icon'
+
 export type ThemeMode = 'light' | 'dark' | 'system'
 
 export const THEME_STORAGE_KEY = 'qi_theme'
 
-// 这里只登记 TS 侧已经稳定下来的主题 token 名称，真正的 CSS 变量仍由 style.css 维护。
+// 这里只登记 TS 侧已经稳定下来的主题 token 名称，真正的 CSS 变量由 styles/tokens.css 维护。
 // 后续如果新增 token，先补这个清单，再考虑是否要扩展主题映射层。
 export const THEME_TOKEN_KEYS = [
   '--bg',
-  '--bg-soft',
-  '--panel',
-  '--panel-strong',
-  '--panel-muted',
+  '--bg-subtle',
+  '--bg-muted',
+  '--fg',
+  '--fg-muted',
+  '--fg-subtle',
   '--border',
   '--border-strong',
-  '--text',
-  '--muted',
-  '--muted-2',
-  '--brand',
-  '--brand-2',
-  '--brand-3',
-  '--user-start',
-  '--user-end',
-  '--ai-start',
-  '--ai-end',
-  '--success-bg',
-  '--success-text',
-  '--success-dot',
+  '--accent',
+  '--accent-hover',
+  '--accent-subtle',
+  '--accent-contrast',
+  '--ok',
+  '--ok-bg',
+  '--warn',
   '--warn-bg',
-  '--warn-text',
-  '--warn-dot',
+  '--danger',
   '--danger-bg',
-  '--danger-text',
-  '--danger-dot',
-  '--sys-bg',
-  '--sys-text',
-  '--sys-border',
+  '--code-bg',
+  '--code-border',
+  '--code-fg',
+  '--overlay',
   '--toast-bg',
-  '--toast-text',
-  '--shadow-lg',
-  '--shadow-md',
-  '--shadow-sm',
-  '--bg-blob-1',
-  '--bg-blob-2',
+  '--toast-fg',
+  '--r-sm',
+  '--r-md',
+  '--r-lg',
+  '--r-full',
+  '--shadow-pop',
+  '--shadow-focus',
+  '--sidebar-w',
+  '--panel-w',
+  '--content-max',
 ] as const
 
 export function readThemeMode(): ThemeMode {
@@ -78,12 +77,12 @@ export function getThemeLabel(mode: ThemeMode): string {
   return '深色'
 }
 
-export function getThemeIcon(mode: ThemeMode): string {
+export function getThemeIcon(mode: ThemeMode): IconName {
   if (mode === 'system') {
-    return '◐'
+    return 'monitor'
   }
   if (mode === 'light') {
-    return '☀'
+    return 'sun'
   }
-  return '☾'
+  return 'moon'
 }
