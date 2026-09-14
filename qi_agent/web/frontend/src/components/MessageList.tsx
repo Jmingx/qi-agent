@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { MessageBubble } from './MessageBubble'
 import { StepRow } from './StepRow'
+import { ApprovalCard } from './ApprovalCard'
 import { TurnSummary } from './TurnSummary'
 import { SubTaskCard } from './SubTaskCard'
 import { MarkdownView } from './MarkdownView'
@@ -29,6 +30,8 @@ type MessageListProps = {
   onRetryMessage: (messageId: number, text: string) => void
   onToggleSubTaskExpanded: (subId: string) => void
   onUseSample: (prompt: string) => void
+  /** 审批决策（M2-a：卡片就在对话流里，按 approval_id 回执） */
+  onRespondApproval: (approvalId: string, choice: string) => void | Promise<void>
 }
 
 const STICK_THRESHOLD_PX = 80
@@ -74,6 +77,7 @@ export function MessageList({
   onRetryMessage,
   onToggleSubTaskExpanded,
   onUseSample,
+  onRespondApproval,
 }: MessageListProps) {
   const containerRef = useRef<HTMLElement | null>(null)
   const stickRef = useRef(true)
@@ -184,7 +188,7 @@ export function MessageList({
     if (entry.kind === 'assistant-turn') {
       return (
         <div key={entry.id} ref={registerNode(entry.id)} className={`msg msg--assistant${highlightedMessageId === entry.id ? ' highlighted' : ''}`}>
-          <TurnContainer entry={entry} jaegerUrl={jaegerUrl} onCopyMessage={onCopyMessage} />
+          <TurnContainer entry={entry} jaegerUrl={jaegerUrl} onCopyMessage={onCopyMessage} onRespondApproval={onRespondApproval} />
         </div>
       )
     }
@@ -279,10 +283,12 @@ function TurnContainer({
   entry,
   jaegerUrl,
   onCopyMessage,
+  onRespondApproval,
 }: {
   entry: AssistantTurnEntry
   jaegerUrl: string
   onCopyMessage: (text: string) => void
+  onRespondApproval: (approvalId: string, choice: string) => void | Promise<void>
 }) {
   const running = entry.bodyState === 'streaming'
   return (
@@ -294,7 +300,18 @@ function TurnContainer({
         llmCalls={entry.llmCalls}
         running={running}
       >
-        {entry.tools.map((tool: ToolEntry) => <StepRow key={tool.id} tool={tool} />)}
+        {entry.tools.map((tool: ToolEntry) => (
+          <Fragment key={tool.id}>
+            {/* 审批卡片长在触发它的工具行上方：决策后原地变记录，回看对话时还在（2026-09-14） */}
+            {tool.approval && (
+              <ApprovalCard
+                approval={tool.approval}
+                onRespond={(choice) => onRespondApproval(tool.approval?.approvalId ?? '', choice)}
+              />
+            )}
+            <StepRow tool={tool} />
+          </Fragment>
+        ))}
       </TurnSummary>
 
       {entry.error && <div className="turn-error">运行出错：{entry.error}</div>}

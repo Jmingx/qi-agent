@@ -193,6 +193,7 @@ function SessionRow({
 }) {
   const count = item.message_count ?? 0
   const meta = [
+    item.workspace_label ? `◫ ${item.workspace_label}` : '',
     count > 0 ? `${count} 条` : '空会话',
     formatRelative(item.updated_at),
   ].filter(Boolean).join(' · ')

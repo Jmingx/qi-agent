@@ -24,6 +24,10 @@ type InputBarProps = {
   onStop: () => void
   onSelectCommand: (command: CommandName) => void
   onCloseCommandPalette: () => void
+  /** 仅当当前 Context 尚未绑定目录时显示；选择后由上层创建新会话。 */
+  onSetWorkspace: () => void
+  workspaceLabel?: string | null
+  workspaceAvailable?: boolean
 }
 
 const MAX_HEIGHT = 200
@@ -44,6 +48,9 @@ export function InputBar({
   onStop,
   onSelectCommand,
   onCloseCommandPalette,
+  onSetWorkspace,
+  workspaceLabel,
+  workspaceAvailable,
 }: InputBarProps) {
   const boxRef = useRef<HTMLDivElement | null>(null)
 
@@ -61,6 +68,17 @@ export function InputBar({
 
   return (
     <footer className="composer">
+      <div className={`workspace-status${!workspaceLabel || workspaceAvailable === false ? ' is-unavailable' : ''}`}>
+          <Icon name="folder" size={14} />
+          <span>工作目录：{workspaceLabel ?? '未绑定'}</span>
+          <span className="workspace-status-hint">
+            {!workspaceLabel ? (
+              <button type="button" className="workspace-status-action" onClick={onSetWorkspace}>
+                设置工作目录
+              </button>
+            ) : workspaceAvailable === false ? '不可用' : '已绑定 · 换项目请新建会话'}
+          </span>
+      </div>
       {commandPaletteVisible && (
         <Suspense
           fallback={(

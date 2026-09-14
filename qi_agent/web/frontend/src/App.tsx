@@ -48,6 +48,8 @@ type ConfirmState = {
   onConfirm: () => void
 } | null
 
+type WorkspaceItem = { id: string; label: string; path: string; available: boolean }
+
 export default function App() {
   const auth = useAuth()
   const theme = useTheme()
@@ -84,6 +86,9 @@ export default function App() {
   const [panelTab, setPanelTab] = useState<PanelTab>('context')
   const [confirmState, setConfirmState] = useState<ConfirmState>(null)
   const [compacting, setCompacting] = useState(false)
+  const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
+  const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([])
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const toastTimerRef = useRef<number | null>(null)
 
@@ -117,7 +122,6 @@ export default function App() {
     sessionIdRef: session.sessionIdRef,
     setRunning: session.setRunning,
     refreshSessions: session.refreshSessions,
-    onApprovalChange: session.setApproval,
   })
   const search = useSearch({
     clientRef: ws.clientRef,
@@ -167,7 +171,6 @@ export default function App() {
     session.setSidebarOpen(false)
     session.setRunning(false)
     session.setLoadingSession(false)
-    session.setApproval(null)
     session.setMemoryOpen(false)
     session.setMemoryText('')
     usage.setUsage(null)
@@ -194,6 +197,58 @@ export default function App() {
       setCommandPaletteOpen(true)
     }
   }, [])
+
+  const openWorkspaceDialog = useCallback((): void => {
+    const client = ws.clientRef.current
+    if (!client) {
+      showToast('连接不可用')
+      return
+    }
+    setWorkspaceDialogOpen(true)
+    void client.call<{ workspaces: WorkspaceItem[] }>('workspace/list')
+      .then((result) => setWorkspaces(result.workspaces ?? []))
+      .catch(() => showToast('工作空间列表加载失败'))
+  }, [showToast, ws.clientRef])
+
+  const pickWorkspace = useCallback((): void => {
+    const client = ws.clientRef.current
+    if (!client) return
+    void client.call<{ selected: boolean; path?: string; label?: string }>('workspace/pick')
+      .then((selection) => {
+        if (!selection.selected || !selection.path) return null
+        return client.call<{ workspace: WorkspaceItem }>('workspace/add', {
+          path: selection.path,
+          label: selection.label ?? '',
+        })
+      })
+      .then((result) => {
+        if (!result) return
+        setWorkspaces((current) => [
+          ...current.filter((item) => item.id !== result.workspace.id),
+          result.workspace,
+        ])
+        setSelectedWorkspaceId(result.workspace.id)
+      })
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error)
+        showToast(`工作空间选择失败：${detail}`)
+      })
+  }, [showToast, ws.clientRef])
+
+  const removeWorkspace = useCallback((workspaceId: string): void => {
+    const client = ws.clientRef.current
+    if (!client) return
+    void client.call('workspace/remove', { workspace_id: workspaceId }).then(() => {
+      setWorkspaces((current) => current.filter((item) => item.id !== workspaceId))
+      setSelectedWorkspaceId((current) => current === workspaceId ? '' : current)
+    }).catch(() => showToast('工作空间移除失败'))
+  }, [showToast, ws.clientRef])
+
+  const createWorkspaceSession = useCallback((): void => {
+    if (!selectedWorkspaceId) return
+    setWorkspaceDialogOpen(false)
+    void actions.newSession(selectedWorkspaceId)
+  }, [actions, selectedWorkspaceId])
 
   const handleSearchSelect = useCallback((result: SessionSearchResult): void => {
     void actions.switchSession(result.session_id, {
@@ -393,7 +448,8 @@ export default function App() {
     return haystack.includes(commandPaletteQuery)
   })
 
-  const sessionTitle = session.sessions.find((item) => item.id === session.sessionId)?.title?.trim()
+  const activeSession = session.sessions.find((item) => item.id === session.sessionId)
+  const sessionTitle = activeSession?.title?.trim()
     || (session.sessionId ? '未命名会话' : '新会话')
 
   if (auth.authToken === null) {
@@ -423,7 +479,7 @@ export default function App() {
           searchLoading={search.searchLoading}
           searchResults={search.searchResults}
           onClose={() => session.setSidebarOpen(false)}
-          onNewSession={() => void actions.newSession()}
+          onNewSession={openWorkspaceDialog}
           onSwitchSession={(sessionId) => {
             session.setSidebarOpen(false)
             void actions.switchSession(sessionId)
@@ -493,33 +549,8 @@ export default function App() {
               setInput(prompt)
               inputRef.current?.focus()
             }}
+            onRespondApproval={actions.respondApproval}
           />
-
-          {session.approval && (
-            <div className="dialog" role="dialog" aria-modal="true">
-              <div className="dialog-card">
-                <div className="dialog-head">
-                  <span className="dialog-icon"><Icon name="alert" size={16} /></span>
-                  <h3 className="dialog-title">工具审批请求</h3>
-                </div>
-                <div className="dialog-tool">
-                  工具：<code>{String(session.approval.name || '未知工具')}</code>
-                </div>
-                <pre className="dialog-code">
-                  {typeof session.approval.command === 'string' && session.approval.command
-                    ? session.approval.command
-                    : JSON.stringify(session.approval.arguments || {}, null, 2)}
-                </pre>
-                <p className="dialog-hint">
-                  同意后该操作以当前权限执行；拒绝会让 agent 收到[审批拒绝]并调整策略。
-                </p>
-                <div className="dialog-actions">
-                  <button className="btn" onClick={() => void actions.respondApproval('deny')}>拒绝</button>
-                  <button className="btn btn-primary" onClick={() => void actions.respondApproval('approve')}>允许执行</button>
-                </div>
-              </div>
-            </div>
-          )}
 
           {session.memoryOpen && (
             <div className="dialog" role="dialog" aria-modal="true">
@@ -559,6 +590,31 @@ export default function App() {
             </div>
           )}
 
+          {workspaceDialogOpen && (
+            <div className="dialog" role="dialog" aria-modal="true" aria-label="新建会话">
+              <div className="dialog-card workspace-dialog">
+                <div className="dialog-head"><span className="dialog-icon"><Icon name="folder" size={16} /></span><h3 className="dialog-title">新建会话</h3></div>
+                <p className="dialog-hint">选择工作目录后会创建新会话；不会修改当前 Context 的工作目录。</p>
+                <div className="workspace-list">
+                  {workspaces.map((item) => (
+                    <div className="workspace-option-row" key={item.id}>
+                      <label className={`workspace-option${selectedWorkspaceId === item.id ? ' is-selected' : ''}${!item.available ? ' is-unavailable' : ''}`}>
+                        <input type="radio" name="workspace" value={item.id} disabled={!item.available} checked={selectedWorkspaceId === item.id} onChange={() => setSelectedWorkspaceId(item.id)} />
+                        <span><strong>{item.label}</strong><small>{item.path}</small></span>
+                      </label>
+                      <button className="icon-btn" type="button" title="移除登记（不删除磁盘文件）" onClick={() => removeWorkspace(item.id)}><Icon name="trash" size={14} /></button>
+                    </div>
+                  ))}
+                  {workspaces.length === 0 && <p className="dialog-hint">还没有登记工作空间。</p>}
+                </div>
+                <button className="btn workspace-picker" type="button" onClick={pickWorkspace}>
+                  <Icon name="folder" size={14} /> 从文件系统选择文件夹
+                </button>
+                <div className="dialog-actions"><button className="btn" onClick={() => setWorkspaceDialogOpen(false)}>取消</button><button className="btn btn-primary" disabled={!selectedWorkspaceId} onClick={createWorkspaceSession}>创建会话</button></div>
+              </div>
+            </div>
+          )}
+
           <InputBar
             input={input}
             disabled={!connected}
@@ -578,6 +634,9 @@ export default function App() {
             onStop={() => void actions.stop()}
             onSelectCommand={actions.handleCommandSelect}
             onCloseCommandPalette={() => setCommandPaletteOpen(false)}
+            onSetWorkspace={openWorkspaceDialog}
+            workspaceLabel={activeSession?.workspace_label}
+            workspaceAvailable={activeSession?.workspace_available}
           />
         </section>
 

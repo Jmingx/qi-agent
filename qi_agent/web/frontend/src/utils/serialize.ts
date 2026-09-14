@@ -1,4 +1,4 @@
-import { stringifyValue, type StreamEntry, type SubTaskEntry, type TextEntry, type ToolEntry } from '../appModel'
+import { stringifyValue, type AssistantTurnEntry, type StreamEntry, type SubTaskEntry, type TextEntry, type ToolEntry } from '../appModel'
 
 export type SerializeThreadMeta = Record<string, unknown>
 
@@ -13,6 +13,10 @@ function isTextEntry(entry: StreamEntry): entry is TextEntry {
 
 function isToolEntry(entry: StreamEntry): entry is ToolEntry {
   return entry.kind === 'tool'
+}
+
+function isAssistantTurnEntry(entry: StreamEntry): entry is AssistantTurnEntry {
+  return entry.kind === 'assistant-turn'
 }
 
 function isSubTaskEntry(entry: StreamEntry): entry is SubTaskEntry {
@@ -70,6 +74,15 @@ function renderToolEntry(entry: ToolEntry): string {
   return parts.join('\n')
 }
 
+function renderAssistantTurnEntry(entry: AssistantTurnEntry): string {
+  const tools = entry.tools.map(renderToolEntry)
+  return [
+    `## ASSISTANT · 回合 ${entry.turn}${entry.time ? ` · ${entry.time}` : ''}`,
+    entry.body,
+    ...tools,
+  ].filter(Boolean).join('\n\n')
+}
+
 function renderSubTaskEntry(entry: SubTaskEntry): string {
   const parts = [
     `## SUBTASK · ${entry.subId}${entry.time ? ` · ${entry.time}` : ''}`,
@@ -100,6 +113,9 @@ function renderMarkdown(entries: StreamEntry[], meta: SerializeThreadMeta): stri
     }
     if (isToolEntry(entry)) {
       return renderToolEntry(entry)
+    }
+    if (isAssistantTurnEntry(entry)) {
+      return renderAssistantTurnEntry(entry)
     }
     if (isSubTaskEntry(entry)) {
       return renderSubTaskEntry(entry)

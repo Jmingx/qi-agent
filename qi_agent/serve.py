@@ -83,6 +83,13 @@ class ServeTransport:
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         self.gateway = gateway
+        # 交互提供者注册（2026-09-13 方案 §3.5）：Web 外壳的审批/澄清入口——
+        # ask_user → 网关审批桥 → 浏览器弹框。serve 进程唯一 → 全局单例即可，
+        # 会话身份由插件经 meta.session 传入（不在这里猜上下文）。
+        from qi_agent.interaction import set_interaction_provider
+        from qi_agent.web.interaction import WebInteraction
+
+        set_interaction_provider(WebInteraction(gateway))
         self.connections: set[Any] = set()
         self._loop: asyncio.AbstractEventLoop | None = loop
         self._send_queues: dict[Any, asyncio.Queue[str]] = {}
@@ -375,7 +382,8 @@ class ServeTransport:
             # 这里给前端一份可展开的预览（脱敏/截断边界仍由前端 + 内核规则负责）。
             output_text = str(output)
             preview_limit = 2000
-            preview = output_text if len(output_text) <= preview_limit else output_text[:preview_limit]
+            preview = output_text if len(output_text) <= preview_limit else \
+                output_text[:preview_limit]
             payload = {
                 "session_id": context.id,
                 "turn": turn or getattr(context, "turn", 0),
@@ -427,10 +435,13 @@ class ServeTransport:
         if queue is None:
             queue = asyncio.Queue()
             self._send_queues[ws] = queue
-            loop = self._loop
-            if loop is not None and ws not in self._workers:
-                self._workers.add(ws)
-                loop.create_task(self._send_worker(ws, queue))
+        if ws not in self._workers:
+            self._workers.add(ws)
+            # 优先用运行中的 loop（响应路径在 loop 内；通知路径经
+            # call_soon_threadsafe 也回到 loop 内），self._loop 作兜底——
+            # 不依赖 set_loop 的时序（测试/嵌入场景可能没设）
+            loop = self._loop or asyncio.get_running_loop()
+            loop.create_task(self._send_worker(ws, queue))
         queue.put_nowait(msg)
 
     async def _send_worker(self, ws: Any, queue: asyncio.Queue[str]) -> None:
@@ -447,24 +458,36 @@ class ServeTransport:
             self.gateway.shell_callback = self._make_shell_callback()
         try:
             async for raw in ws:
-                try:
-                    response = await asyncio.get_running_loop().run_in_executor(
-                        None,
-                        self.gateway.dispatcher.dispatch,
-                        raw,
-                    )
-                except Exception as exc:
-                    response = json.dumps(
-                        {
-                            "jsonrpc": "2.0",
-                            "id": None,
-                            "error": {"code": -32603, "message": str(exc)},
-                        }
-                    )
-                if response:
-                    await ws.send(response)
+                # 每帧独立任务派发：**控制面必须即时**——message/send 阻塞等待审批
+                # 期间，同一连接上的 approval/respond 必须还能被读到，否则形成
+                # 等待环（内核等审批、审批帧排在同一个串行循环后面）
+                # 2026-09-14 实测验出：单连接串行派发时 Web 审批永远超时。
+                asyncio.get_running_loop().create_task(self._dispatch_frame(ws, raw))
         finally:
             self.connections.discard(ws)
+
+    async def _dispatch_frame(self, ws: Any, raw: str) -> None:
+        """派发单帧请求（线程池执行，不占 event loop），响应经单写者队列回发。
+
+        写回必须走 `_send`（每连接一个队列 + 一个 worker 串行发送）——
+        websockets 不允许并发 send。
+        """
+        try:
+            response = await asyncio.get_running_loop().run_in_executor(
+                None,
+                self.gateway.dispatcher.dispatch,
+                raw,
+            )
+        except Exception as exc:
+            response = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32603, "message": str(exc)},
+                }
+            )
+        if response:
+            self._send(ws, response)
 
     def _notify(self, method: str, **params: Any) -> None:
         if self.gateway.shell_callback is not None:

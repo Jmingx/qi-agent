@@ -31,8 +31,6 @@ type SessionState = {
   setRunning: Dispatch<SetStateAction<boolean>>
   loadingSession: boolean
   setLoadingSession: Dispatch<SetStateAction<boolean>>
-  approval: Record<string, unknown> | null
-  setApproval: Dispatch<SetStateAction<Record<string, unknown> | null>>
   memoryOpen: boolean
   setMemoryOpen: Dispatch<SetStateAction<boolean>>
   memoryText: string
@@ -95,7 +93,7 @@ type UseSessionActionsResult = {
   stop: () => Promise<void>
   openMemory: () => Promise<void>
   compact: () => Promise<void>
-  respondApproval: (decision: 'approve' | 'deny') => Promise<void>
+  respondApproval: (approvalId: string, choice: string) => Promise<void>
   showCurrentSessionStatus: () => Promise<void>
   executeCommand: (commandText: string) => Promise<boolean>
   send: () => Promise<void>
@@ -131,7 +129,6 @@ export function useSessionActions({
     setSessionId,
     setRunning,
     setLoadingSession,
-    setApproval,
     setSidebarOpen,
     bootstrappedRef,
     bootstrapInFlightRef,
@@ -189,19 +186,18 @@ export function useSessionActions({
     return collected
   }, [clientRef])
 
-  const replaceSessionWithFresh = useCallback(async (goal = 'web 会话'): Promise<string> => {
+  const replaceSessionWithFresh = useCallback(async (goal = 'web 会话', workspaceId = ''): Promise<string> => {
     const client = clientRef.current
     if (!client) {
       throw new Error('WebSocket not connected')
     }
 
-    const response = await client.call<SessionCreateResponse>('session/create', { goal })
+    const response = await client.call<SessionCreateResponse>('session/create', { goal, workspace_id: workspaceId })
     setSessionId(response.session_id)
     setTraceId(null)
     bootstrappedRef.current = true
     setRunning(false)
     setLoadingSession(false)
-    setApproval(null)
     setSidebarOpen(false)
     clearEntries()
     setUsage(null)
@@ -216,7 +212,6 @@ export function useSessionActions({
     refreshSessions,
     refreshUsage,
     requestScrollToMessage,
-    setApproval,
     setLoadingSession,
     setRunning,
     setSessionId,
@@ -262,7 +257,6 @@ export function useSessionActions({
       setSessionId(targetSessionId)
       setTraceId(null)
       bootstrappedRef.current = true
-      setApproval(null)
       setRunning(false)
       replaceEntries(history)
       setSidebarOpen(false)
@@ -300,7 +294,6 @@ export function useSessionActions({
     replaceEntries,
     replaceSessionWithFresh,
     requestScrollToMessage,
-    setApproval,
     setLoadingSession,
     setRunning,
     setSessionId,
@@ -365,13 +358,13 @@ export function useSessionActions({
     return replaceSessionWithFresh('web 会话')
   }, [bootstrapSession, connectionStateRef, replaceSessionWithFresh, session.sessionId])
 
-  const newSession = useCallback(async (): Promise<void> => {
+  const newSession = useCallback(async (workspaceId = ''): Promise<void> => {
     if (!ensureConnected('新建会话')) {
       return
     }
     setSidebarOpen(false)
     try {
-      await replaceSessionWithFresh('web 会话')
+      await replaceSessionWithFresh('web 会话', workspaceId)
       showToast('New session created')
     } catch (error) {
       const message = getErrorMessage(error)
@@ -435,7 +428,6 @@ export function useSessionActions({
         await refreshUsage(sessionIdRef.current)
       }
       if (deletingCurrent) {
-        setApproval(null)
         setRunning(false)
         messages.clearEntries()
         usage.setUsage(null)
@@ -462,7 +454,6 @@ export function useSessionActions({
     }
     try {
       await client.call('context/clear', { session_id: session.sessionId })
-      setApproval(null)
       setRunning(false)
       setTraceId(null)
       messages.clearEntries()
@@ -540,8 +531,8 @@ export function useSessionActions({
     }
   }, [clientRef, ensureConnected, messages, session, showToast])
 
-  const respondApproval = useCallback(async (decision: 'approve' | 'deny'): Promise<void> => {
-    if (!session.approval || !session.sessionId || !ensureConnected('处理审批')) {
+  const respondApproval = useCallback(async (approvalId: string, choice: string): Promise<void> => {
+    if (!approvalId || !session.sessionId || !ensureConnected('处理审批')) {
       return
     }
     const client = clientRef.current
@@ -551,12 +542,16 @@ export function useSessionActions({
     try {
       await client.call('approval/respond', {
         session_id: session.sessionId,
-        approval_id: session.approval.approval_id,
-        decision,
+        approval_id: approvalId,
+        choice,
       })
-      setApproval(null)
     } catch (error) {
       const message = getErrorMessage(error)
+      if (message.includes('不存在或已超时')) {
+        // 审批已被内核判超时（前端倒计时归零后仍提交/网络延迟）：
+        // 静默吞掉，不打扰用户——内核侧已按拒绝收口，卡片状态由已决通知落定
+        return
+      }
       showToast(`审批响应失败：${message}`)
       appendSystemMessage(`审批响应失败：${message}`, 'error')
     }

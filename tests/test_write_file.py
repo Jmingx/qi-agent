@@ -152,8 +152,8 @@ def test_write_approval_flow(project) -> None:
     from qi_agent.interaction import set_interaction_provider
 
     class _YesProvider:
-        def ask(self, question, choices=None, timeout=None):
-            return "y"
+        def ask(self, question, options=None, timeout=None, *, meta=None):
+            return "once"  # 审批选项语义值（决策层契约）
 
     set_interaction_provider(_YesProvider())
     try:

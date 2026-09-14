@@ -21,6 +21,7 @@ from qi_agent.llm import ToolCall
 from qi_agent.logging_setup import get_run_logger
 from qi_agent.tools.decision import ToolAction, ToolDecision
 from qi_agent.tools.registry import execute_tool
+from qi_agent.workspaces import SessionWorkspace
 
 # 并行工具调用上限（方案 2026-08-22，用户拍板 10）：
 # 模型一次返回多个 tool_calls 时线程池并发执行——最多 N 个工具同时跑
@@ -28,7 +29,9 @@ from qi_agent.tools.registry import execute_tool
 _MAX_PARALLEL_TOOLS = 10
 
 
-def _execute_with_timing(name: str, arguments: dict) -> tuple[str, float]:
+def _execute_with_timing(
+    name: str, arguments: dict, workspace: SessionWorkspace | None
+) -> tuple[str, float]:
     """执行单个工具并计时（并行线程入口——只做执行，不发事件/不碰历史）。
 
     并行线程只允许调用本函数：事件（tool-result）与回填（messages）必须
@@ -36,10 +39,10 @@ def _execute_with_timing(name: str, arguments: dict) -> tuple[str, float]:
     count += 1 非原子、logger 文件写），方案 2026-08-22 决策点 4。
     """
     start = time.perf_counter()
-    output = execute_tool(
-        name, arguments,
-        internal={"approved"} if "approved" in arguments else None,
-    )
+    kwargs = {"internal": {"approved"} if "approved" in arguments else None}
+    if workspace is not None:
+        kwargs["workspace"] = workspace
+    output = execute_tool(name, arguments, **kwargs)
     return output, time.perf_counter() - start
 
 
@@ -60,6 +63,7 @@ class ToolExecutor:
         turn: int,
         step: int,
         allowlist: list[str] | None = None,
+        workspace: SessionWorkspace | None = None,
     ) -> dict[str, tuple[str, float]]:
         """执行一批工具调用（三阶段闭环），返回 call.id → (output, duration)。
 
@@ -85,16 +89,19 @@ class ToolExecutor:
         pending: dict[str, tuple[ToolCall, ToolDecision | None]] = {}
         for call in calls:
             if allowlist is not None and call.name not in allowlist:
-                pending[call.id] = (call, ToolDecision(
-                    ToolAction.BLOCK,
-                    reason=f"工具不在受限子集内: {call.name}",
-                    code="SEC_BLOCK_NOT_ALLOWED",
-                ))
+                pending[call.id] = (
+                    call,
+                    ToolDecision(
+                        ToolAction.BLOCK,
+                        reason=f"工具不在受限子集内: {call.name}",
+                        code="SEC_BLOCK_NOT_ALLOWED",
+                    ),
+                )
                 continue
             decision = decisions.get(call.id)
-            if (
-                isinstance(decision, ToolDecision)
-                and decision.action in (ToolAction.NEED_APPROVAL, ToolAction.ESCALATION)
+            if isinstance(decision, ToolDecision) and decision.action in (
+                ToolAction.NEED_APPROVAL,
+                ToolAction.ESCALATION,
             ):
                 # 审批档（v0.4.18）→ 发审批事件（bail）→
                 # 插件同意(True)才执行；无监听器/拒绝 → 拦截（fail-closed）
@@ -106,6 +113,7 @@ class ToolExecutor:
                     code=decision.code,
                     turn=turn,
                     step=step,
+                    tool_call_id=call.id,
                 )
                 if approved is True:
                     # 内部注入 approved（模型 schema 不可见，防绕过）——
@@ -127,10 +135,7 @@ class ToolExecutor:
         to_run = {
             cid: (call, dec)
             for cid, (call, dec) in pending.items()
-            if dec is None or (
-                isinstance(dec, ToolDecision)
-                and dec.action == ToolAction.WARN
-            )
+            if dec is None or (isinstance(dec, ToolDecision) and dec.action == ToolAction.WARN)
         }
         if to_run:
             # tool/start 事件：执行生命周期起点（观测用，不短路）——
@@ -140,6 +145,7 @@ class ToolExecutor:
                     "tool/start",
                     name=call.name,
                     arguments=call.arguments,
+                    tool_call_id=call.id,
                     turn=turn,
                     step=step,
                 )
@@ -148,10 +154,15 @@ class ToolExecutor:
                 ctx_id = getattr(self.events, "context_id", "") or "?"
                 get_run_logger().info(
                     "tool-start context=%s name=%s args=%s turn=%d step=%d",
-                    ctx_id, call.name, call.arguments, turn, step)
+                    ctx_id,
+                    call.name,
+                    call.arguments,
+                    turn,
+                    step,
+                )
             with ThreadPoolExecutor(max_workers=_MAX_PARALLEL_TOOLS) as pool:
                 futures = {
-                    cid: pool.submit(_execute_with_timing, call.name, call.arguments)
+                    cid: pool.submit(_execute_with_timing, call.name, call.arguments, workspace)
                     for cid, (call, _) in to_run.items()
                 }
                 for cid, fut in futures.items():
@@ -169,12 +180,13 @@ class ToolExecutor:
                         # 改造前语义——方案承诺 CLI 体验不变）
                         if decision.code == "SEC_APPROVAL_DENIED":
                             output, duration = (
-                                f"[审批拒绝] 用户不同意执行: "
-                                f"{decision.command}", 0.0,
+                                f"[审批拒绝] 用户不同意执行: {decision.command}",
+                                0.0,
                             )
                         else:
                             output, duration = (
-                                f"[安全拦截] {decision.reason}", 0.0,
+                                f"[安全拦截] {decision.reason}",
+                                0.0,
                             )
                     elif decision.action == ToolAction.WARN:
                         # 警告放行：执行结果 + 警告后缀
@@ -192,8 +204,11 @@ class ToolExecutor:
                 "agent/tool-result",
                 name=call.name,
                 arguments=call.arguments,
+                tool_call_id=call.id,
                 output=output,
                 duration=duration,
+                turn=turn,
+                step=step,
             )
             # run.log 工具结果日志（2026-08-30：结果摘要 + 耗时 + 状态
             # + context_id——归属 agent 定位）
@@ -201,7 +216,11 @@ class ToolExecutor:
             ctx_id = getattr(self.events, "context_id", "") or "?"
             get_run_logger().info(
                 "tool-result context=%s name=%s status=%s duration=%.0fms out=%s",
-                ctx_id, call.name, status, duration * 1000,
-                str(output)[:80])
+                ctx_id,
+                call.name,
+                status,
+                duration * 1000,
+                str(output)[:80],
+            )
             results[call.id] = (output, duration)
         return results

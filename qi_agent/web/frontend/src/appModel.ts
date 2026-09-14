@@ -32,6 +32,26 @@ export type TurnUsage = {
   estimated?: boolean
 }
 
+export type ToolApprovalState = 'pending' | 'allowed' | 'denied' | 'timeout'
+
+/** 审批的内联记录（M2-a）：挂在触发它的工具行上——弹框收起后仍可回看。 */
+export type ToolApprovalEntry = {
+  approvalId: string
+  /** 决策档位（SEC_APPROVAL_*），前端映射成人话标签 */
+  code: string
+  question: string
+  command: string
+  /** 请求工具名（卡片上显示"谁在请求"） */
+  name: string
+  options: Array<{ value: string; label: string }>
+  state: ToolApprovalState
+  choice?: string
+  decidedAt?: number
+  waitedMs?: number
+  /** 网关等待上限（待决卡片倒计时用它，与内核一致） */
+  timeoutMs?: number
+}
+
 export type ToolEntry = {
   id: number
   kind: 'tool'
@@ -45,6 +65,8 @@ export type ToolEntry = {
   progress: ToolProgressEntry[]
   traceId?: string | null
   time?: string
+  /** M2-a：审批记录（请求时建立，决策后落地；无审批的工具行为空） */
+  approval?: ToolApprovalEntry
 }
 
 export type ToolProgressEntry = {
@@ -111,6 +133,9 @@ export type SessionItem = {
   turn?: number
   /** 持久化消息数（0 = 空壳会话） */
   message_count?: number
+  workspace_id?: string | null
+  workspace_label?: string | null
+  workspace_available?: boolean
 }
 
 export type HistoryMessage = {
@@ -126,6 +151,9 @@ export type HistoryPage = {
 
 export type SessionCreateResponse = {
   session_id: string
+  workspace_id?: string | null
+  workspace_label?: string | null
+  workspace_available?: boolean
 }
 
 export type SessionResumeResponse = {

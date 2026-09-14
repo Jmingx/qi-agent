@@ -21,6 +21,9 @@ const INITIAL_RECONNECT_DELAY = 1000
 const MAX_RECONNECT_DELAY = 30_000
 const MAX_RECONNECT_ATTEMPTS = 8
 const CALL_TIMEOUT_MS = 30_000
+const LONG_RUNNING_CALL_TIMEOUT_MS = 120_000
+// 系统目录选择框会等待用户操作，不能按普通 RPC 的 30 秒超时处理。
+const LONG_RUNNING_METHODS = new Set(['message/send', 'skill/activate', 'workspace/pick'])
 
 export class ReconnectLimitExceededError extends Error {
   constructor() {
@@ -110,6 +113,9 @@ export class WsClient {
     }
     return new Promise<T>((resolve, reject) => {
       const id = this.nextId++
+      const timeoutMs = LONG_RUNNING_METHODS.has(method)
+        ? LONG_RUNNING_CALL_TIMEOUT_MS
+        : CALL_TIMEOUT_MS
       const timeoutId = window.setTimeout(() => {
         const pending = this.pending.get(id)
         if (!pending) {
@@ -117,8 +123,8 @@ export class WsClient {
         }
         this.pending.delete(id)
         // RPC request cannot hang forever, or session restore loading will never clear.
-        pending.reject(new Error(`RPC call ${method} timed out after 30s`))
-      }, CALL_TIMEOUT_MS)
+        pending.reject(new Error(`RPC call ${method} timed out after ${timeoutMs / 1000}s`))
+      }, timeoutMs)
 
       this.pending.set(id, {
         timeoutId,

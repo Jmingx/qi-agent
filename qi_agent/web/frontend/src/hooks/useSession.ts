@@ -20,8 +20,6 @@ type UseSessionResult = {
   setRunning: Dispatch<SetStateAction<boolean>>
   loadingSession: boolean
   setLoadingSession: Dispatch<SetStateAction<boolean>>
-  approval: Record<string, unknown> | null
-  setApproval: Dispatch<SetStateAction<Record<string, unknown> | null>>
   memoryOpen: boolean
   setMemoryOpen: Dispatch<SetStateAction<boolean>>
   memoryText: string
@@ -43,7 +41,6 @@ export function useSession({
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [running, setRunning] = useState(false)
   const [loadingSession, setLoadingSession] = useState(false)
-  const [approval, setApproval] = useState<Record<string, unknown> | null>(null)
   const [memoryOpen, setMemoryOpen] = useState(false)
   const [memoryText, setMemoryText] = useState('')
   const bootstrappedRef = useRef(false)
@@ -94,8 +91,6 @@ export function useSession({
     setRunning,
     loadingSession,
     setLoadingSession,
-    approval,
-    setApproval,
     memoryOpen,
     setMemoryOpen,
     memoryText,

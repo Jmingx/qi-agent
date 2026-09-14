@@ -22,15 +22,21 @@ const AUTO_COLLAPSE_DELAY_MS = 2000
 function TurnSummaryBase({ tools, elapsedMs, usage, llmCalls, running, children }: TurnSummaryProps) {
   const [expanded, setExpanded] = useState(tools.length > 0)
   const userToggledRef = useRef(false)
+  // 待决审批：卡片（含按钮）在对话流里，收起就等于用户点不到
+  const hasPendingApproval = tools.some((tool) => tool.approval?.state === 'pending')
 
   useEffect(() => {
-    if (tools.length > 0) {
+    if (tools.length > 0 || hasPendingApproval) {
       setExpanded(true)
     }
-  }, [tools.length])
+  }, [hasPendingApproval, tools.length])
 
   useEffect(() => {
     if (running || userToggledRef.current || tools.length === 0) {
+      return undefined
+    }
+    // 有待决审批时不自动收起：收起后按钮就滚没了（审批卡片在对话流里）
+    if (hasPendingApproval) {
       return undefined
     }
     const timer = window.setTimeout(() => {
@@ -39,7 +45,7 @@ function TurnSummaryBase({ tools, elapsedMs, usage, llmCalls, running, children 
       }
     }, AUTO_COLLAPSE_DELAY_MS)
     return () => window.clearTimeout(timer)
-  }, [running, tools.length])
+  }, [hasPendingApproval, running, tools.length])
 
   if (tools.length === 0) {
     return <div className="turn">{children}</div>
@@ -47,6 +53,17 @@ function TurnSummaryBase({ tools, elapsedMs, usage, llmCalls, running, children 
 
   const failed = tools.filter((tool) => tool.result && !tool.result.ok).length
   const blocked = tools.filter((tool) => tool.status === 'blocked').length
+  // 审批计数（M2-a）：折叠状态下也要一眼看到「这一步被审批过、结局是什么」，
+  // 否则记录只存在于展开后的行里 —— 等于用户看不到（2026-09-14 UX 反馈）。
+  const approvals = tools.map((tool) => tool.approval).filter((item) => item !== undefined)
+  const approvalParts = [
+    { state: 'pending' as const, label: '待审批', cls: 'chip--warn' },
+    { state: 'allowed' as const, label: '已允许', cls: 'chip--ok' },
+    { state: 'denied' as const, label: '已拒绝', cls: 'chip--danger' },
+    { state: 'timeout' as const, label: '超时拒绝', cls: 'chip--danger' },
+  ]
+    .map((kind) => ({ ...kind, count: approvals.filter((item) => item.state === kind.state).length }))
+    .filter((kind) => kind.count > 0)
   const tokenLabel = usage && (usage.total_tokens ?? 0) > 0
     ? `${usage.estimated ? '~' : ''}${formatTokens(usage.total_tokens)} tok`
     : ''
@@ -90,6 +107,12 @@ function TurnSummaryBase({ tools, elapsedMs, usage, llmCalls, running, children 
             <Icon name="alert" size={11} /> {failed + blocked} 失败/拦截
           </span>
         )}
+        {approvalParts.map((kind) => (
+          <span key={kind.state} className={`chip ${kind.cls}`} title="展开可见审批记录（档位/命令/决策时间）">
+            <Icon name="alert" size={11} /> {kind.label}
+            {kind.count > 1 ? ` ${kind.count}` : ''}
+          </span>
+        ))}
         {statParts.length > 0 && (
           <>
             <span className="summary-dot">·</span>

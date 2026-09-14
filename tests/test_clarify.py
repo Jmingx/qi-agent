@@ -26,7 +26,7 @@ def _clean_provider():
 def test_clarify_open_question(monkeypatch) -> None:
     """开放式提问：返回用户回答。"""
     class FakeProvider:
-        def ask(self, question, choices=None, timeout=60.0):
+        def ask(self, question, options=None, timeout=60.0, *, meta=None):
             return "我的回答"
 
     set_interaction_provider(FakeProvider())
@@ -38,16 +38,17 @@ def test_clarify_choices_passed_through(monkeypatch) -> None:
     received = {}
 
     class FakeProvider:
-        def ask(self, question, choices=None, timeout=60.0):
+        def ask(self, question, options=None, timeout=60.0, *, meta=None):
             received["question"] = question
-            received["choices"] = choices
+            received["options"] = options
             return "B"
 
     set_interaction_provider(FakeProvider())
     result = clarify("选哪个", choices=["A", "B", "C"])
     assert result == "B"
     assert received["question"] == "选哪个"
-    assert received["choices"] == ["A", "B", "C"]
+    # 选项统一成 InteractionOption（value=label=原字符串）
+    assert [option.value for option in received["options"]] == ["A", "B", "C"]
 
 
 def test_clarify_no_provider_failsafe() -> None:
@@ -59,7 +60,7 @@ def test_clarify_no_provider_failsafe() -> None:
 def test_clarify_provider_raises_failsafe(monkeypatch) -> None:
     """provider 抛交互不可用 → 同样 fail-safe（非 tty 场景）。"""
     class BrokenProvider:
-        def ask(self, question, choices=None, timeout=60.0):
+        def ask(self, question, options=None, timeout=60.0, *, meta=None):
             raise InteractionUnavailableError("stdin 非终端")
 
     set_interaction_provider(BrokenProvider())
@@ -80,7 +81,7 @@ def test_clarify_registered_and_schema() -> None:
 def test_clarify_via_execute_tool(monkeypatch) -> None:
     """execute_tool 路径：注册 provider → 回答回填。"""
     class FakeProvider:
-        def ask(self, question, choices=None, timeout=60.0):
+        def ask(self, question, options=None, timeout=60.0, *, meta=None):
             return "via execute"
 
     set_interaction_provider(FakeProvider())

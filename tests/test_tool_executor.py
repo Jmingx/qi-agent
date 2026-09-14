@@ -110,6 +110,20 @@ class TestApprovalRouting:
         assert output.startswith("[审批拒绝]")
         assert "删除文件 x" in output  # 拒绝原因带命令
 
+    def test_approval_bail_carries_tool_call_id(self) -> None:
+        """审批 bail 必须带 tool_call_id：前端要把它绑到具体工具行（M2-a 内联记录）。"""
+        _ensure_tools()
+        events = EventBus()
+        seen: dict = {}
+        events.on("agent/tool-approval", lambda **kw: seen.update(kw) or True)
+        ex = ToolExecutor(events)
+        calls = [_call("c1", _ECHO_NAME, {"x": 1})]
+        decisions = {"c1": _decision(ToolAction.NEED_APPROVAL, command="echo x=1")}
+
+        ex.execute(calls, decisions, turn=1, step=0)
+
+        assert seen.get("tool_call_id") == "c1"
+
     def test_no_approval_listener_fail_closed(self) -> None:
         """无审批监听器 → 拒绝（fail-closed，安全底线）。"""
         _ensure_tools()

@@ -28,7 +28,7 @@ def clarify(question: str, choices: list[str] | None = None,
         用户回答；或 [交互不可用] 错误提示（fail-safe，不挂死）
     """
     try:
-        return ask_user(question, choices=choices, timeout=timeout)
+        return ask_user(question, choices, timeout=timeout)
     except InteractionUnavailableError as exc:
         # fail-safe：无交互环境返回可行动错误，模型自行决策
         return (

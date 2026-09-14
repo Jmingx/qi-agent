@@ -70,6 +70,37 @@ def test_create_session_preserves_optional_metadata() -> None:
     assert unsafe_context.metadata == {}
 
 
+def test_pick_workspace_uses_native_folder_dialog(tmp_path) -> None:
+    """目录选择由 Gateway 发起，浏览器不需要也不能提供绝对路径。"""
+    gw = _make_gateway()
+    dialog = mock.Mock()
+    with mock.patch("tkinter.Tk", return_value=dialog), mock.patch(
+        "tkinter.filedialog.askdirectory", return_value=str(tmp_path)
+    ) as askdirectory:
+        result = gw._pick_workspace()
+
+    assert result["selected"] is True
+    assert result["path"] == str(tmp_path.resolve())
+    assert result["label"] == tmp_path.name
+    askdirectory.assert_called_once_with(
+        parent=dialog,
+        title="选择 qi-agent 工作空间",
+        mustexist=True,
+    )
+    dialog.withdraw.assert_called_once()
+    dialog.destroy.assert_called_once()
+
+
+def test_pick_workspace_allows_user_cancel() -> None:
+    """用户取消系统对话框不应产生工作空间登记。"""
+    gw = _make_gateway()
+    dialog = mock.Mock()
+    with mock.patch("tkinter.Tk", return_value=dialog), mock.patch(
+        "tkinter.filedialog.askdirectory", return_value=""
+    ):
+        assert gw._pick_workspace() == {"selected": False}
+
+
 def test_send_unknown_session_error() -> None:
     """未知会话 → 错误码 -32001（会话不存在）。"""
     gw = _make_gateway()
@@ -81,7 +112,7 @@ def test_send_unknown_session_error() -> None:
 
 
 def test_approval_flow() -> None:
-    """审批请求-响应桥：request_approval 阻塞 → respond 唤醒。"""
+    """审批请求-响应桥：request_approval 阻塞 → respond 唤醒（choice 语义）。"""
     gw = _make_gateway()
     sess = gw._create_session()
 
@@ -93,7 +124,13 @@ def test_approval_flow() -> None:
     result_box = {}
     t = threading.Thread(
         target=lambda: result_box.update(
-            r=gw.request_approval(sess["session_id"], "patch 编辑 X")))
+            r=gw.request_approval(
+                sess["session_id"], "执行命令 'git push'？",
+                [{"value": "once", "label": "允许一次"},
+                 {"value": "deny", "label": "拒绝"}],
+                meta={"tool": "shell", "code": "SEC_APPROVAL_GENERAL",
+                      "command": "git push origin main"},
+            )))
     t.start()
     time.sleep(0.2)  # 等审批请求发出
 
@@ -105,26 +142,23 @@ def test_approval_flow() -> None:
     approval_id = approval["params"]["approval_id"]
 
     # 外壳响应批准
-    gw._respond_approval(sess["session_id"], approval_id, "approve")
+    gw._respond_approval(sess["session_id"], approval_id, choice="once")
     t.join(timeout=5)
-    assert result_box.get("r") is True  # 批准 → True
+    assert result_box.get("r") == "once"  # 批准 → 选项值
 
 
 def test_approval_timeout_denies() -> None:
-    """审批超时 → 拒绝（fail-closed）。"""
+    """审批超时 → None（拒绝，fail-closed）。"""
     gw = _make_gateway()
     sess = gw._create_session()
     gw.shell_callback = lambda json_str: None  # 外壳不响应
 
-    # 短超时（不真等 60s——直接测超时拒绝逻辑）
-    import qi_agent.gateway.gateway as g
-    orig = g.APPROVAL_TIMEOUT
-    g.APPROVAL_TIMEOUT = 0.1
-    try:
-        result = gw.request_approval(sess["session_id"], "危险命令")
-        assert result is False  # 超时 = 拒绝
-    finally:
-        g.APPROVAL_TIMEOUT = orig
+    result = gw.request_approval(
+        sess["session_id"], "危险命令",
+        [{"value": "once", "label": "允许一次"}, {"value": "deny", "label": "拒绝"}],
+        timeout=0.1,
+    )
+    assert result is None  # 超时 = 拒绝
 
 
 def test_stream_notification() -> None:

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import re
 import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from qi_agent.agents.agent_manager import AgentManager
-from qi_agent.context.context import AgentContext, ContextStatus
+from qi_agent.context.context import AgentContext, ContextStatus, generate_id
 from qi_agent.gateway.protocol import (
     ERROR_CONCURRENT_RUN,
     ERROR_INVALID_PARAMS,
@@ -16,12 +20,56 @@ from qi_agent.gateway.protocol import (
     RpcNotification,
     log_rpc,
 )
+from qi_agent.logging_setup import get_run_logger
+from qi_agent.workspaces import SessionWorkspace, normalize_workspace
 
 APPROVAL_TIMEOUT = 60.0
 _CONTEXT_LIMIT = 64_000
 _SESSION_METADATA_KEYS = frozenset({"eval_case_id", "eval_run_id"})
 # 压缩摘要的注入标记（compressor.assemble 写入）——用于上下文分项归类
 _SUMMARY_MARKER = "[早期对话已压缩为摘要]"
+
+# 已决审批表上限（幂等响应需要记住最近解决过的 id，但不能无限增长）
+_MAX_RESOLVED_APPROVALS = 200
+
+# 旧前端契约兼容：decision=approve/deny → 新选项值
+_LEGACY_DECISIONS = {"approve": "once", "deny": "deny"}
+
+# 命令脱敏规则（内核侧统一执行：日志 / 外壳 / 未来界面共用一份，避免各写一套）
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # Authorization: Bearer <token> / Basic <base64>
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._\-+/=]{6,}"), r"\1 ***"),
+    # api_key=xxx / token: xxx / password=xxx / secret: xxx
+    (re.compile(r"(?i)\b(api[_-]?key|token|secret|password|passwd|credential)"
+                r"(\s*[=:]\s*)\S+"), r"\1\2***"),
+    # 常见密钥前缀（sk-/ghp_/xoxb-…）
+    (re.compile(r"\b(sk|pk|ghp|gho|glpat|xox[baprs])[_\-][A-Za-z0-9_\-]{6,}"), "***"),
+)
+
+
+@dataclass
+class _ApprovalEntry:
+    """一条待决审批：归属会话 + 合法选项集 + 唤醒事件 + 用户选择。"""
+
+    session_id: str
+    choices: list[str]
+    event: threading.Event = field(default_factory=threading.Event)
+    choice: str | None = None
+
+
+def redact_command(command: str) -> str:
+    """脱敏命令中的凭证（展示前调用；只改展示值，不影响真实执行）。"""
+    redacted = command or ""
+    for pattern, replacement in _SECRET_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
+
+def _normalize_approval_options(options: Any) -> list[dict[str, str]]:
+    """审批选项统一成 `[{"value","label","tone"}]`（通知 payload 形态）。"""
+    from qi_agent.interaction import normalize_options
+
+    return [option.to_dict() for option in normalize_options(options)]
 
 
 def _estimate_message_tokens(messages: list[dict]) -> int:
@@ -76,12 +124,12 @@ def _estimate_context_breakdown(messages: list[dict], tool_tokens: int) -> dict[
     估算用 char/4（对齐 context/estimator），真实 usage 到达时以 prompt_tokens 校准总量。
     """
     buckets = {
-        "system": 0,       # 系统提示（含 env_info 等注入的 system 消息）
+        "system": 0,  # 系统提示（含 env_info 等注入的 system 消息）
         "tools": int(tool_tokens),  # 工具 schema（不在 messages 里，需单独估算）
-        "history": 0,      # 普通历史消息（user/assistant）
+        "history": 0,  # 普通历史消息（user/assistant）
         "tool_output": 0,  # 工具返回（role=tool）
-        "summary": 0,      # 压缩摘要
-        "input": 0,        # 当前这轮的用户输入
+        "summary": 0,  # 压缩摘要
+        "input": 0,  # 当前这轮的用户输入
     }
     last_user_index = -1
     for index, message in enumerate(messages):
@@ -123,8 +171,11 @@ class Gateway:
         self.manager = manager or AgentManager()
         self.dispatcher = RpcDispatcher()
         self.shell_callback: Callable[[str], None] | None = None
-        self._approval_events: dict[str, threading.Event] = {}
-        self._approval_results: dict[str, bool] = {}
+        # 审批表（2026-09-13 方案 §3.4）：id → 待决条目；已决表用于幂等响应。
+        # 加锁原因：多会话并发 + 并行工具调用会同时发起/响应审批。
+        self._approvals: dict[str, "_ApprovalEntry"] = {}
+        self._approval_results: dict[str, str] = {}
+        self._approval_lock = threading.Lock()
         self._register_methods()
 
     def _register_methods(self) -> None:
@@ -162,10 +213,14 @@ class Gateway:
         self.dispatcher.register("memory/remove", log_rpc("memory/remove")(self._memory_remove))
         self.dispatcher.register("skill/list", log_rpc("skill/list")(self._skill_list))
         self.dispatcher.register("skill/view", log_rpc("skill/view")(self._skill_view))
-        self.dispatcher.register(
-            "skill/activate", log_rpc("skill/activate")(self._skill_activate)
-        )
+        self.dispatcher.register("skill/activate", log_rpc("skill/activate")(self._skill_activate))
         self.dispatcher.register("skill/status", log_rpc("skill/status")(self._skill_status))
+        self.dispatcher.register("workspace/list", log_rpc("workspace/list")(self._list_workspaces))
+        self.dispatcher.register("workspace/pick", log_rpc("workspace/pick")(self._pick_workspace))
+        self.dispatcher.register("workspace/add", log_rpc("workspace/add")(self._add_workspace))
+        self.dispatcher.register(
+            "workspace/remove", log_rpc("workspace/remove")(self._remove_workspace)
+        )
 
     def _storage(self):
         from qi_agent.storage import get_storage
@@ -177,25 +232,32 @@ class Gateway:
         self,
         goal: str = "",
         metadata: dict[str, str] | None = None,
+        workspace_id: str = "",
     ) -> dict:
         safe_metadata = {
             key: str(value)[:128]
             for key, value in (metadata or {}).items()
             if key in _SESSION_METADATA_KEYS and value
         }
-        context = AgentContext(persist=True, metadata=safe_metadata)
+        workspace = self._load_session_workspace(workspace_id) if workspace_id else None
+        context = AgentContext(persist=True, metadata=safe_metadata, workspace=workspace)
         self._attach_skill_plugin(context)
         context.goal = goal
         context._persisted_count = 0
         self.manager.register(context, role="main")
-        self._storage().create_session(context.id, title=goal or "对话")
-        return {"session_id": context.id}
+        self._storage().create_session(
+            context.id,
+            title=goal or "对话",
+            workspace_id=workspace.workspace_id if workspace else None,
+        )
+        return {"session_id": context.id, **self._workspace_payload(workspace)}
 
     def _resume_session(self, session_id: str) -> dict:
         loaded = self._storage().load_session(session_id)
         if loaded is None:
             raise RpcError(ERROR_SESSION_NOT_FOUND, f"会话不存在: {session_id}")
-        context = AgentContext(persist=True, context_id=session_id)
+        workspace = self._load_session_workspace(str(loaded.get("workspace_id") or ""))
+        context = AgentContext(persist=True, context_id=session_id, workspace=workspace)
         self._attach_skill_plugin(context)
         context.messages = loaded["messages"]
         context.turn = loaded["turn"]
@@ -207,7 +269,114 @@ class Gateway:
         )
         context._persisted_count = len(context.messages)
         self.manager.register(context, role="main")
-        return {"session_id": session_id, "turn": context.turn, "messages": len(context.messages)}
+        return {
+            "session_id": session_id,
+            "turn": context.turn,
+            "messages": len(context.messages),
+            **self._workspace_payload(workspace),
+        }
+
+    def _load_session_workspace(self, workspace_id: str) -> SessionWorkspace | None:
+        if not workspace_id:
+            return None
+        storage = self._storage()
+        getter = getattr(storage, "get_workspace", None)
+        record = getter(workspace_id) if getter else None
+        if not record:
+            raise RpcError(ERROR_INVALID_PARAMS, "工作空间不存在或已移除")
+        try:
+            root = normalize_workspace(str(record["canonical_path"]))
+        except (KeyError, OSError, ValueError) as exc:
+            raise RpcError(ERROR_INVALID_PARAMS, f"工作空间不可用: {exc}") from exc
+        return SessionWorkspace(
+            workspace_id=str(record["id"]), root=root, label=str(record["label"])
+        )
+
+    @staticmethod
+    def _workspace_payload(workspace: SessionWorkspace | None) -> dict:
+        if workspace is None:
+            return {"workspace_id": None, "workspace_label": None, "workspace_available": False}
+        return {
+            "workspace_id": workspace.workspace_id,
+            "workspace_label": workspace.label,
+            "workspace_available": True,
+        }
+
+    def _list_workspaces(self) -> dict:
+        storage = self._storage()
+        lister = getattr(storage, "list_workspaces", None)
+        if lister is None:
+            return {"workspaces": []}
+        result = []
+        for item in lister():
+            path = str(item["canonical_path"])
+            result.append(
+                {
+                    "id": item["id"],
+                    "label": item["label"],
+                    "path": path,
+                    "available": Path(path).is_dir(),
+                }
+            )
+        return {"workspaces": result}
+
+    def _pick_workspace(self) -> dict:
+        """打开本机系统的文件夹选择框，返回用户明确选中的目录。
+
+        浏览器不能获得本机绝对路径；选择框必须由与工具同机的 Gateway
+        打开。此处只负责取得用户选择，不登记目录，也不改变进程 cwd。
+        """
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            window = tk.Tk()
+            window.withdraw()
+            window.attributes("-topmost", True)
+            try:
+                selected = filedialog.askdirectory(
+                    parent=window,
+                    title="选择 qi-agent 工作空间",
+                    mustexist=True,
+                )
+            finally:
+                window.destroy()
+        except Exception as exc:
+            raise RpcError(ERROR_INVALID_PARAMS, f"无法打开系统目录选择框: {exc}") from exc
+
+        if not selected:
+            return {"selected": False}
+        try:
+            root = normalize_workspace(selected)
+        except (OSError, ValueError) as exc:
+            raise RpcError(ERROR_INVALID_PARAMS, f"所选目录不可用: {exc}") from exc
+        return {
+            "selected": True,
+            "path": str(root),
+            "label": root.name or root.drive or str(root),
+        }
+
+    def _add_workspace(self, path: str, label: str = "") -> dict:
+        root = normalize_workspace(path)
+        storage = self._storage()
+        adder = getattr(storage, "add_workspace", None)
+        if adder is None:
+            raise RpcError(ERROR_INVALID_PARAMS, "当前存储不支持工作空间")
+        record = adder(generate_id("ws"), (label.strip() or root.name), str(root))
+        return {
+            "workspace": {
+                "id": record["id"],
+                "label": record["label"],
+                "path": record["canonical_path"],
+                "available": True,
+            }
+        }
+
+    def _remove_workspace(self, workspace_id: str) -> dict:
+        remover = getattr(self._storage(), "remove_workspace", None)
+        if remover is None or not remover(workspace_id):
+            raise RpcError(ERROR_INVALID_PARAMS, "工作空间不存在或已移除")
+        return {"removed": True}
 
     def _send_message(self, session_id: str, text: str) -> dict:
         self._get_context(session_id)
@@ -224,24 +393,59 @@ class Gateway:
                 raise RpcError(ERROR_CONCURRENT_RUN, f"context 正在运行: {session_id}") from exc
             context = self._get_context(session_id)
             self._notify(
-                "turn/end", session_id=session_id, turn=context.turn,
-                reason="error", error=str(exc),
+                "turn/end",
+                session_id=session_id,
+                turn=context.turn,
+                reason="error",
+                error=str(exc),
             )
             raise
         except Exception as exc:
             context = self._get_context(session_id)
             self._notify(
-                "turn/end", session_id=session_id, turn=context.turn,
-                reason="error", error=str(exc),
+                "turn/end",
+                session_id=session_id,
+                turn=context.turn,
+                reason="error",
+                error=str(exc),
             )
             raise
 
-    def _respond_approval(self, session_id: str, approval_id: str, decision: str) -> dict:
-        event = self._approval_events.get(approval_id)
-        if event is None:
-            raise RpcError(ERROR_INVALID_PARAMS, f"审批不存在或已超时: {approval_id}")
-        self._approval_results[approval_id] = decision == "approve"
-        event.set()
+    def _respond_approval(self, session_id: str, approval_id: str,
+                          choice: str | None = None,
+                          decision: str | None = None) -> dict:
+        """外壳响应审批：校验会话归属 + 选项合法性，唤醒等待中的 agent 线程。
+
+        - `choice`（新契约）：选项 value（once/session/deny…）
+        - `decision`（旧契约兼容）：approve → once / deny → deny
+        - 重复响应：幂等返回 `{"ok": True, "duplicate": True}`（前端重试安全）
+        """
+        with self._approval_lock:
+            entry = self._approvals.get(approval_id)
+            if entry is None:
+                if approval_id in self._approval_results:
+                    return {"ok": True, "duplicate": True}
+                raise RpcError(ERROR_INVALID_PARAMS, f"审批不存在或已超时: {approval_id}")
+            if entry.session_id != session_id:
+                # 会话归属校验（缺陷 D2）：别的会话拿到 id 也不能代为放行
+                raise RpcError(
+                    ERROR_INVALID_PARAMS, f"审批不属于该会话: {approval_id}"
+                )
+            value = choice or _LEGACY_DECISIONS.get(str(decision or ""), "")
+            if value not in entry.choices:
+                raise RpcError(
+                    ERROR_INVALID_PARAMS,
+                    f"审批选项不合法: {value}（可选: {entry.choices}）",
+                )
+            entry.choice = value
+            self._approval_results[approval_id] = value
+            if len(self._approval_results) > _MAX_RESOLVED_APPROVALS:
+                self._approval_results.pop(next(iter(self._approval_results)), None)
+        entry.event.set()
+        get_run_logger().info(
+            "approval-response context=%s approval=%s choice=%s",
+            session_id, approval_id, value,
+        )
         return {"ok": True}
 
     def _stop_session(self, session_id: str) -> dict:
@@ -533,20 +737,111 @@ class Gateway:
     def request_approval(
         self,
         session_id: str,
-        command: str,
-        arguments: dict | None = None,
-    ) -> bool:
-        approval_id = f"ap_{len(self._approval_events) + 1}"
-        event = threading.Event()
-        self._approval_events[approval_id] = event
-        self._notify(
-            "serverRequest/approval",
+        question: str,
+        options: Any = None,
+        *,
+        meta: dict | None = None,
+        timeout: float | None = None,
+    ) -> str | None:
+        """内核调用的审批入口：发通知给外壳 + 阻塞等待用户选择。
+
+        Args:
+            session_id: 发起会话（审批归属，响应时校验）
+            question: 展示给用户的问题（风险/权限范围由决策层写清）
+            options: 选项（InteractionOption / dict / str）
+            meta: 结构化上下文（tool/code/command/arguments）
+            timeout: 等待上限（None → APPROVAL_TIMEOUT）
+
+        Returns:
+            用户所选项的 value；超时或无人响应 → None（= 拒绝，fail-closed）
+        """
+        wait = APPROVAL_TIMEOUT if timeout is None else timeout
+        payload = _normalize_approval_options(options)
+        context = dict(meta or {})
+        # 发号用统一 ID util（缺陷 D1：旧实现 f"ap_{len+1}" 会在连续审批中复用）
+        approval_id = generate_id("ap")
+        entry = _ApprovalEntry(
             session_id=session_id,
-            approval_id=approval_id,
-            command=command,
-            arguments=arguments or {},
+            choices=[item["value"] for item in payload],
         )
-        event.wait(timeout=APPROVAL_TIMEOUT)
-        result = self._approval_results.pop(approval_id, False)
-        self._approval_events.pop(approval_id, None)
-        return result
+        with self._approval_lock:
+            self._approvals[approval_id] = entry
+        logger = get_run_logger()
+        started = time.monotonic()
+        logger.info(
+            "approval-request context=%s approval=%s tool=%s code=%s options=%s command=%s",
+            session_id, approval_id, context.get("tool", ""), context.get("code", ""),
+            entry.choices, redact_command(str(context.get("command", ""))),
+        )
+        try:
+            self._notify(
+                "serverRequest/approval",
+                session_id=session_id,
+                root_session_id=self._resolve_root_session(session_id),
+                approval_id=approval_id,
+                question=question,
+                options=payload,
+                name=str(context.get("tool", "")),
+                code=str(context.get("code", "")),
+                command=redact_command(str(context.get("command", ""))),
+                arguments=context.get("arguments") or {},
+                tool_call_id=str(context.get("tool_call_id", "")),
+                turn=context.get("turn"),
+                timeout_ms=int(wait * 1000),
+            )
+            entry.event.wait(timeout=wait)
+            if entry.choice is None:
+                # 超时 = 拒绝（fail-closed）：可观测的核心健康指标
+                logger.warning(
+                    "approval-timeout context=%s approval=%s waited=%.1fs",
+                    session_id, approval_id, time.monotonic() - started,
+                )
+            self._emit_approval_resolved(
+                session_id=session_id,
+                approval_id=approval_id,
+                context=context,
+                choice=entry.choice or "timeout",
+                waited_ms=int((time.monotonic() - started) * 1000),
+            )
+            return entry.choice
+        finally:
+            with self._approval_lock:
+                self._approvals.pop(approval_id, None)
+
+    def _emit_approval_resolved(
+        self, *, session_id: str, approval_id: str, context: dict,
+        choice: str, waited_ms: int,
+    ) -> None:
+        """已决通知（M2-a）：记录由内核产出，前端把它落在触发它的工具行上。
+
+        没有这条通知，弹框一收起就"什么都没发生过"（2026-09-14 UX 反馈）；
+        超时同样发（choice="timeout"），否则超时只留在 run.log 里。
+        """
+        self._notify(
+            "item/approvalResolved",
+            session_id=session_id,
+            root_session_id=self._resolve_root_session(session_id),
+            approval_id=approval_id,
+            tool_call_id=str(context.get("tool_call_id", "")),
+            turn=context.get("turn"),
+            name=str(context.get("tool", "")),
+            code=str(context.get("code", "")),
+            choice=choice,
+            waited_ms=max(0, waited_ms),
+            decided_at=int(time.time() * 1000),
+        )
+
+    def _resolve_root_session(self, session_id: str) -> str:
+        """沿 parent_id 上溯到根会话（子 agent 的审批弹到用户正看的会话）。
+
+        找不到 context（会话已结束/ID 未知）→ 原样返回（前端按该 id 兜底匹配）。
+        """
+        context = self.manager.get_context(session_id)
+        current = session_id
+        while context is not None and getattr(context, "parent_id", ""):
+            parent = context.parent_id
+            parent_context = self.manager.get_context(parent)
+            if parent_context is None:
+                return parent
+            current, context = parent, parent_context
+        return current
