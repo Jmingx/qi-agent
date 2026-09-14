@@ -271,9 +271,10 @@ class ServeBridge:
     def __init__(self, serve_url: str) -> None:
         self.serve_url = serve_url
         self._client = None
-        self._listeners: list[WebSocket] = []
+        self._listeners: list[_WebSocketListener] = []
         self._pending: dict[int, asyncio.Future] = {}
         self._next_id = 1
+        self._request_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         """连接内核 serve。"""
@@ -290,13 +291,20 @@ class ServeBridge:
         if self._client is None:
             raise RuntimeError("serve 未连接")
 
-        msg_id = self._next_id
-        self._next_id += 1
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending[msg_id] = fut
-        msg = {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
-        await self._client.send(json.dumps(msg, ensure_ascii=False))
-        data = await asyncio.wait_for(fut, timeout=120)
+        # 多个浏览器请求可以并发等待内核响应，但分配 id 和发送帧必须串行，
+        # 避免同一条 serve WebSocket 上出现帧/待响应表的竞态。
+        async with self._request_lock:
+            msg_id = self._next_id
+            self._next_id += 1
+            fut: asyncio.Future = asyncio.get_running_loop().create_future()
+            self._pending[msg_id] = fut
+            msg = {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
+            await self._client.send(json.dumps(msg, ensure_ascii=False))
+        try:
+            data = await asyncio.wait_for(fut, timeout=120)
+        finally:
+            # 浏览器断开导致外层任务取消时，不能遗留永远不可达的 Future。
+            self._pending.pop(msg_id, None)
         if "error" in data:
             raise RuntimeError(f"{data['error']}")
         return data.get("result", {})
@@ -317,18 +325,35 @@ class ServeBridge:
                 if not fut.done():
                     fut.set_result(data)
             elif "id" not in data:
-                for ws in list(self._listeners):
+                for listener in list(self._listeners):
                     try:
-                        await ws.send_text(raw)
+                        await listener.send_text(raw)
                     except Exception:
-                        if ws in self._listeners:
-                            self._listeners.remove(ws)
+                        if listener in self._listeners:
+                            self._listeners.remove(listener)
+
+
+class _WebSocketListener:
+    """单个浏览器连接的串行发送器。
+
+    内核通知由 ``ServeBridge.pump`` 发出，RPC 响应由连接内的后台任务发出。
+    两者必须共用同一把锁，不能依赖 ASGI 实现在并发 ``send_text`` 时的偶然行为。
+    """
+
+    def __init__(self, ws: WebSocket) -> None:
+        self.ws = ws
+        self._send_lock = asyncio.Lock()
+
+    async def send_text(self, raw: str) -> None:
+        async with self._send_lock:
+            await self.ws.send_text(raw)
 
 
 def create_app(serve_url: str = "ws://127.0.0.1:8765") -> FastAPI:
     """创建 FastAPI 应用。"""
     app = FastAPI(title="qi-agent Web Shell")
     bridge = ServeBridge(serve_url)
+    app.state.bridge = bridge
     web_token = _load_web_token()
     jaeger_base_url = _load_jaeger_base_url()
     app.state.web_token = web_token
@@ -353,29 +378,71 @@ def create_app(serve_url: str = "ws://127.0.0.1:8765") -> FastAPI:
                 return
 
         await ws.accept()
-        bridge._listeners.append(ws)
+        listener = _WebSocketListener(ws)
+        bridge._listeners.append(listener)
+        request_tasks: set[asyncio.Task[None]] = set()
+
+        async def _respond(data: dict) -> None:
+            request_id = data.get("id")
+            try:
+                method = data.get("method")
+                if not isinstance(method, str) or not method:
+                    raise ValueError("RPC method 不能为空")
+                params = data.get("params") or {}
+                if not isinstance(params, dict):
+                    raise ValueError("RPC params 必须是对象")
+                result = await bridge.call(method, params)
+                payload = {"jsonrpc": "2.0", "id": request_id, "result": result}
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32603, "message": str(exc)},
+                }
+            try:
+                await listener.send_text(json.dumps(payload, ensure_ascii=False))
+            except Exception:
+                # 连接已断开时无需再向浏览器报告；内核审批仍会按超时拒绝。
+                return
+
+        def _track(task: asyncio.Task[None]) -> None:
+            request_tasks.discard(task)
+
         try:
             while True:
                 raw = await ws.receive_text()
-                data = json.loads(raw)
-                method = data.get("method")
-                params = data.get("params") or {}
-                result = await bridge.call(method, params)
-                payload = {"jsonrpc": "2.0", "id": data.get("id"), "result": result}
-                await ws.send_text(json.dumps(payload, ensure_ascii=False))
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    await listener.send_text(json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32700, "message": "请求不是合法 JSON"},
+                    }, ensure_ascii=False))
+                    continue
+                if not isinstance(data, dict):
+                    await listener.send_text(json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32600, "message": "请求必须是 JSON 对象"},
+                    }, ensure_ascii=False))
+                    continue
+                # 不在接收循环 await：长运行的 Agent 回合期间，审批/停止等控制
+                # 请求仍必须立刻被接收并转发，否则会形成“等待审批却收不到审批”的环。
+                task = asyncio.create_task(_respond(data))
+                request_tasks.add(task)
+                task.add_done_callback(_track)
         except WebSocketDisconnect:
-            if ws in bridge._listeners:
-                bridge._listeners.remove(ws)
-        except Exception as exc:
-            try:
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": data.get("id"),
-                    "error": {"code": -32603, "message": str(exc)},
-                }
-                await ws.send_text(json.dumps(payload, ensure_ascii=False))
-            except Exception:
-                pass
+            pass
+        finally:
+            if listener in bridge._listeners:
+                bridge._listeners.remove(listener)
+            for task in request_tasks:
+                task.cancel()
+            if request_tasks:
+                await asyncio.gather(*request_tasks, return_exceptions=True)
 
     @app.api_route("/jaeger", methods=_JAEGER_PROXY_METHODS)
     @app.api_route("/jaeger/{path:path}", methods=_JAEGER_PROXY_METHODS)

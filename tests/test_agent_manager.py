@@ -74,6 +74,7 @@ def test_steer_sender_is_current_context() -> None:
     parent = AgentContext(context_id="ctx_parent")
     mgr.register(parent, role="main")
     sub = mgr.spawn("目标", parent_id="ctx_parent")
+    assert sub.id.startswith("ctx_")
 
     # 主 context（当前）steer 子——sender 填当前 context_id
     assert mgr.steer(sub.id, "改方向", sender_id="ctx_parent")

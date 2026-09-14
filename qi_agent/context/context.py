@@ -27,6 +27,7 @@ import threading
 from enum import Enum
 
 from qi_agent.events import EventBus
+from qi_agent.workspaces import SessionWorkspace
 from qi_agent.util import generate_id  # noqa: F401  统一 ID（util 收口）
 
 
@@ -38,7 +39,7 @@ class ContextStatus(str, Enum):
       （reset 后任意终态回到 IDLE，可复用）
     """
 
-    IDLE = "idle"              # 新建未开始（2026-08-24 新增）
+    IDLE = "idle"  # 新建未开始（2026-08-24 新增）
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -54,11 +55,11 @@ class ChatPhase(str, Enum):
     """
 
     IDLE = "idle"
-    TURN_START = "turn_start"   # 用户输入已接收
-    LLM_CALL = "llm_call"       # LLM 调用中
-    TOOL_EXEC = "tool_exec"     # 工具执行中
-    ANSWERING = "answering"     # 最终回答
-    DONE = "done"               # 本次 chat 结束
+    TURN_START = "turn_start"  # 用户输入已接收
+    LLM_CALL = "llm_call"  # LLM 调用中
+    TOOL_EXEC = "tool_exec"  # 工具执行中
+    ANSWERING = "answering"  # 最终回答
+    DONE = "done"  # 本次 chat 结束
 
 
 class WaitOutcome(Enum):
@@ -86,6 +87,7 @@ class AgentContext:
         events: EventBus | None = None,
         context_id: str | None = None,
         metadata: dict[str, str] | None = None,
+        workspace: SessionWorkspace | None = None,
     ) -> None:
         self.id = context_id or generate_id("ctx")
         # id 前缀（方案 2026-08-24-执行权归还Manager与ID规范化）：
@@ -95,6 +97,8 @@ class AgentContext:
         self.goal = goal
         # 外部关联元数据（例如评测 case_id）。不进入 prompt，避免污染模型上下文。
         self.metadata = dict(metadata or {})
+        # 工作空间是会话级配置，而非瞬态 Agent 实例的属性。
+        self.workspace = workspace
         self.parent = parent
         self.persist = persist
         self.max_turns = max_turns
@@ -118,14 +122,16 @@ class AgentContext:
         self.messages: list[dict] = []
         self.turn: int = 0  # 会话轮数（用户消息条数，跨 chat 累计）
         self.usage: dict[str, int] = {
-            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
         }
         # ── 子 agent 专属配置（spawn 时设置；主 agent 不用——默认值空）──
         # （方案 2026-08-29-Subagent类型收敛：SubagentContext 合并进
         #   AgentContext——子专属字段归拢放一块；context_text 消除，
         #   背景直接算成 system_prompt）
-        self.write_paths: list[str] = []   # 授权清单（子只写这些前缀路径）
-        self.timeout: float = 120.0        # 子任务超时（超时 → FAILED）
+        self.write_paths: list[str] = []  # 授权清单（子只写这些前缀路径）
+        self.timeout: float = 120.0  # 子任务超时（超时 → FAILED）
 
         # 主动记忆（方案 2026-08-26-主动记忆系统）：每 N 轮触发提炼
         self.memory_extract_interval = 10  # 提炼间隔（用户拍板：至少每 10 轮）
@@ -133,7 +139,7 @@ class AgentContext:
 
         # 状态机（两级，方案 2026-08-24 §4.5）
         self.status = ContextStatus.IDLE  # 会话级：新建未开始
-        self.phase = ChatPhase.IDLE       # 循环级：当前 chat 内部阶段
+        self.phase = ChatPhase.IDLE  # 循环级：当前 chat 内部阶段
         self.result: dict | None = None
         self.error: str | None = None
 
@@ -216,13 +222,10 @@ class AgentContext:
         """
         from qi_agent.agents.mailbox import MessageType
 
-        pieces = [f"[消息投递] {m.data}" for m in
-                  self.mailbox.drain_by_type(MessageType.MESSAGE)]
-        pieces += [f"[引导] {m.data}" for m in
-                   self.mailbox.drain_by_type(MessageType.STEER)]
+        pieces = [f"[消息投递] {m.data}" for m in self.mailbox.drain_by_type(MessageType.MESSAGE)]
+        pieces += [f"[引导] {m.data}" for m in self.mailbox.drain_by_type(MessageType.STEER)]
         if pieces:
-            messages = messages + [{"role": "user",
-                                    "content": " | ".join(pieces)}]
+            messages = messages + [{"role": "user", "content": " | ".join(pieces)}]
         return messages
 
     def should_stop(self) -> bool:
@@ -243,7 +246,7 @@ class AgentContext:
         """
         self._done.wait(timeout=timeout)  # 等 chat 完成（stop 也会 set）
         if self._stop_flag.is_set():
-            return WaitOutcome.STOPPED   # stop 优先（即使 done 也 set）
+            return WaitOutcome.STOPPED  # stop 优先（即使 done 也 set）
         if self._done.is_set():
             return WaitOutcome.DONE
         return WaitOutcome.TIMEOUT
@@ -264,7 +267,11 @@ class AgentContext:
 
     # ── chat 生命周期状态转移（方案 2026-08-24 §4.5，主 agent 用）────────
     def begin_chat(self) -> None:
-        """chat() 入口：IDLE → RUNNING + TURN_START。"""
+        """开始新一轮 chat：清理上一轮结束信号后进入 RUNNING。"""
+        # ``_done`` 是单轮完成信号，不是 Context 永久状态。
+        # Manager 可能在 worker 线程真正开始前就等待它；不清除上一轮的
+        # 已完成信号会让下一轮被误判为完成，长工具/子任务最终表现为 KeyError。
+        self._done.clear()
         self.status = ContextStatus.RUNNING
         self.phase = ChatPhase.TURN_START
 

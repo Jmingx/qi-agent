@@ -11,6 +11,7 @@ import os
 
 from qi_agent.security.path_security import _SENSITIVE_DIRS
 from qi_agent.tools.registry import register
+from qi_agent.workspaces import SessionWorkspace
 
 # 输出字符上限
 _MAX_OUTPUT_CHARS = 3000
@@ -18,7 +19,7 @@ _MAX_OUTPUT_CHARS = 3000
 _MAX_ENTRIES = 100
 
 # 隐藏文件前缀（Windows/Linux 通用：.git 等点开头文件）
-_HIDDEN_PREFIX = (".")
+_HIDDEN_PREFIX = "."
 
 
 def _format_size(size: int) -> str:
@@ -30,7 +31,7 @@ def _format_size(size: int) -> str:
     return f"{size // (1024 * 1024)}MB"
 
 
-def list_dir(path: str = ".") -> str:
+def list_dir(path: str = ".", workspace: SessionWorkspace | None = None) -> str:
     """列出目录内容（名称/类型/大小）。
 
     只读操作（白名单放行）；敏感目录（.git 等）不列出。
@@ -41,6 +42,11 @@ def list_dir(path: str = ".") -> str:
     Returns:
         格式化列表，或错误提示。
     """
+    if workspace:
+        try:
+            path = str(workspace.resolve_path(path))
+        except ValueError as exc:
+            return f"[安全拦截] {exc}"
     if not os.path.isdir(path):
         return f"[错误] 目录不存在或不是目录: {path}"
 
@@ -78,6 +84,7 @@ register(
     name="list_dir",
     toolset="builtin",
     handler=list_dir,
+    workspace_aware=True,
     description=(
         "列出目录内容（名称/类型/大小，结构化）。"
         "【边界】只列目录不读内容——看文件内容用 read_file；"

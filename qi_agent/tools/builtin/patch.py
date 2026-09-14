@@ -17,6 +17,7 @@ import re
 
 from qi_agent.security.path_security import is_sensitive_path
 from qi_agent.tools.registry import register
+from qi_agent.workspaces import SessionWorkspace
 
 # 策略链（按顺序尝试；命中即用原文替换）
 _STRATEGIES = ("exact", "whitespace_flexible", "indentation_flexible")
@@ -46,7 +47,8 @@ def _render_diff(original: str, modified: str, path: str) -> str:
     diff = difflib.unified_diff(
         original.splitlines(keepends=True),
         modified.splitlines(keepends=True),
-        fromfile=path, tofile=path,
+        fromfile=path,
+        tofile=path,
     )
     text = "".join(diff)
     if len(text) > 2000:
@@ -54,8 +56,14 @@ def _render_diff(original: str, modified: str, path: str) -> str:
     return text
 
 
-def patch(path: str, old_string: str, new_string: str,
-          replace_all: bool = False, approved: bool = False) -> str:
+def patch(
+    path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+    approved: bool = False,
+    workspace: SessionWorkspace | None = None,
+) -> str:
     """精确编辑文件：old_string → new_string（原子替换）。
 
     Args:
@@ -68,6 +76,11 @@ def patch(path: str, old_string: str, new_string: str,
     Returns:
         成功（含 diff 展示）或 [安全拦截]/[错误] 提示
     """
+    if workspace:
+        try:
+            path = str(workspace.resolve_path(path))
+        except ValueError as exc:
+            return f"[安全拦截] {exc}"
     # ① 敏感路径红线（工具层兜底，approved 也拒）
     if is_sensitive_path(path):
         return f"[安全拦截] 路径敏感，禁止编辑: {path}"
@@ -135,6 +148,7 @@ register(
     ),
     # 审批声明（v0.4.26 声明式）：编辑已有文件 = 覆盖语义 → 无条件审批
     approval="patch 编辑 {path}",
+    workspace_aware=True,
     # 手写 schema：只暴露 path/old_string/new_string/replace_all——
     # approved 是内部参数（agent 审批注入，防绕过）
     schema={

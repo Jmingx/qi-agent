@@ -18,6 +18,7 @@ from qi_agent.tools.decision import (
     ToolDecision,
 )
 from qi_agent.tools.registry import register
+from qi_agent.workspaces import SessionWorkspace
 
 # 命令执行超时（秒）。长驻程序（游戏/服务器）超时后杀进程树——见 _kill_process_tree
 _COMMAND_TIMEOUT = 10
@@ -50,10 +51,21 @@ def _approval_condition(arguments: dict) -> "str | ToolDecision | None":
         return command
     return None
 
+
 # shell 只读白名单：允许的命令前缀（阶段 2 安全设计，完整权限模型留后续阶段）
 _READONLY_PREFIXES = (
-    "pwd", "ls", "dir", "echo", "cat", "type", "whoami",
-    "date", "time", "where", "which", "findstr",
+    "pwd",
+    "ls",
+    "dir",
+    "echo",
+    "cat",
+    "type",
+    "whoami",
+    "date",
+    "time",
+    "where",
+    "which",
+    "findstr",
 )
 
 
@@ -72,7 +84,12 @@ def _kill_process_tree(proc) -> None:
         pass  # 进程已退出（竞态窗口），无需处理
 
 
-def shell(command: str, approved: bool = False, background: bool = False) -> str:
+def shell(
+    command: str,
+    approved: bool = False,
+    background: bool = False,
+    workspace: SessionWorkspace | None = None,
+) -> str:
     """执行 shell 命令。
 
     安全设计（v0.4.18 三档权限 + 2026-08-21 异步扩展）：
@@ -112,9 +129,7 @@ def shell(command: str, approved: bool = False, background: bool = False) -> str
         # - detach（Windows）：完全脱离控制台——agent 退出后程序照跑
         creationflags = 0
         if sys.platform == "win32":
-            creationflags = (
-                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-            )
+            creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
         try:
             proc = subprocess.Popen(
                 command,
@@ -122,6 +137,7 @@ def shell(command: str, approved: bool = False, background: bool = False) -> str
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=creationflags,
+                cwd=str(workspace.root) if workspace else None,
             )
         except OSError as exc:
             return f"[错误] 命令启动失败: {exc}"
@@ -142,6 +158,7 @@ def shell(command: str, approved: bool = False, background: bool = False) -> str
         # 明确 UTF-8 + errors="replace"：不炸，乱码字节替换为 �
         encoding="utf-8",
         errors="replace",
+        cwd=str(workspace.root) if workspace else None,
     )
     try:
         out, err = proc.communicate(timeout=_COMMAND_TIMEOUT)
@@ -173,6 +190,7 @@ register(
     # 审批声明（v0.4.26 声明式）：条件审批——命令前缀匹配（代码执行 →
     # 沙箱升级档；危险命令 → 普通审批档；红线由插件系统级底线硬拒）
     approval=_approval_condition,
+    workspace_aware=True,
     # 手写 schema：只暴露 command + background——approved 是内部参数（agent
     # 审批注入），不进 schema → 模型看不到也传不了（传了会被参数校验拒为多余参数）
     schema={

@@ -47,6 +47,14 @@ class SQLiteStore(Storage):
                     created_at REAL DEFAULT 0,
                     updated_at REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS workspaces (
+                    id TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    canonical_path TEXT NOT NULL UNIQUE,
+                    created_at REAL DEFAULT 0,
+                    updated_at REAL DEFAULT 0,
+                    removed_at REAL DEFAULT NULL
+                );
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -68,15 +76,20 @@ class SQLiteStore(Storage):
         cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
         if "data" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN data TEXT DEFAULT NULL")
+        session_cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+        if "workspace_id" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN workspace_id TEXT DEFAULT NULL")
 
-    def create_session(self, session_id: str, title: str = "") -> None:
+    def create_session(
+        self, session_id: str, title: str = "", workspace_id: str | None = None
+    ) -> None:
         now = time.time()
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO sessions"
-                " (id, title, snapshot_at, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (session_id, title, now, now, now),
+                " (id, title, workspace_id, snapshot_at, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, title, workspace_id, now, now, now),
             )
 
     def append_message(self, session_id: str, message: dict) -> None:
@@ -164,6 +177,7 @@ class SQLiteStore(Storage):
             "status": sess["status"],
             "phase": sess["phase"],
             "messages": messages,
+            "workspace_id": sess["workspace_id"] if "workspace_id" in sess.keys() else None,
         }
 
     @staticmethod
@@ -191,10 +205,13 @@ class SQLiteStore(Storage):
         """
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT s.id, s.title, s.updated_at, s.turn,"
+                "SELECT s.id, s.title, s.updated_at, s.turn, s.workspace_id,"
+                " w.label AS workspace_label, w.removed_at,"
                 " COUNT(m.id) AS message_count"
                 " FROM sessions s LEFT JOIN messages m ON m.session_id = s.id"
-                " GROUP BY s.id, s.title, s.updated_at, s.turn"
+                " LEFT JOIN workspaces w ON w.id = s.workspace_id"
+                " GROUP BY s.id, s.title, s.updated_at, s.turn, s.workspace_id,"
+                " w.label, w.removed_at"
                 " ORDER BY s.updated_at DESC",
             ).fetchall()
         return [
@@ -204,9 +221,54 @@ class SQLiteStore(Storage):
                 "updated_at": row["updated_at"],
                 "turn": row["turn"],
                 "message_count": row["message_count"],
+                "workspace_id": row["workspace_id"],
+                "workspace_label": row["workspace_label"],
+                "workspace_available": bool(
+                    row["workspace_id"] and row["workspace_label"] and row["removed_at"] is None
+                ),
             }
             for row in rows
         ]
+
+    def add_workspace(self, workspace_id: str, label: str, canonical_path: str) -> dict:
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO workspaces (id, label, canonical_path, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?) ON CONFLICT(canonical_path) DO UPDATE"
+                " SET label=excluded.label, removed_at=NULL, updated_at=excluded.updated_at",
+                (workspace_id, label, canonical_path, now, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM workspaces WHERE canonical_path=?", (canonical_path,)
+            ).fetchone()
+        return dict(row)
+
+    def list_workspaces(self, include_removed: bool = False) -> list[dict]:
+        query = (
+            "SELECT * FROM workspaces"
+            + ("" if include_removed else " WHERE removed_at IS NULL")
+            + " ORDER BY label, canonical_path"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(query).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_workspace(self, workspace_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM workspaces WHERE id=? AND removed_at IS NULL", (workspace_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def remove_workspace(self, workspace_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            result = conn.execute(
+                "UPDATE workspaces SET removed_at=?, updated_at=?"
+                " WHERE id=? AND removed_at IS NULL",
+                (time.time(), time.time(), workspace_id),
+            )
+        return result.rowcount > 0
 
     def delete_session(self, session_id: str) -> None:
         with self._lock, self._connect() as conn:

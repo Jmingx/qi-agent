@@ -68,3 +68,16 @@ def test_run_with_real_race(tmp_path) -> None:
     for _ in range(5):
         reply = mgr.run(ctx.id, f"问{_}")
         assert reply == "ok"
+
+
+def test_begin_chat_clears_previous_completion_signal() -> None:
+    """同一 Context 的下一轮不能继承上一轮的完成事件。"""
+    from qi_agent.context.context import WaitOutcome
+
+    ctx = AgentContext()
+    ctx.begin_chat()
+    ctx.complete_chat()
+    assert ctx.wait_stop_or_done(timeout=0) == WaitOutcome.DONE
+
+    ctx.begin_chat()
+    assert ctx.wait_stop_or_done(timeout=0) == WaitOutcome.TIMEOUT

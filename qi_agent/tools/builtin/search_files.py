@@ -12,6 +12,7 @@ import re
 
 from qi_agent.security.path_security import _SENSITIVE_DIRS
 from qi_agent.tools.registry import register
+from qi_agent.workspaces import SessionWorkspace
 
 # 输出字符上限
 _MAX_OUTPUT_CHARS = 4000
@@ -22,22 +23,35 @@ _MAX_LINE_CHARS = 150
 # 跳过的隐藏目录（防噪音；与 path_security 敏感目录对齐）
 _SKIP_DIRS = _SENSITIVE_DIRS | {"node_modules"}
 # 跳过的文件扩展名（二进制/大文件）
-_SKIP_EXTENSIONS = {".pyc", ".exe", ".dll", ".png", ".jpg", ".gif",
-                    ".zip", ".7z", ".pdf", ".lock", ".svg"}
+_SKIP_EXTENSIONS = {
+    ".pyc",
+    ".exe",
+    ".dll",
+    ".png",
+    ".jpg",
+    ".gif",
+    ".zip",
+    ".7z",
+    ".pdf",
+    ".lock",
+    ".svg",
+}
 
 
 def _walk_skip_hidden(root: str):
     """os.walk 变体：跳过隐藏目录（_SKIP_DIRS 和点开头目录）。"""
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [
-            d for d in dirnames
-            if d not in _SKIP_DIRS and not d.startswith(".")
-        ]
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
         yield dirpath, filenames
 
 
-def search_files(pattern: str, path: str = ".",
-                 file_glob: str | None = None, limit: int = _MAX_MATCHES) -> str:
+def search_files(
+    pattern: str,
+    path: str = ".",
+    file_glob: str | None = None,
+    limit: int = _MAX_MATCHES,
+    workspace: SessionWorkspace | None = None,
+) -> str:
     """在文件中搜索内容（正则），返回 文件:行号: 匹配行。
 
     只定位不读全文——找到后模型用 read_file 看具体内容。
@@ -52,6 +66,11 @@ def search_files(pattern: str, path: str = ".",
     Returns:
         格式化匹配列表，或提示。
     """
+    if workspace:
+        try:
+            path = str(workspace.resolve_path(path))
+        except ValueError as exc:
+            return f"[安全拦截] {exc}"
     if not os.path.isdir(path):
         return f"[错误] 目录不存在或不是目录: {path}"
     try:
@@ -64,9 +83,7 @@ def search_files(pattern: str, path: str = ".",
     if file_glob:
         import fnmatch
 
-        glob_re = re.compile(
-            fnmatch.translate(file_glob), re.IGNORECASE
-        )
+        glob_re = re.compile(fnmatch.translate(file_glob), re.IGNORECASE)
 
     matches: list[str] = []
     try:
@@ -105,6 +122,7 @@ register(
     name="search_files",
     toolset="builtin",
     handler=search_files,
+    workspace_aware=True,
     description=(
         "在文件中搜索内容（正则，返回 文件:行号: 匹配行）。"
         "【边界】只定位不读全文——看全文用 read_file；"

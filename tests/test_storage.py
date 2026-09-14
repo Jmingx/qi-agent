@@ -4,7 +4,6 @@
       + 记忆 CRUD + 崩溃恢复。
 """
 
-
 import pytest
 
 from qi_agent.storage.sqlite_store import SQLiteStore
@@ -47,8 +46,7 @@ def test_snapshot_then_incremental_replay(store: SQLiteStore) -> None:
     store.append_message("ctx_2", {"role": "assistant", "content": "回复1"})
 
     # 打快照（记录 turn + 状态）
-    store.snapshot("ctx_2", turn=1, usage={"total_tokens": 100},
-                   status="completed", phase="done")
+    store.snapshot("ctx_2", turn=1, usage={"total_tokens": 100}, status="completed", phase="done")
 
     # 快照后追加（增量）
     store.append_message("ctx_2", {"role": "user", "content": "第二句"})
@@ -90,3 +88,28 @@ def test_delete_session(store: SQLiteStore) -> None:
     assert store.load_session("ctx_5") is None
     assert len(store.list_sessions()) == 0
     # 注：记忆 CRUD 测试移到 test_memory_store.py（Markdown 分层）
+
+
+def test_workspace_is_persisted_with_session(store: SQLiteStore, tmp_path) -> None:
+    """会话只保存 workspace ID，恢复时仍可查到登记目录。"""
+    root = tmp_path / "project"
+    root.mkdir()
+    record = store.add_workspace("ws_demo", "demo", str(root.resolve()))
+    store.create_session("ctx_workspace", workspace_id=record["id"])
+
+    loaded = store.load_session("ctx_workspace")
+    listed = store.list_sessions()
+    assert loaded is not None
+    assert loaded["workspace_id"] == "ws_demo"
+    assert listed[0]["workspace_label"] == "demo"
+    assert listed[0]["workspace_available"] is True
+
+
+def test_remove_workspace_keeps_session_history(store: SQLiteStore, tmp_path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    store.add_workspace("ws_remove", "remove", str(root.resolve()))
+    store.create_session("ctx_remove", workspace_id="ws_remove")
+    assert store.remove_workspace("ws_remove") is True
+    assert store.load_session("ctx_remove") is not None
+    assert store.get_workspace("ws_remove") is None

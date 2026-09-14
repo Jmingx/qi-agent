@@ -13,9 +13,12 @@ import os
 
 from qi_agent.security.path_security import is_sensitive_path
 from qi_agent.tools.registry import register
+from qi_agent.workspaces import SessionWorkspace
 
 
-def file_delete(path: str, approved: bool = False) -> str:
+def file_delete(
+    path: str, approved: bool = False, workspace: SessionWorkspace | None = None
+) -> str:
     """删除文件（需审批；敏感路径永不删）。
 
     Args:
@@ -25,6 +28,11 @@ def file_delete(path: str, approved: bool = False) -> str:
     Returns:
         成功/拦截/错误提示。
     """
+    if workspace:
+        try:
+            path = str(workspace.resolve_path(path))
+        except ValueError as exc:
+            return f"[安全拦截] {exc}"
     # 红线：敏感路径永不删（approved 也拒——审批管不到红线）
     if is_sensitive_path(path):
         return f"[安全拦截] 敏感路径禁止删除（红线）: {path}"
@@ -58,6 +66,7 @@ register(
     # 审批声明（v0.4.26 声明式）：无条件审批模板——删除是破坏性操作，
     # 任何调用都需弹窗审批（红线在工具层：敏感路径 approved 也拒）
     approval="删除文件 {path}",
+    workspace_aware=True,
     # 手写 schema：只暴露 path——approved 是内部参数（agent 审批注入），
     # 不进 schema → 模型看不到也传不了（防绕过，v0.4.18 机制）
     schema={
@@ -65,8 +74,7 @@ register(
         "function": {
             "name": "file_delete",
             "description": (
-                "删除文件（破坏性操作，会弹窗请求用户审批；敏感路径永不删）。"
-                "只删文件，不删目录"
+                "删除文件（破坏性操作，会弹窗请求用户审批；敏感路径永不删）。只删文件，不删目录"
             ),
             "parameters": {
                 "type": "object",

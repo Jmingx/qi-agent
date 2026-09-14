@@ -14,6 +14,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Callable, get_type_hints
 
+from qi_agent.workspaces import SessionWorkspace
+
 # 注册表：工具名 -> ToolEntry（改用结构化条目，对齐 Hermes ToolEntry 思想）
 _TOOL_REGISTRY: dict[str, "ToolEntry"] = {}
 
@@ -33,12 +35,12 @@ _TYPE_MAP = {
 class ToolEntry:
     """注册表中的一个工具条目（对齐 Hermes 的 ToolEntry 思想）。"""
 
-    name: str                       # 工具名（唯一）
-    toolset: str                    # 归属分组（默认 builtin）
-    schema: dict                    # 完整 JSON Schema
-    handler: Callable               # 处理函数（接收 **arguments）
-    description: str = ""           # 一句话描述
-    check_fn: Callable | None = None        # 环境检查（返回 False 不注册）
+    name: str  # 工具名（唯一）
+    toolset: str  # 归属分组（默认 builtin）
+    schema: dict  # 完整 JSON Schema
+    handler: Callable  # 处理函数（接收 **arguments）
+    description: str = ""  # 一句话描述
+    check_fn: Callable | None = None  # 环境检查（返回 False 不注册）
     requires_env: list[str] = field(default_factory=list)  # 需要的环境变量
     approval: str | Callable[[dict], str | None] | None = None
     # 审批声明（v0.4.26 声明式判档）：工具在注册时自声明权限策略——
@@ -49,6 +51,7 @@ class ToolEntry:
     # None    = 默认放行（不产生审批）
     # 由 security_guard 插件查 registry 执行；插件本身零工具名分支。
     output_limit: int = _TOOL_OUTPUT_LIMIT
+    workspace_aware: bool = False
     # 输出截断上限（阶段 B2，方案 2026-08-22）：registry 出口统一截断
     # 兜底（默认 2000 字符）——各工具不再各自为政，截断策略一处改。
     # 例外：read_file 注册 50_000（行级分页语义——一次可返回大块，
@@ -58,10 +61,7 @@ class ToolEntry:
 def _log_registered(entry: "ToolEntry") -> None:
     """打印工具注册成功的日志（学习/定位用）。"""
     params = entry.schema["function"]["parameters"]["properties"]
-    print(
-        f"[工具注册] ✓ {entry.name} "
-        f"(toolset={entry.toolset}, 参数={list(params.keys())})"
-    )
+    print(f"[工具注册] ✓ {entry.name} (toolset={entry.toolset}, 参数={list(params.keys())})")
 
 
 def _log_skipped(name: str, reason: str) -> None:
@@ -79,6 +79,7 @@ def register(
     requires_env: list[str] | None = None,
     approval: str | Callable[[dict], str | None] | None = None,
     output_limit: int | None = None,
+    workspace_aware: bool = False,
 ) -> None:
     """显式注册一个工具。
 
@@ -116,9 +117,7 @@ def register(
     # 3. 重复注册防护
     if name in _TOOL_REGISTRY:
         existing = _TOOL_REGISTRY[name]
-        raise ValueError(
-            f"工具 '{name}' 已存在（toolset={existing.toolset}），如需覆盖请先注销"
-        )
+        raise ValueError(f"工具 '{name}' 已存在（toolset={existing.toolset}），如需覆盖请先注销")
 
     # 4. schema：手写优先，否则自动生成
     if schema is None:
@@ -137,13 +136,17 @@ def register(
         requires_env=envs,
         approval=approval,
         output_limit=output_limit or _TOOL_OUTPUT_LIMIT,
+        workspace_aware=workspace_aware,
     )
     _TOOL_REGISTRY[name] = entry
     _log_registered(entry)
 
 
-def tool(description: str = "", toolset: str = "builtin",
-         approval: str | Callable[[dict], str | None] | None = None) -> Callable:
+def tool(
+    description: str = "",
+    toolset: str = "builtin",
+    approval: str | Callable[[dict], str | None] | None = None,
+) -> Callable:
     """装饰器：register() 的便捷封装（向后兼容，现有用法零改动）。
 
     用法:
@@ -153,8 +156,13 @@ def tool(description: str = "", toolset: str = "builtin",
 
     def decorator(fn: Callable) -> Callable:
         # 转调 register()：schema 自动从签名生成
-        register(name=fn.__name__, toolset=toolset, handler=fn,
-                 description=description, approval=approval)
+        register(
+            name=fn.__name__,
+            toolset=toolset,
+            handler=fn,
+            description=description,
+            approval=approval,
+        )
         return fn  # 原样返回，不改变函数本身
 
     return decorator
@@ -220,10 +228,7 @@ def get_tool_schemas(allowlist: list[str] | None = None) -> list[dict]:
     """
     if allowlist is None:
         return [entry.schema for entry in _TOOL_REGISTRY.values()]
-    return [
-        entry.schema for entry in _TOOL_REGISTRY.values()
-        if entry.name in allowlist
-    ]
+    return [entry.schema for entry in _TOOL_REGISTRY.values() if entry.name in allowlist]
 
 
 def get_tools_by_toolset(toolset: str) -> list[str]:
@@ -231,8 +236,9 @@ def get_tools_by_toolset(toolset: str) -> list[str]:
     return [entry.name for entry in _TOOL_REGISTRY.values() if entry.toolset == toolset]
 
 
-def validate_arguments(schema: dict, arguments: dict,
-                       internal: set[str] | None = None) -> str | None:
+def validate_arguments(
+    schema: dict, arguments: dict, internal: set[str] | None = None
+) -> str | None:
     """校验工具参数（执行前），返回 None=通过，否则返回可行动的错误信息。
 
     Args:
@@ -280,8 +286,12 @@ def validate_arguments(schema: dict, arguments: dict,
     return None
 
 
-def execute_tool(name: str, arguments: dict,
-                 internal: set[str] | None = None) -> str:
+def execute_tool(
+    name: str,
+    arguments: dict,
+    internal: set[str] | None = None,
+    workspace: SessionWorkspace | None = None,
+) -> str:
     """按名字执行工具，返回字符串结果。
 
     未知工具/执行异常都返回错误提示字符串，不抛出异常——
@@ -305,7 +315,11 @@ def execute_tool(name: str, arguments: dict,
         return f"[参数错误] {error}"
 
     try:
-        result = entry.handler(**arguments)
+        result = (
+            entry.handler(**arguments, workspace=workspace)
+            if entry.workspace_aware
+            else entry.handler(**arguments)
+        )
         # 统一转成字符串返回（LLM 只能读文本）
         if isinstance(result, str):
             text = result
@@ -315,7 +329,7 @@ def execute_tool(name: str, arguments: dict,
         # 保留（兜底双保险），registry 是最终闸门——截断策略一处改
         if len(text) > entry.output_limit:
             text = (
-                text[:entry.output_limit]
+                text[: entry.output_limit]
                 + f"\n...[输出过长已截断（{len(text)} 字符，上限 {entry.output_limit}）]"
             )
         return text

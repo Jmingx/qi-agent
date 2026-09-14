@@ -241,6 +241,7 @@ class Agent:
                         "agent/tool-call",
                         name=call.name,
                         arguments=call.arguments,
+                        tool_call_id=call.id,
                         turn=self._turn,
                         step=step,
                     )
@@ -255,6 +256,7 @@ class Agent:
                     turn=self._turn,
                     step=step,
                     allowlist=self.tools,
+                    workspace=self.context.workspace,
                 )
                 # 4. 回填（消息历史归 agent 管理）
                 # 竞态防护：工具执行中 stop → 回填前检查（tool 消息不污染）

@@ -35,29 +35,50 @@ def test_tool_notifications_and_turn_end_are_forwarded(monkeypatch) -> None:
     gateway.shell_callback = lambda payload: captured.append(json.loads(payload))
 
     context = _make_context("ctx-events")
+    context.turn = 4
     gateway.manager.register(context, role="main")
     transport._attach_context(context)
 
-    context.events.bail("agent/tool-call", name="search", arguments={"query": "abc"})
+    context.events.bail(
+        "agent/tool-call",
+        name="search",
+        arguments={"query": "abc"},
+        tool_call_id="call-7",
+        turn=4,
+    )
+    context.events.emit(
+        "tool/start",
+        name="search",
+        tool_call_id="call-7",
+        turn=4,
+    )
     context.events.emit(
         "agent/tool-result",
         name="search",
         arguments={"query": "abc"},
         output="done",
         duration=0.125,
+        tool_call_id="call-7",
+        turn=4,
     )
     context.events.emit("agent/turn-end", reason="error", error="boom")
 
     assert captured[0]["method"] == "item/toolCall"
     assert captured[0]["params"]["status"] == "running"
     assert captured[0]["params"]["name"] == "search"
-    assert captured[1]["method"] == "item/toolResult"
-    assert captured[1]["params"]["ok"] is True
-    assert captured[1]["params"]["summary"] == "done"
-    assert captured[1]["params"]["duration_ms"] == 125
-    assert captured[2]["method"] == "turn/end"
-    assert captured[2]["params"]["reason"] == "error"
-    assert captured[2]["params"]["error"] == "boom"
+    assert captured[0]["params"]["turn"] == 4
+    assert captured[0]["params"]["tool_call_id"] == "call-7"
+    assert captured[1]["method"] == "item/toolProgress"
+    assert captured[1]["params"]["tool_call_id"] == "call-7"
+    assert captured[2]["method"] == "item/toolResult"
+    assert captured[2]["params"]["ok"] is True
+    assert captured[2]["params"]["summary"] == "done"
+    assert captured[2]["params"]["duration_ms"] == 125
+    assert captured[2]["params"]["turn"] == 4
+    assert captured[3]["method"] == "turn/end"
+    assert captured[3]["params"]["reason"] == "error"
+    assert captured[3]["params"]["error"] == "boom"
+    assert captured[3]["params"]["turn"] == 4
 
 
 def test_blocked_tool_call_sets_blocked_status(monkeypatch) -> None:

@@ -12,6 +12,7 @@
 
 from qi_agent.security.path_security import is_sensitive_path
 from qi_agent.tools.registry import register
+from qi_agent.workspaces import SessionWorkspace
 
 # 单次返回字符上限（双保险：limit 2000 行仍可能超大）
 _MAX_CHARS = 50_000
@@ -19,7 +20,9 @@ _MAX_CHARS = 50_000
 _MAX_LIMIT = 2000
 
 
-def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
+def read_file(
+    path: str, offset: int = 1, limit: int = 2000, workspace: SessionWorkspace | None = None
+) -> str:
     """读取文本文件指定行范围。
 
     Args:
@@ -30,6 +33,11 @@ def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
     Returns:
         带元信息的行内容（header + 内容 + 续读提示），或拦截/错误提示。
     """
+    if workspace:
+        try:
+            path = str(workspace.resolve_path(path))
+        except ValueError as exc:
+            return f"[安全拦截] {exc}"
     # 路径安全检查（安全底线，硬编码不可配置）
     if is_sensitive_path(path):
         return f"[安全拦截] 路径敏感，禁止读取: {path}"
@@ -47,22 +55,19 @@ def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
     offset = max(offset, 1)  # 修正非法 offset
     limit = min(max(limit, 1), _MAX_LIMIT)
     end = min(offset + limit - 1, total)  # 越界自动截到末尾
-    content = "".join(lines[offset - 1:end])
+    content = "".join(lines[offset - 1 : end])
 
     # 字符上限双保险（超大行/超大文件）
     if len(content) > _MAX_CHARS:
         content = (
-            content[:_MAX_CHARS]
-            + "\n...内容过长已截断（可减小 limit 或增大 offset 分段读取）"
+            content[:_MAX_CHARS] + "\n...内容过长已截断（可减小 limit 或增大 offset 分段读取）"
         )
 
     # 返回结构：header（范围+总行数）+ 内容 + tail（续读提示）
     header = f"第 {offset}-{end} 行（共 {total} 行）"
     parts = [header, content]
     if end < total:
-        parts.append(
-            f"...已截断（剩余 {total - end} 行），可用 offset={end + 1} 继续读取"
-        )
+        parts.append(f"...已截断（剩余 {total - end} 行），可用 offset={end + 1} 继续读取")
     return "\n".join(parts)
 
 
@@ -77,6 +82,7 @@ register(
     # 输出上限豁免（阶段 B2）：行级分页语义——一次可返回大块（50K），
     # 模型用 offset 续读；registry 统一 2000 会破坏分页设计
     output_limit=50_000,
+    workspace_aware=True,
     # 手写 schema（offset/limit 有默认值，非必填）
     schema={
         "type": "function",

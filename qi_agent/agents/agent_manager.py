@@ -30,12 +30,13 @@ from qi_agent.storage.base import Storage
 # （SubagentManager 继承 AgentManager）→ 循环导入。SubagentContext 在
 # spawn() 内延迟 import（见下）。
 
+_WORKER_FINISH_GRACE_SECONDS = 5.0
+
 
 class AgentManager:
     """统一控制台：register / spawn / steer / stop / poll / unregister。"""
 
-    def __init__(self, max_concurrent: int = 3,
-                 storage: Storage | None = None) -> None:
+    def __init__(self, max_concurrent: int = 3, storage: Storage | None = None) -> None:
         self.contexts: dict[str, AgentContext] = {}
         self.max_concurrent = max_concurrent
         self._lock = threading.Lock()
@@ -67,8 +68,7 @@ class AgentManager:
         # 邮局（v3 修正）：mailbox 是 AgentContext 必备属性（构造即创建）——
         # register 统一注册路由（主/子一样，Manager 不特设）
         self.dispatcher.register(context.mailbox)
-        context.events.emit("agent-manager/register",
-                            context_id=context.id, role=role)
+        context.events.emit("agent-manager/register", context_id=context.id, role=role)
         return context.id
 
     def unregister(self, context_id: str) -> None:
@@ -117,28 +117,33 @@ class AgentManager:
             tools: 子 agent 工具白名单（None = 默认只读子集）
             write_paths: 可写路径白名单（授权清单）
         """
-        session_id = generate_id("agt")
+        context_id = generate_id("ctx")
         # 收敛（方案 2026-08-29-Subagent类型收敛）：不再建 SubagentContext——
-        # 直接用 AgentContext + 设子专属字段（write_paths/timeout）+ 
+        # 直接用 AgentContext + 设子专属字段（write_paths/timeout）+
         # system_prompt（context_text 消除——背景直接算成 system_prompt）
         from qi_agent.context.context import AgentContext
         from qi_agent.tools.builtin.delegate_task import _SUBAGENT_PROMPT
 
-        ctx = AgentContext(context_id=session_id, goal=goal,
-                           persist=False,  # 子 agent 默认瞬态
-                           max_turns=max_turns)
+        ctx = AgentContext(
+            context_id=context_id,
+            goal=goal,
+            persist=False,  # 子 agent 默认瞬态
+            max_turns=max_turns,
+        )
         # ── 子 agent 专属配置（归拢字段——AgentContext 默认空）──
-        ctx.write_paths = write_paths or []   # 授权清单
-        ctx.timeout = timeout                 # 子任务超时
+        ctx.write_paths = write_paths or []  # 授权清单
+        ctx.timeout = timeout  # 子任务超时
         ctx.system_prompt = _SUBAGENT_PROMPT.format(
-            goal=goal, context=context)       # 背景注入 system prompt
+            goal=goal, context=context
+        )  # 背景注入 system prompt
         ctx.parent_id = parent_id
         ctx.begin_chat()  # spawn 语义 = 立即运行（创建即 RUNNING）
         # 统一注册（v3 修正）：走 register()——dict + 邮局路由 + 事件上报
         self.register(ctx, role="subagent")
 
         thread = threading.Thread(
-            target=self._run, args=(ctx,),
+            target=self._run,
+            args=(ctx,),
             kwargs={
                 "client_factory": client_factory,
                 "tool_executor_factory": tool_executor_factory,
@@ -164,51 +169,72 @@ class AgentManager:
         parent_id = getattr(context, "parent_id", "") or "main"
         if self.pool.acquire(None, timeout=60) is None:
             context.fail("并发额度等待超时（>60s）")
-            get_run_logger().warning(
-                "pool-timeout context=%s parent=%s", context.id, parent_id)
-            self.dispatcher.send(Message(
-                sender=context.id, target=parent_id, type=MessageType.NOTIFY,
-                data={"event": "pool_timeout", "context_id": context.id,
-                      "reason": "concurrency_slot_timeout"}))
+            get_run_logger().warning("pool-timeout context=%s parent=%s", context.id, parent_id)
+            self.dispatcher.send(
+                Message(
+                    sender=context.id,
+                    target=parent_id,
+                    type=MessageType.NOTIFY,
+                    data={
+                        "event": "pool_timeout",
+                        "context_id": context.id,
+                        "reason": "concurrency_slot_timeout",
+                    },
+                )
+            )
             return
         try:
-            result = _run_subagent(context, kwargs.get("client_factory"),
-                                   kwargs.get("tool_executor_factory"),
-                                   kwargs.get("tools"),
-                                   kwargs.get("write_paths"))
+            result = _run_subagent(
+                context,
+                kwargs.get("client_factory"),
+                kwargs.get("tool_executor_factory"),
+                kwargs.get("tools"),
+                kwargs.get("write_paths"),
+            )
             if context.status == ContextStatus.RUNNING:
                 context.complete(result)
             # 日志（run.log——子任务完成）
             get_run_logger().info(
                 "subagent-complete context=%s parent=%s status=%s",
-                context.id, parent_id,
-                (result or {}).get("status", "completed"))
+                context.id,
+                parent_id,
+                (result or {}).get("status", "completed"),
+            )
             # 邮局结果回传（v3 修正）：subagent 完成 → 投回【父 context】
             # 的 mailbox（不用魔法 "main"——parent_id 寻址）
-            self.dispatcher.send(Message(
-                sender=context.id, target=parent_id, type=MessageType.RESULT,
-                data=result))
+            self.dispatcher.send(
+                Message(sender=context.id, target=parent_id, type=MessageType.RESULT, data=result)
+            )
         except Exception as exc:
             if context.status == ContextStatus.RUNNING:
                 context.fail(f"子任务执行异常: {exc}")
             # 日志（run.log——子任务异常）
             get_run_logger().error(
-                "subagent-error context=%s parent=%s error=%s",
-                context.id, parent_id, exc)
+                "subagent-error context=%s parent=%s error=%s", context.id, parent_id, exc
+            )
             # 失败通知（v3 补充 2026-08-29）：意外崩溃也投 message 给父——
             # 失败通知统一（常规失败走 RESULT.data.status=="failed"，
             # 意外崩溃走这里——父 agent 都能收到，不依赖 poll）
-            self.dispatcher.send(Message(
-                sender=context.id, target=parent_id, type=MessageType.RESULT,
-                data={"summary": "", "artifacts": [],
-                      "status": "failed", "error": f"子任务执行异常: {exc}",
-                      "question": None, "usage": None}))
+            self.dispatcher.send(
+                Message(
+                    sender=context.id,
+                    target=parent_id,
+                    type=MessageType.RESULT,
+                    data={
+                        "summary": "",
+                        "artifacts": [],
+                        "status": "failed",
+                        "error": f"子任务执行异常: {exc}",
+                        "question": None,
+                        "usage": None,
+                    },
+                )
+            )
         finally:
             self.pool.release(None)  # 回收额度（异常也不泄漏）
 
     # ── 控制面（任何控制者：父 agent / 用户 / CLI）───────────────────────
-    def steer(self, context_id: str, message: str,
-              sender_id: str = "unknown") -> bool:
+    def steer(self, context_id: str, message: str, sender_id: str = "unknown") -> bool:
         """注入补充指令（agent 下轮生效）。返回是否找到运行环境。
 
         不要求 RUNNING——IDLE 也能排队（用户先说"改方向"，agent 启动后
@@ -224,13 +250,15 @@ class AgentManager:
         context = self.contexts.get(context_id)
         if context is None:
             return False
-        self.dispatcher.send(Message(
-            sender=sender_id,      # 调用者身份（谁调填谁的 context_id）
-            target=context_id,     # 入参即 target（需要改变的 agent）
-            type=MessageType.STEER,
-            data=message))
-        context.events.emit("subagent/steer",
-                            session_id=context_id, message=message)
+        self.dispatcher.send(
+            Message(
+                sender=sender_id,  # 调用者身份（谁调填谁的 context_id）
+                target=context_id,  # 入参即 target（需要改变的 agent）
+                type=MessageType.STEER,
+                data=message,
+            )
+        )
+        context.events.emit("subagent/steer", session_id=context_id, message=message)
         return True
 
     def stop(self, context_id: str) -> bool:
@@ -247,8 +275,7 @@ class AgentManager:
         return context.poll() if context else None
 
     # ── 邮局对话投递（方案 2026-08-29 v2 验收 4）─────────────────────────
-    def send_message(self, context_id: str, text: str,
-                     sender_id: str = "") -> bool:
+    def send_message(self, context_id: str, text: str, sender_id: str = "") -> bool:
         """对话投递：父 agent → subagent（持续追加消息——多轮指导）。
 
         父 agent 可持续给 subagent 发对话（不再 spawn 一次性传参）；
@@ -267,14 +294,15 @@ class AgentManager:
         context = self.contexts.get(context_id)
         if context is None or getattr(context, "mailbox", None) is None:
             return False
-        self.dispatcher.send(Message(
-            sender=sender_id or "main", target=context_id,
-            type=MessageType.MESSAGE, data=text))
+        self.dispatcher.send(
+            Message(
+                sender=sender_id or "main", target=context_id, type=MessageType.MESSAGE, data=text
+            )
+        )
         return True
 
     # ── 执行入口（方案 2026-08-24-执行权归还Manager）────────────────────
-    def run(self, context_id: str, user_input: str,
-            stream_callback=None) -> str:
+    def run(self, context_id: str, user_input: str, stream_callback=None) -> str:
         """执行一次对话（执行权归还 Manager——CLI 不持有 agent）。
 
         用户拍板：agent 生命周期比 manager 短得多，CLI 不该持有执行者。
@@ -301,18 +329,20 @@ class AgentManager:
             raise KeyError(f"context 不存在: {context_id}")
         # 日志（run.log——run 入口审计；完整打印 input——不省略）
         get_run_logger().info(
-            "run-start context=%s turn=%d input=%s",
-            context_id, context.turn, user_input)
+            "run-start context=%s turn=%d input=%s", context_id, context.turn, user_input
+        )
         # 并发防护（2026-08-28 教训：审批弹窗时用户输入被主线程抢走 →
         # 同 context 并发 run → 消息交错 + 400 + 'value' KeyError）
         # 同一 context 已有任务在跑 → 拒绝（不并发写同一数据载体）
         if context.status == ContextStatus.RUNNING:
             raise RuntimeError(
-                f"context {context_id} 正在运行（status=RUNNING）——"
-                f"请先 /stop 或等待完成")
-        # 每次 run 是新的会话轮次——清除上次的 stop 标志（防残留中断）
-        # （方案 2026-08-24-stop实时中断：stop 是一次性的，run 重新开始）
+                f"context {context_id} 正在运行（status=RUNNING）——请先 /stop 或等待完成"
+            )
+        # 必须在启动 worker 前进入新轮次：若只等 worker 内 Agent.chat()
+        # 才清理 _done，调度竞争会让下面的 wait 先读到上一轮完成信号。
+        # 这里先清除一次性 stop 信号；begin_chat 负责清除 done 并标记 RUNNING。
         context._stop_flag.clear()
+        context.begin_chat()
         agent = self.pool.acquire(context)
         if agent is None:
             raise RuntimeError("AgentPool 获取执行者超时")
@@ -343,13 +373,23 @@ class AgentManager:
             self._persist(context)
             return "已按指令中断当前任务。"
 
-        # 正常路径：等 worker 真正完成（result_box 写入）——防竞态
-        done_box["event"].wait(timeout=60)
+        # 正常路径：Context 已报告完成后，worker 只剩返回值回填这一小段。
+        # 它超时意味着执行器状态不一致；绝不能释放仍在运行的 agent，更不能
+        # 盲读 result_box["value"] 伪装成 KeyError。
+        if not done_box["event"].wait(timeout=_WORKER_FINISH_GRACE_SECONDS):
+            get_run_logger().error(
+                "worker-finish-timeout context=%s grace_s=%s",
+                context_id,
+                _WORKER_FINISH_GRACE_SECONDS,
+            )
+            raise RuntimeError("agent worker 在 Context 完成后未正常收尾")
         if agent is not None:
             self.pool.release(agent)  # 即用即弃（生命周期在 pool）
         self._persist(context)
         if "error" in result_box:
             raise result_box["error"]
+        if "value" not in result_box:
+            raise RuntimeError("agent worker 未返回结果")
         self._maybe_extract_memory(context)  # 主动记忆：每 10 轮触发提炼
         return result_box["value"]
 
@@ -367,8 +407,7 @@ class AgentManager:
                 # 会话不存在则创建（幂等）
                 existing = self.storage.load_session(context.id)
                 if existing is None:
-                    self.storage.create_session(context.id,
-                                                title=context.goal or "对话")
+                    self.storage.create_session(context.id, title=context.goal or "对话")
                 # 增量 append：只写上次持久化之后的新消息（防重复）
                 start = getattr(context, "_persisted_count", 0)
                 for msg in context.messages[start:]:
@@ -424,8 +463,7 @@ class AgentManager:
                     "没有值得记的 → 输出 NONE。\n\n"
                     f"对话：\n{recent_messages}"
                 )
-                result = client.chat(
-                    [{"role": "system", "content": extract_prompt}])
+                result = client.chat([{"role": "system", "content": extract_prompt}])
                 content = result.content.strip()
                 if not content or content.upper() == "NONE":
                     return
@@ -446,21 +484,25 @@ class AgentManager:
                         # 被静默丢弃 → 记忆永远写不进）：
                         # 无前缀行 → 启发式判断去向（含偏好词 → USER，
                         # 否则 MEMORY），默认 MEMORY
-                        target = ("user" if any(
-                            kw in line for kw in ("喜欢", "偏好", "爱好",
-                                                  "我叫", "我的", "习惯"))
-                            else "memory")
+                        target = (
+                            "user"
+                            if any(
+                                kw in line
+                                for kw in ("喜欢", "偏好", "爱好", "我叫", "我的", "习惯")
+                            )
+                            else "memory"
+                        )
                         store.add_memory(line, target=target)
                         wrote += 1
                 # 可观测：提炼结果留痕（不再静默）
                 if wrote:
                     context.events.emit(
-                        "agent/memory-extracted",
-                        context_id=context.id, count=wrote)
+                        "agent/memory-extracted", context_id=context.id, count=wrote
+                    )
             except Exception as exc:
                 # 提炼失败不影响主对话，但留痕（可观测——不静默吞）
                 context.events.emit(
-                    "agent/memory-extract-failed",
-                    context_id=context.id, error=str(exc))
+                    "agent/memory-extract-failed", context_id=context.id, error=str(exc)
+                )
 
         threading.Thread(target=_extract_worker, daemon=True).start()

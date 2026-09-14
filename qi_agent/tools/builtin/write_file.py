@@ -15,6 +15,7 @@ from pathlib import Path
 
 from qi_agent.security.path_security import is_sensitive_path
 from qi_agent.tools.registry import register
+from qi_agent.workspaces import SessionWorkspace
 
 # 项目根（写文件限定的默认范围；测试可 monkeypatch）
 # 注意：本文件在 tools/builtin/ 下（分层方案 2026-08-23），比原 tools/
@@ -47,7 +48,9 @@ def _approval_condition(arguments: dict) -> str | None:
     return None
 
 
-def write_file(path: str, content: str, approved: bool = False) -> str:
+def write_file(
+    path: str, content: str, approved: bool = False, workspace: SessionWorkspace | None = None
+) -> str:
     """写文件（UTF-8）。
 
     Args:
@@ -58,18 +61,20 @@ def write_file(path: str, content: str, approved: bool = False) -> str:
     Returns:
         成功提示或 [安全拦截]/[错误] 提示
     """
+    if workspace:
+        try:
+            path = str(workspace.resolve_path(path))
+        except ValueError as exc:
+            return f"[安全拦截] {exc}"
     # ① 红线：敏感路径永远拒绝（即使 approved——审批管不到红线）
     if is_sensitive_path(path):
         return f"[安全拦截] 禁止写入敏感路径: {path}"
-    inside = _is_inside_project(path)
+    inside = _is_inside_project(path) if workspace is None else True
     exists = os.path.exists(path)
     # ③④ 覆盖/越界：需 approved（无审批插件/未同意时 fail-closed 拒绝）
     if not approved and (exists or not inside):
         reason = "覆盖已有文件" if exists else "项目外路径"
-        return (
-            f"[安全拦截] {reason}需用户审批，已拒绝执行。"
-            f"（项目内新增文件可自动写入）"
-        )
+        return f"[安全拦截] {reason}需用户审批，已拒绝执行。（项目内新增文件可自动写入）"
     # ② 执行写入（UTF-8 对齐项目；目录自动创建）
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -90,6 +95,7 @@ register(
     ),
     # 审批声明（v0.4.26 声明式）：条件审批——覆盖/越界 → 弹窗（工具自声明）
     approval=_approval_condition,
+    workspace_aware=True,
     # 手写 schema：只暴露 path/content——approved 是内部参数（agent 审批注入）
     schema={
         "type": "function",
