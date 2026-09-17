@@ -5,11 +5,11 @@
   MemoryStore                    记忆（Markdown 分层：MEMORY.md + USER.md）
 """
 
-from qi_agent.storage.base import Storage
+from qi_agent.storage.base import SessionPersistenceError, Storage
 from qi_agent.storage.memory_store import MemoryStore
 from qi_agent.storage.sqlite_store import SQLiteStore
 
-__all__ = ["Storage", "SQLiteStore", "MemoryStore", "get_storage"]
+__all__ = ["Storage", "SQLiteStore", "MemoryStore", "SessionPersistenceError", "get_storage"]
 
 _default: Storage | None = None
 

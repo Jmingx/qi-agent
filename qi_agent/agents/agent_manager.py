@@ -25,7 +25,7 @@ from qi_agent.agents.pool import AgentPool
 from qi_agent.context.context import AgentContext, ContextStatus, WaitOutcome
 from qi_agent.util import generate_id
 from qi_agent.logging_setup import get_run_logger
-from qi_agent.storage.base import Storage
+from qi_agent.storage.base import SessionPersistenceError, Storage
 # 注意：不模块级 import SubagentContext——subagent.py 又 import 本模块
 # （SubagentManager 继承 AgentManager）→ 循环导入。SubagentContext 在
 # spawn() 内延迟 import（见下）。
@@ -40,8 +40,8 @@ class AgentManager:
         self.contexts: dict[str, AgentContext] = {}
         self.max_concurrent = max_concurrent
         self._lock = threading.Lock()
-        # 存储（方案 2026-08-26 会话持久化）：基础设施注入——persist=True
-        # 的 context 在 run 完成后落盘（write-behind 异步）。None = 不持久化。
+        # 持久化由 Gateway/factory 显式注入。persist=True 的 Context 在每轮
+        # 终态前同步提交，None 只允许瞬态运行时使用。
         self.storage = storage
         # AgentPool（方案 2026-08-24）：spawn 用池治理并发（max_concurrent
         # 真正生效——此前只是存着没用）。subagent 执行者仍由 _run_subagent
@@ -394,36 +394,31 @@ class AgentManager:
         return result_box["value"]
 
     def _persist(self, context: AgentContext) -> None:
-        """会话持久化（方案 2026-08-26）：persist=True + 有 storage 时落盘。
+        """在回合终态前同步提交完整可恢复状态。
 
-        write-behind：后台线程异步写（不阻塞主流程）；崩溃丢尾可接受。
-        双模型：append 日志（只写新增消息——增量）+ snapshot 状态字段。
+        SQLite 的消息与会话快照由 Storage 在同一事务内对齐。持久化失败必须
+        向上传播：回答可以仍在内存中，但不能把“尚未保存”伪装成成功回合。
         """
         if not context.persist or self.storage is None:
             return
-
-        def _worker() -> None:
-            try:
-                # 会话不存在则创建（幂等）
-                existing = self.storage.load_session(context.id)
-                if existing is None:
-                    self.storage.create_session(context.id, title=context.goal or "对话")
-                # 增量 append：只写上次持久化之后的新消息（防重复）
-                start = getattr(context, "_persisted_count", 0)
-                for msg in context.messages[start:]:
-                    self.storage.append_message(context.id, msg)
-                context._persisted_count = len(context.messages)
-                self.storage.snapshot(
-                    context.id,
-                    turn=context.turn,
-                    usage=context.usage,
-                    status=context.status.value,
-                    phase=context.phase.value,
-                )
-            except Exception:
-                pass  # 持久化失败不阻塞对话（记录级容错）
-
-        threading.Thread(target=_worker, daemon=True).start()
+        try:
+            self.storage.save_context(
+                context.id,
+                title=context.goal or "对话",
+                messages=context.messages,
+                turn=context.turn,
+                usage=context.usage,
+                status=context.status.value,
+                phase=context.phase.value,
+            )
+        except SessionPersistenceError:
+            get_run_logger().exception(
+                "session-persist-failed context=%s turn=%s messages=%s",
+                context.id,
+                context.turn,
+                len(context.messages),
+            )
+            raise
 
     def _maybe_extract_memory(self, context: AgentContext) -> None:
         """主动记忆（方案 2026-08-26-主动记忆系统 V1）：每 10 轮触发提炼。

@@ -14,6 +14,7 @@ from qi_agent.context.context import AgentContext, ContextStatus, generate_id
 from qi_agent.gateway.protocol import (
     ERROR_CONCURRENT_RUN,
     ERROR_INVALID_PARAMS,
+    ERROR_SESSION_PERSISTENCE,
     ERROR_SESSION_NOT_FOUND,
     RpcDispatcher,
     RpcError,
@@ -21,6 +22,8 @@ from qi_agent.gateway.protocol import (
     log_rpc,
 )
 from qi_agent.logging_setup import get_run_logger
+from qi_agent.storage import get_storage
+from qi_agent.storage.base import SessionPersistenceError, Storage
 from qi_agent.workspaces import SessionWorkspace, normalize_workspace
 
 APPROVAL_TIMEOUT = 60.0
@@ -167,8 +170,17 @@ class Gateway:
     def __init__(
         self,
         manager: AgentManager | None = None,
+        storage: Storage | None = None,
     ) -> None:
-        self.manager = manager or AgentManager()
+        manager_storage = getattr(manager, "storage", None) if manager is not None else None
+        if storage is not None and manager_storage is not None and storage is not manager_storage:
+            raise ValueError("Gateway 与 AgentManager 必须使用同一个 Storage 实例")
+        # 统一装配边界：Gateway 的会话 CRUD 与 Manager 的回合保存绝不能各自
+        # fallback 到不同位置。默认路径也必须把 SQLiteStore 注入 Manager。
+        self.storage = storage or manager_storage or get_storage()
+        self.manager = manager or AgentManager(storage=self.storage)
+        if manager is not None and hasattr(manager, "storage"):
+            manager.storage = self.storage
         self.dispatcher = RpcDispatcher()
         self.shell_callback: Callable[[str], None] | None = None
         # 审批表（2026-09-13 方案 §3.4）：id → 待决条目；已决表用于幂等响应。
@@ -223,10 +235,8 @@ class Gateway:
         )
 
     def _storage(self):
-        from qi_agent.storage import get_storage
-
-        storage = getattr(self.manager, "storage", None)
-        return storage or get_storage()
+        """返回 Gateway/Manager 构造时确定的唯一 Storage。"""
+        return self.storage
 
     def _create_session(
         self,
@@ -260,6 +270,7 @@ class Gateway:
         context = AgentContext(persist=True, context_id=session_id, workspace=workspace)
         self._attach_skill_plugin(context)
         context.messages = loaded["messages"]
+        context.goal = loaded["title"]
         context.turn = loaded["turn"]
         context.usage = loaded["usage"]
         context.system_prompt = (
@@ -388,6 +399,19 @@ class Gateway:
             )
             context = self._get_context(session_id)
             return {"reply": reply, "turn": context.turn}
+        except SessionPersistenceError as exc:
+            context = self._get_context(session_id)
+            self._notify(
+                "turn/end",
+                session_id=session_id,
+                turn=context.turn,
+                reason="persistence_error",
+                error="回答已生成，但会话保存失败；重启后本轮可能丢失。",
+            )
+            raise RpcError(
+                ERROR_SESSION_PERSISTENCE,
+                "回答已生成，但会话保存失败；请在当前进程中重试或继续后再次保存。",
+            ) from exc
         except RuntimeError as exc:
             if "正在运行" in str(exc):
                 raise RpcError(ERROR_CONCURRENT_RUN, f"context 正在运行: {session_id}") from exc
@@ -709,18 +733,15 @@ class Gateway:
 
     def _sync_context_storage(self, context: AgentContext) -> None:
         storage = self._storage()
-        storage.delete_session(context.id)
-        storage.create_session(context.id, title=context.goal or "对话")
-        for message in context.messages:
-            storage.append_message(context.id, message)
-        storage.snapshot(
+        storage.save_context(
             context.id,
+            title=context.goal or "对话",
+            messages=context.messages,
             turn=context.turn,
             usage=context.usage,
             status=context.status.value,
             phase=context.phase.value,
         )
-        context._persisted_count = len(context.messages)
 
     def _make_stream_callback(self, session_id: str) -> Callable:
         def _cb(delta: str) -> None:

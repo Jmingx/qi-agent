@@ -9,8 +9,12 @@ import threading
 import time
 import unittest.mock as mock
 
+import pytest
 
 from qi_agent.gateway.gateway import Gateway
+from qi_agent.gateway.protocol import ERROR_SESSION_PERSISTENCE, RpcError
+from qi_agent.storage.base import SessionPersistenceError
+from qi_agent.storage.sqlite_store import SQLiteStore
 
 
 class _FastClient:
@@ -26,13 +30,13 @@ class _FastClient:
         return self.chat(messages, tools)
 
 
-def _make_gateway():
+def _make_gateway(store: SQLiteStore | None = None) -> Gateway:
     import qi_agent.agents.factory as factory
 
     factory.load_api_key = lambda: "sk-test"
     mock.patch.object(factory, "LLMClient",
                       lambda key: _FastClient()).start()
-    return Gateway()
+    return Gateway(storage=store)
 
 
 def test_create_and_send() -> None:
@@ -47,6 +51,55 @@ def test_create_and_send() -> None:
     resp = json.loads(gw.dispatcher.dispatch(raw))
     assert resp["id"] == 1
     assert "reply" in resp["result"]
+
+
+def test_default_gateway_persists_and_resumes_across_instances(tmp_path) -> None:
+    """生产默认装配也要把同一 Storage 注入 Manager，不能只留下空壳会话。"""
+    store = SQLiteStore(db_path=str(tmp_path / "gateway.db"))
+    with mock.patch("qi_agent.gateway.gateway.get_storage", return_value=store):
+        gateway = _make_gateway()
+        assert gateway.manager.storage is store
+        session_id = gateway._create_session(goal="持久化回归")["session_id"]
+
+        assert gateway._send_message(session_id, "第一句")["reply"] == "ok"
+        first = store.load_session(session_id)
+        assert first is not None
+        assert first["turn"] == 1
+        first_roles = [message["role"] for message in first["messages"]]
+        # Gateway 会挂载 Skill manifest，因此 system 消息不止一条；本断言锁定
+        # 真正的会话回合已被保存，不耦合具体插件注入数量。
+        assert first_roles.count("user") == 1
+        assert first_roles.count("assistant") == 1
+
+        # 模拟 serve/CLI 重启：新 Gateway + 新 Manager 从同一 SQLite 恢复。
+        resumed_gateway = _make_gateway()
+        resumed = resumed_gateway._resume_session(session_id)
+        assert resumed["messages"] == len(first["messages"])
+        assert resumed_gateway._send_message(session_id, "第二句")["reply"] == "ok"
+
+    loaded = store.load_session(session_id)
+    assert loaded is not None
+    assert loaded["turn"] == 2
+    contents = [message.get("content") for message in loaded["messages"]]
+    assert contents.count("第一句") == 1
+    assert contents.count("第二句") == 1
+
+
+def test_persistence_failure_is_reported_to_rpc_caller(tmp_path, monkeypatch) -> None:
+    """模型已回答但提交失败时，不能把本回合伪装成已保存。"""
+    store = SQLiteStore(db_path=str(tmp_path / "failure.db"))
+    gateway = _make_gateway(store)
+    session_id = gateway._create_session()["session_id"]
+    monkeypatch.setattr(
+        store,
+        "save_context",
+        mock.Mock(side_effect=SessionPersistenceError("disk full")),
+    )
+
+    with pytest.raises(RpcError) as exc_info:
+        gateway._send_message(session_id, "这轮应报告保存失败")
+
+    assert exc_info.value.code == ERROR_SESSION_PERSISTENCE
 
 
 def test_create_session_preserves_optional_metadata() -> None:

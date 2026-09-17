@@ -59,6 +59,68 @@ def test_snapshot_then_incremental_replay(store: SQLiteStore) -> None:
     assert loaded["messages"][-1]["content"] == "回复2"  # 增量在
 
 
+def test_save_context_is_idempotent_and_updates_snapshot(store: SQLiteStore) -> None:
+    """完整 Context 重复提交不重复写消息，并同步更新快照字段。"""
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": "你好！"},
+    ]
+    store.save_context(
+        "ctx_atomic", "原子会话", messages, 1, {"total_tokens": 9}, "completed", "done"
+    )
+    store.save_context(
+        "ctx_atomic", "原子会话", messages, 1, {"total_tokens": 9}, "completed", "done"
+    )
+
+    loaded = store.load_session("ctx_atomic")
+    assert loaded is not None
+    assert loaded["turn"] == 1
+    assert loaded["usage"]["total_tokens"] == 9
+    assert loaded["status"] == "completed"
+    assert loaded["phase"] == "done"
+    assert loaded["messages"] == messages
+
+
+def test_save_context_rebuilds_messages_after_context_rewrite(store: SQLiteStore) -> None:
+    """压缩或 clear 改写 Context 时，恢复结果必须与当前内存态一致。"""
+    store.save_context(
+        "ctx_rewrite",
+        "会话",
+        [{"role": "system", "content": "sys"}, {"role": "user", "content": "旧消息"}],
+        1,
+    )
+    compacted = [
+        {"role": "system", "content": "sys"},
+        {"role": "system", "content": "[早期对话已压缩为摘要] 摘要"},
+        {"role": "user", "content": "新问题"},
+    ]
+    store.save_context("ctx_rewrite", "会话", compacted, 2)
+
+    loaded = store.load_session("ctx_rewrite")
+    assert loaded is not None
+    assert loaded["messages"] == compacted
+    assert loaded["turn"] == 2
+
+
+def test_save_context_rolls_back_on_invalid_message(store: SQLiteStore) -> None:
+    """序列化失败不能留下半轮消息或半更新快照。"""
+    store.save_context("ctx_rollback", "会话", [{"role": "user", "content": "原消息"}], 1)
+
+    with pytest.raises(Exception):
+        store.save_context(
+            "ctx_rollback",
+            "会话",
+            [{"role": "user", "content": "新消息"}, {"role": "assistant", "content": object()}],
+            2,
+        )
+
+    loaded = store.load_session("ctx_rollback")
+    assert loaded is not None
+    assert loaded["turn"] == 1
+    assert loaded["messages"] == [{"role": "user", "content": "原消息"}]
+
+
 def test_crash_recovery(store: SQLiteStore) -> None:
     """崩溃恢复：模拟进程崩溃（不调 close）→ 新连接加载数据仍在。"""
     store.create_session("ctx_3", title="崩溃测试")

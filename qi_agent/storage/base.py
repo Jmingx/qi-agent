@@ -6,6 +6,10 @@
 from abc import ABC, abstractmethod
 
 
+class SessionPersistenceError(RuntimeError):
+    """会话状态未能可靠写入持久化介质。"""
+
+
 class Storage(ABC):
     """持久化存储接口。"""
 
@@ -27,6 +31,19 @@ class Storage(ABC):
         phase: str = "",
     ) -> None:
         """更新会话快照字段。"""
+
+    @abstractmethod
+    def save_context(
+        self,
+        session_id: str,
+        title: str,
+        messages: list[dict],
+        turn: int,
+        usage: dict | None = None,
+        status: str = "",
+        phase: str = "",
+    ) -> None:
+        """原子保存一个会话的完整可恢复状态。"""
 
     @abstractmethod
     def load_session(self, session_id: str) -> dict | None:

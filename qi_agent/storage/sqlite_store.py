@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import time
 
-from qi_agent.storage.base import Storage
+from qi_agent.storage.base import SessionPersistenceError, Storage
 
 
 def _default_db_path() -> str:
@@ -101,26 +101,126 @@ class SQLiteStore(Storage):
                 (session_id,),
             ).fetchone()
             seq = row[0] + 1
-            conn.execute(
-                "INSERT INTO messages"
-                " (session_id, seq, role, content, tool_calls, data, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    session_id,
-                    seq,
-                    message.get("role", ""),
-                    message.get("content"),
-                    json.dumps(message.get("tool_calls"), ensure_ascii=False)
-                    if message.get("tool_calls")
-                    else None,
-                    json.dumps(message, ensure_ascii=False),
-                    now,
-                ),
-            )
+            self._insert_message(conn, session_id, seq, message, now)
             conn.execute(
                 "UPDATE sessions SET updated_at=? WHERE id=?",
                 (now, session_id),
             )
+
+    @staticmethod
+    def _message_json(message: dict) -> str:
+        """稳定编码完整消息，用于幂等对齐而非只比较 content。"""
+        return json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def _insert_message(
+        cls,
+        conn: sqlite3.Connection,
+        session_id: str,
+        seq: int,
+        message: dict,
+        created_at: float,
+    ) -> None:
+        conn.execute(
+            "INSERT INTO messages"
+            " (session_id, seq, role, content, tool_calls, data, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                session_id,
+                seq,
+                message.get("role", ""),
+                message.get("content"),
+                json.dumps(message.get("tool_calls"), ensure_ascii=False)
+                if message.get("tool_calls")
+                else None,
+                cls._message_json(message),
+                created_at,
+            ),
+        )
+
+    @staticmethod
+    def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
+        text = str(exc).lower()
+        return "database is locked" in text or "database is busy" in text
+
+    def save_context(
+        self,
+        session_id: str,
+        title: str,
+        messages: list[dict],
+        turn: int,
+        usage: dict | None = None,
+        status: str = "",
+        phase: str = "",
+    ) -> None:
+        """在一个事务中保存可恢复的 Context。
+
+        数据库消息是内存消息前缀时仅追加；压缩或 clear 改写了工作上下文时，
+        事务内重建该会话消息，避免旧的 `_persisted_count` 把两种状态拼接。
+        """
+        try:
+            encoded_messages = [self._message_json(message) for message in messages]
+            usage_json = json.dumps(usage or {}, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise SessionPersistenceError(f"会话保存序列化失败: {exc}") from exc
+
+        with self._lock:
+            for attempt in range(3):
+                conn = self._connect()
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    now = time.time()
+                    session = conn.execute(
+                        "SELECT id FROM sessions WHERE id=?", (session_id,)
+                    ).fetchone()
+                    if session is None:
+                        conn.execute(
+                            "INSERT INTO sessions"
+                            " (id, title, snapshot_at, created_at, updated_at)"
+                            " VALUES (?, ?, ?, ?, ?)",
+                            (session_id, title, now, now, now),
+                        )
+
+                    rows = conn.execute(
+                        "SELECT data FROM messages WHERE session_id=? ORDER BY seq",
+                        (session_id,),
+                    ).fetchall()
+                    persisted = [row["data"] or "" for row in rows]
+
+                    if persisted == encoded_messages:
+                        pass
+                    elif len(persisted) < len(encoded_messages) and (
+                        persisted == encoded_messages[:len(persisted)]
+                    ):
+                        new_messages = messages[len(persisted):]
+                        for seq, message in enumerate(new_messages, len(persisted) + 1):
+                            self._insert_message(conn, session_id, seq, message, now)
+                    else:
+                        conn.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
+                        for seq, message in enumerate(messages, 1):
+                            self._insert_message(conn, session_id, seq, message, now)
+
+                    conn.execute(
+                        "UPDATE sessions SET title=CASE WHEN ? <> '' THEN ? ELSE title END,"
+                        " turn=?, usage=?, status=?, phase=?, snapshot_at=?, updated_at=?"
+                        " WHERE id=?",
+                        (title, title, turn, usage_json, status, phase, now, now, session_id),
+                    )
+                    conn.commit()
+                    return
+                except sqlite3.OperationalError as exc:
+                    conn.rollback()
+                    if self._is_busy_error(exc) and attempt < 2:
+                        time.sleep(0.02 * (2**attempt))
+                        continue
+                    raise SessionPersistenceError(
+                        f"SQLite 会话保存失败: {exc}"
+                    ) from exc
+                except Exception as exc:
+                    conn.rollback()
+                    raise SessionPersistenceError(f"会话保存失败: {exc}") from exc
+                finally:
+                    conn.close()
 
     def snapshot(
         self,
