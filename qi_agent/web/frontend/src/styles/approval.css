@@ -1,0 +1,204 @@
+/* 审批卡片（2026-09-14 定稿）：**长在对话流里**，就插在触发它的工具行上方。
+   不再是浮层——浮层一收起，用户回看对话时就看不到发生过什么。
+   几何约束保留：命令/参数滚动区有高度上限，按钮行在滚动区之外——
+   命令再长，按钮也不会被挤走。 */
+
+.approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  border-left-width: 3px;
+  border-radius: var(--r-md);
+  background: var(--bg-elev, var(--bg));
+}
+
+.approval-card.is-danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-left-width: 3px;
+}
+
+/* 已决：降级为记录（弱化配色，不抢注意力，但一直在） */
+.approval-card.is-settled {
+  border-color: var(--border);
+  border-left-color: var(--fg-subtle);
+  background: transparent;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.approval-card.is-settled.is-ok {
+  border-left-color: var(--ok, var(--accent));
+}
+
+.approval-card.is-settled.is-danger {
+  border-left-color: var(--danger);
+}
+
+.approval-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--warn);
+}
+
+.approval-card.is-danger .approval-strip {
+  color: var(--danger);
+}
+
+.approval-card.is-settled .approval-strip {
+  color: var(--fg-muted);
+}
+
+.approval-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.approval-outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-muted);
+}
+
+.approval-card.is-settled.is-ok .approval-outcome {
+  color: var(--ok, var(--accent));
+}
+
+.approval-card.is-settled.is-danger .approval-outcome {
+  color: var(--danger);
+}
+
+.approval-waited {
+  font-size: var(--fs-xs);
+  color: var(--fg-subtle);
+}
+
+.approval-countdown {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.approval-countdown.is-urgent {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.approval-headline {
+  margin: 0;
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap; /* 决策层文案可能多行（命令: xxx） */
+}
+
+.approval-card.is-settled .approval-headline {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.approval-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.approval-copy {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.approval-copy:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+
+/* 滚动区：命令/参数逐字保真（纯文本，不解析 markdown/HTML） */
+.approval-body {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--code-bg);
+}
+
+.approval-body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.approval-command {
+  margin: 0;
+  padding: var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+}
+
+.approval-card.is-settled .approval-command {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--code-bg);
+  max-height: 180px;
+  overflow: auto;
+}
+
+/* 动作行在滚动区之外：按钮永远可达 */
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.approval-actions-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.approval-hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--fg-subtle);
+}
+
+.approval-hint-key {
+  display: inline-block;
+  margin: 0 4px 0 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+}
+
+/* 手机端：卡片跟对话同宽，命令区收矮一点 */
+@media (max-width: 760px) {
+  .approval-card {
+    padding: var(--sp-2) var(--sp-3);
+  }
+
+  .approval-body,
+  .approval-card.is-settled .approval-command {
+    max-height: 140px;
+  }
+}

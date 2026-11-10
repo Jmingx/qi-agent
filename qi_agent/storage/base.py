@@ -1,0 +1,64 @@
+"""Storage 抽象层。
+
+业务层只依赖这里，不直接依赖 SQLite 或文件实现。
+"""
+
+from abc import ABC, abstractmethod
+
+
+class SessionPersistenceError(RuntimeError):
+    """会话状态未能可靠写入持久化介质。"""
+
+
+class Storage(ABC):
+    """持久化存储接口。"""
+
+    @abstractmethod
+    def create_session(self, session_id: str, title: str = "") -> None:
+        """创建会话记录。"""
+
+    @abstractmethod
+    def append_message(self, session_id: str, message: dict) -> None:
+        """追加一条消息。"""
+
+    @abstractmethod
+    def snapshot(
+        self,
+        session_id: str,
+        turn: int,
+        usage: dict | None = None,
+        status: str = "",
+        phase: str = "",
+        workspace_id: str | None = None,
+    ) -> None:
+        """更新会话快照字段。"""
+
+    @abstractmethod
+    def save_context(
+        self,
+        session_id: str,
+        title: str,
+        messages: list[dict],
+        turn: int,
+        usage: dict | None = None,
+        status: str = "",
+        phase: str = "",
+        workspace_id: str | None = None,
+    ) -> None:
+        """原子保存一个会话的完整可恢复状态。"""
+
+    @abstractmethod
+    def load_session(self, session_id: str) -> dict | None:
+        """恢复会话完整数据。"""
+
+    @abstractmethod
+    def list_sessions(self) -> list[dict]:
+        """列出所有会话。"""
+
+    @abstractmethod
+    def delete_session(self, session_id: str) -> None:
+        """删除会话及其消息。"""
+
+    @abstractmethod
+    def search_messages(self, query: str) -> list[dict]:
+        """按内容模糊搜索消息。"""

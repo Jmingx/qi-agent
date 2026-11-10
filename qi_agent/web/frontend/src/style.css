@@ -1,0 +1,8 @@
+/* 样式入口（UI v3）：按层拆分，单个文件保持可读规模。
+   顺序：tokens → base → layout → messages → panels */
+@import './styles/tokens.css';
+@import './styles/base.css';
+@import './styles/layout.css';
+@import './styles/messages.css';
+@import './styles/panels.css';
+@import './styles/approval.css';
